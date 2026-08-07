@@ -503,7 +503,7 @@ int TIFFReadScanline(TIFF *tif, void *buf, uint32_t row, uint16_t sample)
         /* we are now poised at the beginning of the next row */
         tif->tif_dir.td_row = row + 1;
 
-        if (e)
+        if (e > 0)
             (*tif->tif_postdecode)(tif, (uint8_t *)buf,
                                    tif->tif_dir.td_scanlinesize);
     }
@@ -1729,9 +1729,9 @@ int TIFFReadFromUserBuffer(TIFF *tif, uint32_t strile, void *inbuf,
             if (outbuf)
                 memset(outbuf, 0, (size_t)outsize);
         }
-        else if (!(*tif->tif_decodetile)(
+        else if ((*tif->tif_decodetile)(
                      tif, (uint8_t *)outbuf, outsize,
-                     (uint16_t)(strile / td->td_stripsperimage)))
+                     (uint16_t)(strile / td->td_stripsperimage)) <= 0)
         {
             ret = 0;
         }
@@ -1758,9 +1758,9 @@ int TIFFReadFromUserBuffer(TIFF *tif, uint32_t strile, void *inbuf,
                 if (outbuf)
                     memset(outbuf, 0, (size_t)outsize);
             }
-            else if (!(*tif->tif_decodestrip)(
+            else if ((*tif->tif_decodestrip)(
                          tif, (uint8_t *)outbuf, outsize,
-                         (uint16_t)(strile / stripsperplane)))
+                         (uint16_t)(strile / stripsperplane)) <= 0)
             {
                 ret = 0;
             }
