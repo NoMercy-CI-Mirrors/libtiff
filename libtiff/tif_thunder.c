@@ -78,6 +78,14 @@ static int ThunderSetupDecode(TIFF *tif)
                       (int)tif->tif_dir.td_bitspersample);
         return 0;
     }
+    if (tif->tif_dir.td_samplesperpixel != 1 &&
+        tif->tif_dir.td_planarconfig != PLANARCONFIG_SEPARATE)
+    {
+        TIFFErrorExtR(tif, module,
+                      "Samples/pixel shall be 1 for ThunderScan decoding, "
+                      "or PlanarConfiguration must be set to Separate.");
+        return 0;
+    }
 
     return (1);
 }
@@ -185,7 +193,16 @@ static int ThunderDecodeRow(TIFF *tif, uint8_t *buf, tmsize_t occ, uint16_t s)
     while (occ > 0)
     {
         if (!ThunderDecode(tif, row, tif->tif_dir.td_imagewidth))
+        {
+            /*
+             * ThunderDecode only clears the tail of the scanline it was
+             * working on. Clear this scanline and every row after it, so a
+             * failed decode cannot hand the caller whatever its buffer
+             * happened to contain.
+             */
+            memset(row, 0, (size_t)occ);
             return (0);
+        }
         occ -= tif->tif_dir.td_scanlinesize;
         row += tif->tif_dir.td_scanlinesize;
     }

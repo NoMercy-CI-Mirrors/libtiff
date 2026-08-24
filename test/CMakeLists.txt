@@ -149,6 +149,12 @@ if(JPEG_SUPPORT)
   list(APPEND simple_tests raw_decode)
 endif()
 
+add_executable(thunder_decode ../placeholder.h)
+target_sources(thunder_decode PRIVATE thunder_decode.c)
+set_target_properties(thunder_decode PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(thunder_decode PRIVATE tiff tiff_port)
+list(APPEND simple_tests thunder_decode)
+
 add_executable(custom_dir ../placeholder.h)
 target_sources(custom_dir PRIVATE custom_dir.c)
 set_target_properties(custom_dir PROPERTIES LINKER_LANGUAGE CXX)
