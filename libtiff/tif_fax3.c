@@ -1624,7 +1624,7 @@ int TIFFInitCCITTFax3(TIFF *tif, int scheme)
         return TIFFSetField(tif, TIFFTAG_FAXMODE, FAXMODE_CLASSF);
     }
     else
-        return 01;
+        return 0;
 }
 
 /*
