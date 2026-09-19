@@ -813,6 +813,16 @@ static int LZWDecodeCompat(TIFF *tif, uint8_t *op0, tmsize_t occ0, uint16_t s)
     (void)s;
     assert(sp != NULL);
 
+    if (sp->read_error)
+    {
+        memset(op, 0, (size_t)occ);
+        TIFFErrorExtR(tif, module,
+                      "LZWDecodeCompat: Scanline %" PRIu32
+                      " cannot be read due to previous error",
+                      tif->tif_dir.td_row);
+        return 0;
+    }
+
     /*
      * Restart interrupted output operation.
      */
@@ -892,6 +902,8 @@ static int LZWDecodeCompat(TIFF *tif, uint8_t *op0, tmsize_t occ0, uint16_t s)
                 break;
             if (code > CODE_CLEAR)
             {
+                memset(op0, 0, (size_t)occ0);
+                sp->read_error = 1;
                 TIFFErrorExtR(
                     tif, tif->tif_name,
                     "LZWDecode: Corrupted LZW table at scanline %" PRIu32,
@@ -911,6 +923,8 @@ static int LZWDecodeCompat(TIFF *tif, uint8_t *op0, tmsize_t occ0, uint16_t s)
         if (free_entp < &sp->dec_codetab[0] ||
             free_entp >= &sp->dec_codetab[CSIZE])
         {
+            memset(op0, 0, (size_t)occ0);
+            sp->read_error = 1;
             TIFFErrorExtR(tif, module,
                           "Corrupted LZW table at scanline %" PRIu32,
                           tif->tif_dir.td_row);
@@ -921,6 +935,8 @@ static int LZWDecodeCompat(TIFF *tif, uint8_t *op0, tmsize_t occ0, uint16_t s)
         if (free_entp->next < &sp->dec_codetab[0] ||
             free_entp->next >= &sp->dec_codetab[CSIZE])
         {
+            memset(op0, 0, (size_t)occ0);
+            sp->read_error = 1;
             TIFFErrorExtR(tif, module,
                           "Corrupted LZW table at scanline %" PRIu32,
                           tif->tif_dir.td_row);
@@ -946,6 +962,8 @@ static int LZWDecodeCompat(TIFF *tif, uint8_t *op0, tmsize_t occ0, uint16_t s)
              */
             if (codep->length == 0)
             {
+                memset(op0, 0, (size_t)occ0);
+                sp->read_error = 1;
                 TIFFErrorExtR(
                     tif, module,
                     "Wrong length of decoded "
@@ -1009,6 +1027,8 @@ static int LZWDecodeCompat(TIFF *tif, uint8_t *op0, tmsize_t occ0, uint16_t s)
 
     if (occ > 0)
     {
+        memset(op, 0, (size_t)occ);
+        sp->read_error = 1;
         TIFFErrorExtR(tif, module,
                       "Not enough data at scanline %" PRIu32 " (short %" PRIu64
                       " bytes)",
