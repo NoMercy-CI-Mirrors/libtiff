@@ -2448,8 +2448,8 @@ static int TIFFWriteDirectoryTagCheckedShortArray(TIFF *tif, uint32_t *ndir,
                                                   uint16_t tag, uint32_t count,
                                                   uint16_t *value)
 {
-    assert(count < 0x80000000);
-    assert(sizeof(uint16_t) == 2);
+    if (count > UINT32_MAX / 2)
+        return (0);
     if (dir == NULL) /* Just evaluate IFD data size and increment ndir. */
     {
         EvaluateIFDdatasizeWrite(tif, count, 2, ndir);
@@ -2466,8 +2466,8 @@ static int TIFFWriteDirectoryTagCheckedSshortArray(TIFF *tif, uint32_t *ndir,
                                                    uint16_t tag, uint32_t count,
                                                    int16_t *value)
 {
-    assert(count < 0x80000000);
-    assert(sizeof(int16_t) == 2);
+    if (count > UINT32_MAX / 2)
+        return (0);
     if (dir == NULL) /* Just evaluate IFD data size and increment ndir. */
     {
         EvaluateIFDdatasizeWrite(tif, count, 2, ndir);
@@ -2631,7 +2631,8 @@ static int TIFFWriteDirectoryTagCheckedRationalArray(TIFF *tif, uint32_t *ndir,
     uint32_t *nb;
     uint32_t nc;
     int o;
-    assert(sizeof(uint32_t) == 4);
+    if (count > UINT32_MAX / 8)
+        return (0);
     if (dir == NULL) /* Just evaluate IFD data size and increment ndir. */
     {
         EvaluateIFDdatasizeWrite(tif, count * 2, sizeof(uint32_t), ndir);
@@ -2668,7 +2669,8 @@ static int TIFFWriteDirectoryTagCheckedSrationalArray(TIFF *tif, uint32_t *ndir,
     int32_t *nb;
     uint32_t nc;
     int o;
-    assert(sizeof(int32_t) == 4);
+    if (count > UINT32_MAX / 8)
+        return (0);
     if (dir == NULL) /* Just evaluate IFD data size and increment ndir. */
     {
         EvaluateIFDdatasizeWrite(tif, count * 2, sizeof(int32_t), ndir);
@@ -2706,7 +2708,8 @@ TIFFWriteDirectoryTagCheckedRationalDoubleArray(TIFF *tif, uint32_t *ndir,
     uint32_t *nb;
     uint32_t nc;
     int o;
-    assert(sizeof(uint32_t) == 4);
+    if (count > UINT32_MAX / 8)
+        return (0);
     if (dir == NULL) /* Just evaluate IFD data size and increment ndir. */
     {
         EvaluateIFDdatasizeWrite(tif, count * 2, sizeof(uint32_t), ndir);
@@ -2742,7 +2745,8 @@ static int TIFFWriteDirectoryTagCheckedSrationalDoubleArray(
     int32_t *nb;
     uint32_t nc;
     int o;
-    assert(sizeof(int32_t) == 4);
+    if (count > UINT32_MAX / 8)
+        return (0);
     if (dir == NULL) /* Just evaluate IFD data size and increment ndir. */
     {
         EvaluateIFDdatasizeWrite(tif, count * 2, sizeof(int32_t), ndir);
