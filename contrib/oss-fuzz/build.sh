@@ -80,6 +80,20 @@ mkdir afl_testcases
 mkdir tif
 find afl_testcases -type f -name '*.tif' -exec mv -n {} tif/ \;
 zip -rj tif.zip tif/
+zip -j tif.zip \
+    "$SRC/libtiff/test/images/lzw-single-strip.tiff" \
+    "$SRC/libtiff/test/images/quad-lzw-compat.tiff" \
+    "$SRC/libtiff/test/images/quad-tile.jpg.tiff" \
+    "$SRC/libtiff/test/images/ojpeg_zackthecat_subsamp22_single_strip.tiff" \
+    "$SRC/libtiff/test/images/ojpeg_chewey_subsamp21_multi_strip.tiff" \
+    "$SRC/libtiff/test/images/ojpeg_single_strip_no_rowsperstrip.tiff" \
+    "$SRC/libtiff/test/images/testfax3_bug54_1dnoEOL.tif" \
+    "$SRC/libtiff/test/images/testfax3_bug_513.tiff" \
+    "$SRC/libtiff/test/images/testfax4.tiff" \
+    "$SRC/libtiff/test/images/logluv-3c-16b.tiff" \
+    "$SRC/libtiff/test/images/test_float64_predictor2_le_lzw.tif" \
+    "$SRC/libtiff/test/images/test_float64_predictor2_be_lzw.tif" \
+    "$SRC/libtiff/test/images/test_two_ifds.tif"
 cp tif.zip "$OUT/tiff_read_rgba_fuzzer_seed_corpus.zip"
 cp "$SRC/tiff.dict" "$OUT/tiff_read_rgba_fuzzer.dict"
 cp tif.zip "$OUT/tiff_decode_fuzzer_seed_corpus.zip"
