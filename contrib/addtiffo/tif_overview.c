@@ -441,9 +441,13 @@ static void TIFF_DownSample(TIFF *hTIFF, unsigned char *pabySrcTile,
     if (nLineOffset64 > INT_MAX)
         return;
     nLineOffset = (int)nLineOffset64;
-    if ((size_t)nPixelBytes > ((size_t)-1) / (size_t)nPixelGroupBytes)
-        return;
-    nDstPixelStep = (size_t)nPixelBytes * (size_t)nPixelGroupBytes;
+    /* The destination overview block stores pixels with a stride of
+     * nPixelGroupBytes: for PLANARCONFIG_SEPARATE each sample has its own
+     * block (nPixelGroupBytes == nPixelBytes), and for PLANARCONFIG_CONTIG
+     * the samples are interleaved within the pixel.  (Previously this was
+     * nPixelBytes * nPixelGroupBytes, which overflowed the destination
+     * block for multi-byte samples.) */
+    nDstPixelStep = (size_t)nPixelGroupBytes;
 
     /* sizeof(double) * nOMult * nOMult */
     if ((size_t)nOMult > ((size_t)-1) / (size_t)nOMult)
@@ -582,7 +586,7 @@ static void TIFF_DownSample(TIFF *hTIFF, unsigned char *pabySrcTile,
                 TIFF_SetSample(pabyDst, nPixelBytes, nSampleFormat,
                                dfTotal / (double)nSampleCount);
 
-                pabyDst += (uint32_t)nPixelBytes;
+                pabyDst += (uint32_t)nPixelGroupBytes;
             }
         }
     }
