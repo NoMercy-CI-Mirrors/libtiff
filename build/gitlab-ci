@@ -100,6 +100,10 @@ coverity_build()
 build=$1
 shift
 
+# Source-level checks that apply to every build configuration.  These run
+# first so a violation is reported before anything is compiled.
+python3 scripts/check-alloc-arith.py
+
 case $build in
     autoconf)
         echo "Testing Autoconf build"
