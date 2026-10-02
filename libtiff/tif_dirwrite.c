@@ -1195,8 +1195,8 @@ static int TIFFWriteDirectorySec(TIFF *tif, int isimage, int imagedone,
             tif->tif_dir.td_dirdatasize_write += 8 + ndir * 20 + 8;
 
         /* Setup a new directory within first pass. */
-        dir = (TIFFDirEntry *)_TIFFmallocExt(
-            tif, (tmsize_t)((size_t)ndir * sizeof(TIFFDirEntry)));
+        dir = (TIFFDirEntry *)_TIFFCheckMalloc(tif, ndir, sizeof(TIFFDirEntry),
+                                               module);
         if (dir == NULL)
         {
             TIFFErrorExtR(tif, module, "Out of memory");
@@ -1533,7 +1533,7 @@ static int TIFFWriteDirectoryTagSampleformatArray(TIFF *tif, uint32_t *ndir,
     void *conv;
     uint32_t i;
     int ok;
-    conv = _TIFFmallocExt(tif, (tmsize_t)((size_t)count * sizeof(double)));
+    conv = _TIFFCheckMalloc(tif, count, sizeof(double), module);
     if (conv == NULL)
     {
         TIFFErrorExtR(tif, module, "Out of memory");
@@ -1672,9 +1672,8 @@ static int TIFFWriteDirectoryTagShortPerSample(TIFF *tif, uint32_t *ndir,
         return (TIFFWriteDirectoryTagCheckedShortArray(
             tif, ndir, dir, tag, tif->tif_dir.td_samplesperpixel, NULL));
     }
-    m = (uint16_t *)_TIFFmallocExt(
-        tif,
-        (tmsize_t)((size_t)tif->tif_dir.td_samplesperpixel * sizeof(uint16_t)));
+    m = (uint16_t *)_TIFFCheckMalloc(tif, tif->tif_dir.td_samplesperpixel,
+                                     sizeof(uint16_t), module);
     if (m == NULL)
     {
         TIFFErrorExtR(tif, module, "Out of memory");
@@ -1744,8 +1743,7 @@ static int TIFFWriteDirectoryTagLong8Array(TIFF *tif, uint32_t *ndir,
     ** For classic tiff we want to verify everything is in range for long
     ** and convert to long format.
     */
-    p = (uint32_t *)_TIFFmallocExt(
-        tif, (tmsize_t)((size_t)count * sizeof(uint32_t)));
+    p = (uint32_t *)_TIFFCheckMalloc(tif, count, sizeof(uint32_t), module);
     if (p == NULL)
     {
         TIFFErrorExtR(tif, module, "Out of memory");
@@ -1798,8 +1796,7 @@ static int TIFFWriteDirectoryTagSlong8Array(TIFF *tif, uint32_t *ndir,
     ** For classic tiff we want to verify everything is in range for signed-long
     ** and convert to signed-long format.
     */
-    p = (int32_t *)_TIFFmallocExt(tif,
-                                  (tmsize_t)((size_t)count * sizeof(uint32_t)));
+    p = (int32_t *)_TIFFCheckMalloc(tif, count, sizeof(int32_t), module);
     if (p == NULL)
     {
         TIFFErrorExtR(tif, module, "Out of memory");
@@ -2018,8 +2015,8 @@ static int TIFFWriteDirectoryTagLongLong8Array(TIFF *tif, uint32_t *ndir,
         ** and convert to long format.
         */
 
-        uint32_t *p = (uint32_t *)_TIFFmallocExt(
-            tif, (tmsize_t)((size_t)count * sizeof(uint32_t)));
+        uint32_t *p =
+            (uint32_t *)_TIFFCheckMalloc(tif, count, sizeof(uint32_t), module);
         uint32_t *q;
         uint64_t *ma;
         uint32_t mb;
@@ -2049,8 +2046,8 @@ static int TIFFWriteDirectoryTagLongLong8Array(TIFF *tif, uint32_t *ndir,
     }
     else
     {
-        uint16_t *p = (uint16_t *)_TIFFmallocExt(
-            tif, (tmsize_t)((size_t)count * sizeof(uint16_t)));
+        uint16_t *p =
+            (uint16_t *)_TIFFCheckMalloc(tif, count, sizeof(uint16_t), module);
         uint16_t *q;
         uint64_t *ma;
         uint32_t mb;
@@ -2110,8 +2107,7 @@ static int TIFFWriteDirectoryTagIfdIfd8Array(TIFF *tif, uint32_t *ndir,
     ** and convert to long format.
     */
 
-    p = (uint32_t *)_TIFFmallocExt(
-        tif, (tmsize_t)((size_t)count * sizeof(uint32_t)));
+    p = (uint32_t *)_TIFFCheckMalloc(tif, count, sizeof(uint32_t), module);
     if (p == NULL)
     {
         TIFFErrorExtR(tif, module, "Out of memory");
@@ -2307,9 +2303,8 @@ static int TIFFWriteDirectoryTagSubifd(TIFF *tif, uint32_t *ndir,
         uint64_t *pa;
         uint32_t *pb;
         uint16_t p;
-        o = (uint32_t *)_TIFFmallocExt(
-            tif,
-            (tmsize_t)((size_t)tif->tif_dir.td_nsubifd * sizeof(uint32_t)));
+        o = (uint32_t *)_TIFFCheckMalloc(tif, tif->tif_dir.td_nsubifd,
+                                         sizeof(uint32_t), module);
         if (o == NULL)
         {
             TIFFErrorExtR(tif, module, "Out of memory");
