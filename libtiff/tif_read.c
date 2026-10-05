@@ -1792,6 +1792,16 @@ int TIFFReadFromUserBuffer(TIFF *tif, uint32_t strile, void *inbuf,
     tif->tif_rawdataoff = 0;
     tif->tif_rawdataloaded = 0;
 
+    /*
+     * The decoder has just operated on caller-owned temporary input data.
+     * Do not leave pointers or strile state referring to that buffer after
+     * TIFFReadFromUserBuffer() returns.
+     */
+    tif->tif_rawcp = tif->tif_rawdata;
+    tif->tif_rawcc = 0;
+    td->td_curstrip = NOSTRIP;
+    td->td_curtile = NOTILE;
+
     return ret;
 }
 

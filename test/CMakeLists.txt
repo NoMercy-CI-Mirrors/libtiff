@@ -149,6 +149,11 @@ if(JPEG_SUPPORT)
   list(APPEND simple_tests raw_decode)
 endif()
 
+add_executable(read_from_user_buffer ../placeholder.h)
+target_sources(read_from_user_buffer PRIVATE read_from_user_buffer.c)
+target_link_libraries(read_from_user_buffer PRIVATE tiff tiff_port)
+list(APPEND simple_tests read_from_user_buffer)
+
 add_executable(custom_dir ../placeholder.h)
 target_sources(custom_dir PRIVATE custom_dir.c)
 set_target_properties(custom_dir PROPERTIES LINKER_LANGUAGE CXX)

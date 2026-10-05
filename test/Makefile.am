@@ -91,6 +91,7 @@ endif
 # Executable programs which need to be built in order to support tests
 if TIFF_TESTS
 check_PROGRAMS = \
+	read_from_user_buffer \
 	ascii_tag long_tag short_tag strip_rw rewrite custom_dir custom_dir_EXIF_231 \
 	defer_strile_loading defer_strile_writing test_directory test_IFD_enlargement test_open_options \
 	test_append_to_strip test_ifd_loop_detection test_RGBAImage testtypes test_signed_tags $(JPEG_DEPENDENT_CHECK_PROG) $(STATIC_CHECK_PROGS)
@@ -268,6 +269,8 @@ strip_rw_SOURCES = strip_rw.c strip.c strip.h test_arrays.c test_arrays.h
 strip_rw_LDADD = $(LIBTIFF)
 rewrite_SOURCES = rewrite_tag.c
 rewrite_LDADD = $(LIBTIFF)
+read_from_user_buffer_SOURCES = read_from_user_buffer.c
+read_from_user_buffer_LDADD = $(LIBTIFF)
 raw_decode_SOURCES = raw_decode.c
 raw_decode_LDADD = $(LIBTIFF)
 custom_dir_SOURCES = custom_dir.c
