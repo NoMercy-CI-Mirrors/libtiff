@@ -1114,7 +1114,7 @@ static int LERCPostEncode(TIFF *tif)
     {
         uint64_t mask_overhead =
             ((uint64_t)sp->segment_width * sp->segment_height *
-             mask_count + 7) /
+             (unsigned)mask_count + 7) /
             8;
         if (mask_overhead > UINT_MAX - estimated_compressed_size)
         {
