@@ -1661,8 +1661,8 @@ static int JPEGDecode(TIFF *tif, uint8_t *buf, tmsize_t cc, uint16_t s)
                 if (sp->cinfo.d.data_precision == 12)
                 {
                     tmsize_t value_count =
-                        (tmsize_t)((JDIMENSION)sp->cinfo.d.output_width *
-                                   (JDIMENSION)sp->cinfo.d.num_components);
+                        (tmsize_t)sp->cinfo.d.output_width *
+                        sp->cinfo.d.num_components;
                     tmsize_t iPair;
 
                     for (iPair = 0; iPair < value_count / 2; iPair++)
@@ -1683,10 +1683,10 @@ static int JPEGDecode(TIFF *tif, uint8_t *buf, tmsize_t cc, uint16_t s)
                 }
                 else if (sp->cinfo.d.data_precision == 8)
                 {
-                    int value_count =
-                        (int)((JDIMENSION)sp->cinfo.d.output_width *
-                              (JDIMENSION)sp->cinfo.d.num_components);
-                    int iValue;
+                    tmsize_t value_count =
+                        (tmsize_t)sp->cinfo.d.output_width *
+                        sp->cinfo.d.num_components;
+                    tmsize_t iValue;
 
                     for (iValue = 0; iValue < value_count; iValue++)
                     {
