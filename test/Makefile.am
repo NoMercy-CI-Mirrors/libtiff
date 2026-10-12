@@ -73,6 +73,12 @@ JPEG_DEPENDENT_CHECK_PROG=
 JPEG_DEPENDENT_TESTSCRIPTS_TO_RUN=
 endif
 
+if HAVE_JPEGTURBO_DUAL_MODE_8_12
+JPEG12_DEPENDENT_CHECK_PROG=test_jpeg12_raw_read
+else
+JPEG12_DEPENDENT_CHECK_PROG=
+endif
+
 JBIG_DEPENDENT_TESTSCRIPTS=\
 	tiffcp-lzw-single-strip-jbig.sh
 
@@ -93,7 +99,7 @@ if TIFF_TESTS
 check_PROGRAMS = \
 	ascii_tag long_tag short_tag strip_rw rewrite custom_dir custom_dir_EXIF_231 \
 	defer_strile_loading defer_strile_writing test_directory test_IFD_enlargement test_open_options \
-	test_append_to_strip test_ifd_loop_detection test_RGBAImage testtypes test_signed_tags thunder_decode $(JPEG_DEPENDENT_CHECK_PROG) $(STATIC_CHECK_PROGS)
+	test_append_to_strip test_ifd_loop_detection test_RGBAImage testtypes test_signed_tags thunder_decode $(JPEG_DEPENDENT_CHECK_PROG) $(JPEG12_DEPENDENT_CHECK_PROG) $(STATIC_CHECK_PROGS)
 endif
 
 # Test scripts to execute
@@ -270,6 +276,8 @@ rewrite_SOURCES = rewrite_tag.c
 rewrite_LDADD = $(LIBTIFF)
 raw_decode_SOURCES = raw_decode.c
 raw_decode_LDADD = $(LIBTIFF)
+test_jpeg12_raw_read_SOURCES = test_jpeg12_raw_read.c
+test_jpeg12_raw_read_LDADD = $(LIBTIFF)
 custom_dir_SOURCES = custom_dir.c
 custom_dir_LDADD = $(LIBTIFF)
 thunder_decode_SOURCES = thunder_decode.c

@@ -1865,7 +1865,7 @@ static int JPEGDecode(TIFF *tif, uint8_t *buf, tmsize_t cc, uint16_t s)
                         /* fast path for at least Cb and Cr */
                         for (nclump = clumps_per_line; nclump-- > 0;)
                         {
-                            outptr[0] = (uint8_t)*inptr++;
+                            outptr[0] = (TIFF_JSAMPLE)*inptr++;
                             outptr += samples_per_clump;
                         }
                     }
@@ -1877,7 +1877,7 @@ static int JPEGDecode(TIFF *tif, uint8_t *buf, tmsize_t cc, uint16_t s)
                         for (nclump = clumps_per_line; nclump-- > 0;)
                         {
                             for (xpos = 0; xpos < hsamp; xpos++)
-                                outptr[xpos] = (uint8_t)*inptr++;
+                                outptr[xpos] = (TIFF_JSAMPLE)*inptr++;
                             outptr += samples_per_clump;
                         }
                     }
