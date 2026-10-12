@@ -2668,8 +2668,8 @@ static int JPEGPostEncode(TIFF *tif)
              ci < sp->cinfo.c.num_components; ci++, compptr++)
         {
             int vsamp = compptr->v_samp_factor;
-            tmsize_t row_width =
-                compptr->width_in_blocks * DCTSIZE * sizeof(JSAMPLE);
+            tmsize_t row_width = (tmsize_t)compptr->width_in_blocks * DCTSIZE *
+                                 (tmsize_t)sizeof(TIFF_JSAMPLE);
             for (ypos = sp->scancount * vsamp; ypos < DCTSIZE * vsamp; ypos++)
             {
                 _TIFFmemcpy((void *)sp->ds_buffer[ci][ypos],
