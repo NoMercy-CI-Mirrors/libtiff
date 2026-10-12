@@ -654,6 +654,16 @@ static int TWebPPostEncode(TIFF *tif)
 
     stride = (int64_t)sp->sPicture.width * sp->nSamples;
 
+    /* The whole buffer is compressed below. If fewer bytes than a full
+     * strip/tile were written, clear the rest instead of compressing
+     * uninitialized memory into the file. Check the codec state so we do
+     * not touch a decode buffer if post-encode runs after switching to
+     * reading on an "r+" handle. */
+    if (sp->state == LSTATE_INIT_ENCODE && sp->pBuffer != NULL &&
+        sp->buffer_offset < sp->buffer_size)
+        memset(sp->pBuffer + sp->buffer_offset, 0,
+               sp->buffer_size - sp->buffer_offset);
+
 #if WEBP_ENCODER_ABI_VERSION >= 0x0100
     if (sp->nSamples == 4)
     {

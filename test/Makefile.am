@@ -84,6 +84,12 @@ else
 JBIG_DEPENDENT_TESTSCRIPTS_TO_RUN=
 endif
 
+if HAVE_WEBP
+WEBP_DEPENDENT_CHECK_PROG=test_webp_write
+else
+WEBP_DEPENDENT_CHECK_PROG=
+endif
+
 if BUILD_STATIC
 STATIC_CHECK_PROGS=rational_precision2double test_write_read_tags test_transferfunction_write_read
 endif
@@ -93,7 +99,7 @@ if TIFF_TESTS
 check_PROGRAMS = \
 	ascii_tag long_tag short_tag strip_rw rewrite custom_dir custom_dir_EXIF_231 \
 	defer_strile_loading defer_strile_writing test_directory test_IFD_enlargement test_open_options \
-	test_append_to_strip test_ifd_loop_detection test_RGBAImage testtypes test_signed_tags thunder_decode $(JPEG_DEPENDENT_CHECK_PROG) $(STATIC_CHECK_PROGS)
+	test_append_to_strip test_ifd_loop_detection test_RGBAImage testtypes test_signed_tags thunder_decode $(JPEG_DEPENDENT_CHECK_PROG) $(WEBP_DEPENDENT_CHECK_PROG) $(STATIC_CHECK_PROGS)
 endif
 
 # Test scripts to execute
@@ -308,6 +314,8 @@ test_ifd_loop_detection_SOURCES = test_ifd_loop_detection.c
 test_ifd_loop_detection_LDADD = $(LIBTIFF)
 test_RGBAImage_SOURCES = test_RGBAImage.c
 test_RGBAImage_LDADD = $(LIBTIFF)
+test_webp_write_SOURCES = test_webp_write.c
+test_webp_write_LDADD = $(LIBTIFF)
 
 AM_CPPFLAGS = -I$(top_srcdir)/libtiff
 
