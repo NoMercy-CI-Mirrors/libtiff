@@ -895,6 +895,11 @@ static int TIFFWriteDirectorySec(TIFF *tif, int isimage, int imagedone,
                     if ((o->field_bit >= FIELD_CODEC) &&
                         (TIFFFieldSet(tif, o->field_bit)))
                     {
+                        /* The field table keeps the tags of a codec that was
+                         * previously set on this directory, and codecs share
+                         * the field bits from FIELD_CODEC on. Such a tag looks
+                         * set, but TIFFGetField() fails and leaves its
+                         * arguments uninitialized: skip it. */
                         switch (o->set_get_field_type)
                         {
                             case TIFF_SETGET_ASCII:
@@ -904,7 +909,8 @@ static int TIFFWriteDirectorySec(TIFF *tif, int isimage, int imagedone,
                                 assert(o->field_type == TIFF_ASCII);
                                 assert(o->field_readcount == TIFF_VARIABLE);
                                 assert(o->field_passcount == 0);
-                                TIFFGetField(tif, o->field_tag, &pb);
+                                if (!TIFFGetField(tif, o->field_tag, &pb))
+                                    break;
                                 pa = (uint32_t)(strlen(pb) + 1);
                                 if (!TIFFWriteDirectoryTagAscii(
                                         tif, &ndir, dir, (uint16_t)o->field_tag,
@@ -918,7 +924,8 @@ static int TIFFWriteDirectorySec(TIFF *tif, int isimage, int imagedone,
                                 assert(o->field_type == TIFF_SHORT);
                                 assert(o->field_readcount == 1);
                                 assert(o->field_passcount == 0);
-                                TIFFGetField(tif, o->field_tag, &p);
+                                if (!TIFFGetField(tif, o->field_tag, &p))
+                                    break;
                                 if (!TIFFWriteDirectoryTagShort(
                                         tif, &ndir, dir, (uint16_t)o->field_tag,
                                         p))
@@ -931,7 +938,8 @@ static int TIFFWriteDirectorySec(TIFF *tif, int isimage, int imagedone,
                                 assert(o->field_type == TIFF_LONG);
                                 assert(o->field_readcount == 1);
                                 assert(o->field_passcount == 0);
-                                TIFFGetField(tif, o->field_tag, &p);
+                                if (!TIFFGetField(tif, o->field_tag, &p))
+                                    break;
                                 if (!TIFFWriteDirectoryTagLong(
                                         tif, &ndir, dir, (uint16_t)o->field_tag,
                                         p))
@@ -945,7 +953,8 @@ static int TIFFWriteDirectorySec(TIFF *tif, int isimage, int imagedone,
                                 assert(o->field_type == TIFF_UNDEFINED);
                                 assert(o->field_readcount == TIFF_VARIABLE2);
                                 assert(o->field_passcount == 1);
-                                TIFFGetField(tif, o->field_tag, &pa, &pb);
+                                if (!TIFFGetField(tif, o->field_tag, &pa, &pb))
+                                    break;
                                 if (!TIFFWriteDirectoryTagUndefinedArray(
                                         tif, &ndir, dir, (uint16_t)o->field_tag,
                                         pa, (uint8_t *)pb))

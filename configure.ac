@@ -375,6 +375,8 @@ if test "$HAVE_LZW" = "yes" ; then
   AC_DEFINE(LZW_SUPPORT,1,[Support LZW algorithm])
 fi
 
+AM_CONDITIONAL(HAVE_LZW, test "$HAVE_LZW" = 'yes')
+
 AC_ARG_ENABLE(thunder,
 	      AS_HELP_STRING([--disable-thunder],
 			     [disable support for ThunderScan 4-bit RLE algorithm]),
