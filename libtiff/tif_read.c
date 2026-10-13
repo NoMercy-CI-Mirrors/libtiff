@@ -1079,14 +1079,11 @@ tmsize_t TIFFReadEncodedTile(TIFF *tif, uint32_t tile, void *buf, tmsize_t size)
             memset(buf, 0, (size_t)size);
         return ((tmsize_t)(-1));
     }
-    else if ((*tif->tif_decodetile)(tif, (uint8_t *)buf, size,
-                                    (uint16_t)(tile / td->td_stripsperimage)))
-    {
-        (*tif->tif_postdecode)(tif, (uint8_t *)buf, size);
-        return (size);
-    }
-    else
+    if ((*tif->tif_decodetile)(tif, (uint8_t *)buf, size,
+                               (uint16_t)(tile / td->td_stripsperimage)) <= 0)
         return ((tmsize_t)(-1));
+    (*tif->tif_postdecode)(tif, (uint8_t *)buf, size);
+    return (size);
 }
 
 /* Variant of TIFFReadTile() that does
@@ -1190,13 +1187,10 @@ tmsize_t _TIFFReadEncodedTileAndAllocBuffer(TIFF *tif, uint32_t tile,
     else if (size_to_read > tilesize)
         size_to_read = tilesize;
     if ((*tif->tif_decodetile)(tif, (uint8_t *)*buf, size_to_read,
-                               (uint16_t)(tile / td->td_stripsperimage)))
-    {
-        (*tif->tif_postdecode)(tif, (uint8_t *)*buf, size_to_read);
-        return (size_to_read);
-    }
-    else
+                               (uint16_t)(tile / td->td_stripsperimage)) <= 0)
         return ((tmsize_t)(-1));
+    (*tif->tif_postdecode)(tif, (uint8_t *)*buf, size_to_read);
+    return (size_to_read);
 }
 
 static tmsize_t TIFFReadRawTile1(TIFF *tif, uint32_t tile, void *buf,
