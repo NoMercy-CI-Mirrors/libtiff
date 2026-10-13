@@ -158,8 +158,9 @@ int main(void)
      */
     if (TIFFCreateCustomDirectory(tif, NULL) == 0)
     {
-        fprintf(stderr, "TIFFCreateEXIFDirectory() NULL pointer FieldArray is "
-                        "not correctly handled as error.\n");
+        fprintf(stderr,
+                "TIFFCreateCustomDirectory() NULL pointer FieldArray is "
+                "not correctly handled as error.\n");
         goto failure;
     }
     /* Test for default directory and custom directory. */
