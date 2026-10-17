@@ -472,6 +472,46 @@ static int test_TIFFheader_swapping(void)
     return ret;
 }
 
+/* A failed field-table realloc must retain existing core fields. */
+static int test_field_table_allocation_failure(void)
+{
+    const char *filename = "test_field_table_allocation_failure.tif";
+    unsigned rejected = 0;
+    TIFFFieldInfo fields[64];
+    char name[] = "budget field";
+    for (unsigned i = 0; i < 64; ++i)
+    {
+        const TIFFFieldInfo field = {(ttag_t)(65000 + i), 1, 1, TIFF_LONG,
+                                     FIELD_CUSTOM,        1, 0, name};
+        fields[i] = field;
+    }
+    for (tmsize_t limit = 1024; limit <= 16384; limit += 32)
+    {
+        TIFFOpenOptions *opts = TIFFOpenOptionsAlloc();
+        assert(opts);
+        TIFFOpenOptionsSetMaxCumulatedMemAlloc(opts, limit);
+        TIFF *tif = TIFFOpenExt(filename, "w", opts);
+        TIFFOpenOptionsFree(opts);
+        if (!tif)
+            continue;
+        if (TIFFMergeFieldInfo(tif, fields, 64) != 0)
+        {
+            ++rejected;
+            if (!TIFFFieldWithTag(tif, TIFFTAG_IMAGEWIDTH))
+            {
+                TIFFSetMode(tif, 0);
+                TIFFClose(tif);
+                unlink(filename);
+                return 1;
+            }
+        }
+        TIFFSetMode(tif, 0);
+        TIFFClose(tif);
+    }
+    unlink(filename);
+    return rejected == 0;
+}
+
 int main(void)
 {
     int ret = 0;
@@ -486,6 +526,7 @@ int main(void)
     }
 
     ret += test_error_handler();
+    ret += test_field_table_allocation_failure();
     fprintf(stderr, "\n---- test_TIFFOpenOptionsSetMaxSingleMemAlloc "
                     "with non-BigTIFF ---- \n");
     ret += test_TIFFOpenOptionsSetMaxSingleMemAlloc(1, TRUE, -1, FALSE);
