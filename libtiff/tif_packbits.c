@@ -22,6 +22,7 @@
  * OF THIS SOFTWARE.
  */
 
+#include "tif_bytecursor.h"
 #include "tiffiop.h"
 #ifdef PACKBITS_SUPPORT
 /*
@@ -243,73 +244,65 @@ static int PackBitsEncodeChunk(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
 static int PackBitsDecode(TIFF *tif, uint8_t *op, tmsize_t occ, uint16_t s)
 {
     static const char module[] = "PackBitsDecode";
-    int8_t *bp;
-    tmsize_t cc;
+    TIFFByteCursor in = {tif->tif_rawcp, tif->tif_rawcc};
+    TIFFByteCursor out = {op, occ};
+    uint8_t c = 0;
     long n;
-    int b;
 
     (void)s;
-    bp = (int8_t *)tif->tif_rawcp;
-    cc = tif->tif_rawcc;
-    while (cc > 0 && occ > 0)
+    while (in.left > 0 && out.left > 0)
     {
-        n = (long)*bp++;
-        cc--;
+        (void)_TIFFByteCursorGetU8(&in, &c);
+        n = (long)(int8_t)c;
         if (n < 0)
         {                  /* replicate next byte -n+1 times */
             if (n == -128) /* nop */
                 continue;
             n = -n + 1;
-            if (occ < (tmsize_t)n)
+            if (out.left < (tmsize_t)n)
             {
                 TIFFWarningExtR(tif, module,
                                 "Discarding %" TIFF_SSIZE_FORMAT
                                 " bytes to avoid buffer overrun",
-                                (tmsize_t)n - occ);
-                n = (long)occ;
+                                (tmsize_t)n - out.left);
+                n = (long)out.left;
             }
-            if (cc == 0)
+            if (!_TIFFByteCursorGetU8(&in, &c))
             {
                 TIFFWarningExtR(
                     tif, module,
                     "Terminating PackBitsDecode due to lack of data.");
                 break;
             }
-            occ -= n;
-            b = *bp++;
-            cc--;
-            while (n-- > 0)
-                *op++ = (uint8_t)b;
+            if (!_TIFFByteCursorFill(&out, c, (tmsize_t)n))
+                break; /* unreachable: n was clamped to out.left above */
         }
         else
         { /* copy next n+1 bytes literally */
-            if (occ < (tmsize_t)(n + 1))
+            if (out.left < (tmsize_t)(n + 1))
             {
                 TIFFWarningExtR(tif, module,
                                 "Discarding %" TIFF_SSIZE_FORMAT
                                 " bytes to avoid buffer overrun",
-                                (tmsize_t)n - occ + 1);
-                n = (long)occ - 1;
+                                (tmsize_t)n - out.left + 1);
+                n = (long)out.left - 1;
             }
-            if (cc < (tmsize_t)(n + 1))
+            if (in.left < (tmsize_t)(n + 1))
             {
                 TIFFWarningExtR(
                     tif, module,
                     "Terminating PackBitsDecode due to lack of data.");
                 break;
             }
-            _TIFFmemcpy(op, bp, ++n);
-            op += n;
-            occ -= n;
-            bp += n;
-            cc -= n;
+            if (!_TIFFByteCursorCopy(&out, &in, (tmsize_t)(n + 1)))
+                break; /* unreachable: both counts were checked above */
         }
     }
-    tif->tif_rawcp = (uint8_t *)bp;
-    tif->tif_rawcc = cc;
-    if (occ > 0)
+    tif->tif_rawcp = in.p;
+    tif->tif_rawcc = in.left;
+    if (out.left > 0)
     {
-        memset(op, 0, (size_t)occ);
+        memset(out.p, 0, (size_t)out.left);
         TIFFErrorExtR(tif, module, "Not enough data for scanline %" PRIu32,
                       tif->tif_dir.td_row);
         return (0);

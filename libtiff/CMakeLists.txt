@@ -42,6 +42,7 @@ set(tiff_public_HEADERS
 
 set(tiff_private_HEADERS
         t4.h
+        tif_bytecursor.h
         tif_dir.h
         tif_predict.h
         tiffiop.h

@@ -48,6 +48,7 @@ endif
 
 noinst_HEADERS = \
 	t4.h \
+	tif_bytecursor.h \
 	tif_dir.h \
 	tif_hash_set.h \
 	tif_predict.h \
