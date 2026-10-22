@@ -242,25 +242,28 @@ static int ZIPDecode(TIFF *tif, uint8_t *op, tmsize_t occ, uint16_t s)
                                              (size_t)tif->tif_rawcc, op,
                                              (size_t)occ, NULL);
 
-            tif->tif_rawcp += tif->tif_rawcc;
-            tif->tif_rawcc = 0;
-
-            /* We accept LIBDEFLATE_INSUFFICIENT_SPACE has a return */
-            /* There are odd files in the wild where the last strip, when */
-            /* it is smaller in height than td_rowsperstrip, actually contains
-             */
-            /* data for td_rowsperstrip lines. Just ignore that silently. */
-            if (res != LIBDEFLATE_SUCCESS &&
-                res != LIBDEFLATE_INSUFFICIENT_SPACE)
+            if (res == LIBDEFLATE_SUCCESS)
             {
-                memset(op, 0, (size_t)occ);
-                TIFFErrorExtR(tif, module, "Decoding error at scanline %lu",
-                              (unsigned long)tif->tif_dir.td_row);
-                sp->read_error = 1;
-                return 0;
+                tif->tif_rawcp += tif->tif_rawcc;
+                tif->tif_rawcc = 0;
+                return 1;
             }
 
-            return 1;
+            /* There are odd files in the wild where the last strip, when it
+             * is smaller in height than td_rowsperstrip, actually contains
+             * data for td_rowsperstrip lines. libdeflate reports them as
+             * LIBDEFLATE_INSUFFICIENT_SPACE and leaves the output buffer
+             * undefined (stored blocks are not copied at all), so decode them
+             * again with zlib, which stops at occ and ignores the extra data.
+             */
+            if (res == LIBDEFLATE_INSUFFICIENT_SPACE)
+                break;
+
+            memset(op, 0, (size_t)occ);
+            TIFFErrorExtR(tif, module, "Decoding error at scanline %lu",
+                          (unsigned long)tif->tif_dir.td_row);
+            sp->read_error = 1;
+            return 0;
         }
     } while (0);
     sp->libdeflate_state = 0;
