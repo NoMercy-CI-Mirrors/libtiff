@@ -1706,6 +1706,11 @@ int TIFFReadFromUserBuffer(TIFF *tif, uint32_t strile, void *inbuf,
                       "uncompressed data");
         return 0;
     }
+    if (insize <= 0)
+    {
+        TIFFErrorExtR(tif, module, "Invalid input buffer size");
+        return 0;
+    }
 
     tif->tif_flags &= ~TIFF_MYBUFFER;
     tif->tif_flags |= TIFF_BUFFERMMAP;
