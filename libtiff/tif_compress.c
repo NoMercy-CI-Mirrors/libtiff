@@ -173,7 +173,7 @@ void _TIFFSetDefaultCompressionState(TIFF *tif)
     tif->tif_defstripsize = _TIFFDefaultStripSize;
     tif->tif_deftilesize = _TIFFDefaultTileSize;
     tif->tif_getmaxcompressionratio = _TIFFDefaultGetMaxCompressionRatio;
-    tif->tif_flags &= ~(TIFF_NOBITREV | TIFF_NOREADRAW);
+    tif->tif_flags &= ~(TIFF_NOBITREV | TIFF_NOREADRAW | TIFF_UPSAMPLED);
 }
 
 int TIFFSetCompressionScheme(TIFF *tif, int scheme)
