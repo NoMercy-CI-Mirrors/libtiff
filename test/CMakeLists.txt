@@ -236,6 +236,12 @@ set_target_properties(test_postencode_dir_switch PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_postencode_dir_switch PRIVATE tiff tiff_port)
 list(APPEND simple_tests test_postencode_dir_switch)
 
+add_executable(test_write_after_read_same_strip ../placeholder.h)
+target_sources(test_write_after_read_same_strip PRIVATE test_write_after_read_same_strip.c)
+set_target_properties(test_write_after_read_same_strip PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_write_after_read_same_strip PRIVATE tiff tiff_port)
+list(APPEND simple_tests test_write_after_read_same_strip)
+
 add_executable(test_ifd_loop_detection ../placeholder.h)
 target_sources(test_ifd_loop_detection PRIVATE test_ifd_loop_detection.c)
 set_target_properties(test_ifd_loop_detection PROPERTIES LINKER_LANGUAGE CXX)

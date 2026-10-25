@@ -236,7 +236,12 @@ static int ZSTDEncode(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
     size_t zstd_ret;
 
     assert(sp != NULL);
-    assert(sp->state == LSTATE_INIT_ENCODE);
+    if (sp->state != LSTATE_INIT_ENCODE)
+    {
+        TIFFErrorExtR(tif, module,
+                      "ZSTD codec state is not initialized for encoding");
+        return 0;
+    }
 
     (void)s;
 
@@ -275,6 +280,13 @@ static int ZSTDPostEncode(TIFF *tif)
     static const char module[] = "ZSTDPostEncode";
     ZSTDState *sp = ZSTDEncoderState(tif);
     size_t zstd_ret;
+
+    if (sp->state != LSTATE_INIT_ENCODE)
+    {
+        TIFFErrorExtR(tif, module,
+                      "ZSTD codec state is not initialized for encoding");
+        return 0;
+    }
 
     do
     {

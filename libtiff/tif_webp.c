@@ -109,7 +109,12 @@ static int TWebPEncode(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
     (void)s;
 
     assert(sp != NULL);
-    assert(sp->state == LSTATE_INIT_ENCODE);
+    if (sp->state != LSTATE_INIT_ENCODE)
+    {
+        TIFFErrorExtR(tif, module,
+                      "WebP codec state is not initialized for encoding");
+        return 0;
+    }
 
     if ((uint64_t)sp->buffer_offset + (uint64_t)cc > sp->buffer_size)
     {
@@ -650,7 +655,12 @@ static int TWebPPostEncode(TIFF *tif)
     WebPState *sp = EncoderState(tif);
     assert(sp != NULL);
 
-    assert(sp->state == LSTATE_INIT_ENCODE);
+    if (sp->state != LSTATE_INIT_ENCODE)
+    {
+        TIFFErrorExtR(tif, module,
+                      "WebP codec state is not initialized for encoding");
+        return 0;
+    }
 
     stride = (int64_t)sp->sPicture.width * sp->nSamples;
 
