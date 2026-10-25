@@ -230,6 +230,12 @@ set_target_properties(test_append_to_strip PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_append_to_strip PRIVATE tiff tiff_port)
 list(APPEND simple_tests test_append_to_strip)
 
+add_executable(test_postencode_dir_switch ../placeholder.h)
+target_sources(test_postencode_dir_switch PRIVATE test_postencode_dir_switch.c)
+set_target_properties(test_postencode_dir_switch PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_postencode_dir_switch PRIVATE tiff tiff_port)
+list(APPEND simple_tests test_postencode_dir_switch)
+
 add_executable(test_ifd_loop_detection ../placeholder.h)
 target_sources(test_ifd_loop_detection PRIVATE test_ifd_loop_detection.c)
 set_target_properties(test_ifd_loop_detection PROPERTIES LINKER_LANGUAGE CXX)

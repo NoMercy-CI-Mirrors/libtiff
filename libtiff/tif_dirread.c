@@ -4410,6 +4410,7 @@ int TIFFReadDirectory(TIFF *tif)
 
     tif->tif_flags &= ~TIFF_BEENWRITING; /* reset before new dir */
     tif->tif_flags &= ~TIFF_BUF4WRITE;   /* reset before new dir */
+    tif->tif_flags &= ~TIFF_POSTENCODE;  /* reset before new dir */
     tif->tif_flags &= ~TIFF_CHOPPEDUPARRAYS;
 
     /* When changing directory, in deferred strile loading mode, we must also
