@@ -220,6 +220,18 @@ bad:
     return (0);
 }
 
+/*
+ * Remove the custom value at index i, whose value could not be allocated.
+ * Keeping it would leave an entry with a non-zero count and a NULL value,
+ * which the getters and the directory writer use as a valid field.
+ */
+static void removeCustomValue(TIFFDirectory *td, int i)
+{
+    for (; i < td->td_customValueCount - 1; i++)
+        td->td_customValues[i] = td->td_customValues[i + 1];
+    td->td_customValueCount--;
+}
+
 static int _TIFFVSetField(TIFF *tif, uint32_t tag, va_list ap)
 {
     static const char module[] = "_TIFFVSetField";
@@ -801,6 +813,12 @@ static int _TIFFVSetField(TIFF *tif, uint32_t tag, va_list ap)
                 }
                 tv->count = (int)ma;
                 setByteArray(tif, &tv->value, mb, ma, 1);
+                if (!tv->value && ma != 0)
+                {
+                    removeCustomValue(td, iCustom);
+                    status = 0;
+                    goto end;
+                }
             }
             else
             {
@@ -834,6 +852,7 @@ static int _TIFFVSetField(TIFF *tif, uint32_t tag, va_list ap)
                                              "custom tag binary object");
                 if (!tv->value)
                 {
+                    removeCustomValue(td, iCustom);
                     status = 0;
                     goto end;
                 }
@@ -1474,6 +1493,11 @@ static int _TIFFVGetField(TIFF *tif, uint32_t tag, va_list ap)
 
                 if (tv->info->field_tag != tag)
                     continue;
+
+                /* Without a count, the caller cannot tell that there is no
+                 * value. */
+                if (tv->value == NULL && !fip->field_passcount)
+                    break;
 
                 if (fip->field_passcount)
                 {

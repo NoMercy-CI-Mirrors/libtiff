@@ -230,6 +230,12 @@ set_target_properties(test_append_to_strip PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_append_to_strip PRIVATE tiff tiff_port)
 list(APPEND simple_tests test_append_to_strip)
 
+add_executable(test_allocfail_set_field ../placeholder.h)
+target_sources(test_allocfail_set_field PRIVATE test_allocfail_set_field.c)
+set_target_properties(test_allocfail_set_field PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_allocfail_set_field PRIVATE tiff tiff_port)
+list(APPEND simple_tests test_allocfail_set_field)
+
 add_executable(test_ifd_loop_detection ../placeholder.h)
 target_sources(test_ifd_loop_detection PRIVATE test_ifd_loop_detection.c)
 set_target_properties(test_ifd_loop_detection PROPERTIES LINKER_LANGUAGE CXX)
