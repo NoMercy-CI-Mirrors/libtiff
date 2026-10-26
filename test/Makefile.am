@@ -85,7 +85,7 @@ JBIG_DEPENDENT_TESTSCRIPTS_TO_RUN=
 endif
 
 if BUILD_STATIC
-STATIC_CHECK_PROGS=rational_precision2double test_write_read_tags test_transferfunction_write_read
+STATIC_CHECK_PROGS=rational_precision2double test_write_read_tags test_transferfunction_write_read test_overflow_ext
 endif
 
 # Executable programs which need to be built in order to support tests
@@ -287,6 +287,9 @@ test_write_read_tags_LDFLAGS = -static
 test_transferfunction_write_read_SOURCES = test_transferfunction_write_read.c
 test_transferfunction_write_read_LDADD = $(LIBTIFF)
 test_transferfunction_write_read_LDFLAGS = -static
+test_overflow_ext_SOURCES = test_overflow_ext.c
+test_overflow_ext_LDADD = $(LIBTIFF)
+test_overflow_ext_LDFLAGS = -static
 endif
 
 custom_dir_EXIF_231_SOURCES = custom_dir_EXIF_231.c

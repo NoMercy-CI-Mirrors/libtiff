@@ -39,6 +39,7 @@
 #endif
 
 #include <math.h>
+#include <stdbool.h>
 #include <string.h>
 
 #ifdef HAVE_ASSERT_H
@@ -483,6 +484,14 @@ extern "C"
     extern tmsize_t _TIFFAddSSize(TIFF *, tmsize_t, tmsize_t, const char *);
     extern tmsize_t _TIFFCastUInt64ToSSize(TIFF *, uint64_t, const char *);
     extern uint32_t _TIFFCastUInt64ToUInt32(TIFF *, uint64_t, const char *);
+    extern uint32_t _TIFFMultiply32Ext(TIFF *, uint32_t, uint32_t, const char *,
+                                       bool *);
+    extern uint64_t _TIFFAdd64Ext(TIFF *, uint64_t, uint64_t, const char *,
+                                  bool *);
+    extern uint32_t _TIFFCastUInt64ToUInt32Ext(TIFF *, uint64_t, const char *,
+                                               bool *);
+    extern uint32_t _TIFFComputeTileExt(TIFF *, uint32_t, uint32_t, uint32_t,
+                                        uint16_t, bool *);
     extern uint64_t _TIFFComputeRowSize64(TIFF *, uint32_t, uint16_t, uint16_t,
                                           const char *);
     extern tmsize_t _TIFFComputeRowOffset(TIFF *, tmsize_t rowstride, uint32_t,

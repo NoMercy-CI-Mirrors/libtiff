@@ -35,13 +35,7 @@
 uint32_t _TIFFMultiply32(TIFF *tif, uint32_t first, uint32_t second,
                          const char *where)
 {
-    if (second && first > UINT32_MAX / second)
-    {
-        TIFFErrorExtR(tif, where, "Integer overflow in %s", where);
-        return 0;
-    }
-
-    return first * second;
+    return _TIFFMultiply32Ext(tif, first, second, where, NULL);
 }
 
 uint64_t _TIFFMultiply64(TIFF *tif, uint64_t first, uint64_t second,
@@ -59,16 +53,7 @@ uint64_t _TIFFMultiply64(TIFF *tif, uint64_t first, uint64_t second,
 uint64_t _TIFFAdd64(TIFF *tif, uint64_t first, uint64_t second,
                     const char *where)
 {
-    if (first > UINT64_MAX - second)
-    {
-        if (tif != NULL && where != NULL)
-        {
-            TIFFErrorExtR(tif, where, "Integer overflow in %s", where);
-        }
-        return 0;
-    }
-
-    return first + second;
+    return _TIFFAdd64Ext(tif, first, second, where, NULL);
 }
 
 tmsize_t _TIFFMultiplySSize(TIFF *tif, tmsize_t first, tmsize_t second,
@@ -135,12 +120,59 @@ tmsize_t _TIFFCastUInt64ToSSize(TIFF *tif, uint64_t val, const char *module)
 
 uint32_t _TIFFCastUInt64ToUInt32(TIFF *tif, uint64_t val, const char *module)
 {
+    return _TIFFCastUInt64ToUInt32Ext(tif, val, module, NULL);
+}
+
+/*
+ * The *Ext() variants of the checked arithmetic functions behave like the
+ * functions they extend, and additionally set *pOverflowed to true on overflow
+ * when pOverflowed is not NULL. *pOverflowed is never reset to false, so
+ * several operations can share one flag that is tested once. This tells an
+ * overflow apart from a genuine 0 result without re-testing the operands.
+ */
+
+uint32_t _TIFFMultiply32Ext(TIFF *tif, uint32_t first, uint32_t second,
+                            const char *where, bool *pOverflowed)
+{
+    if (second && first > UINT32_MAX / second)
+    {
+        TIFFErrorExtR(tif, where, "Integer overflow in %s", where);
+        if (pOverflowed != NULL)
+            *pOverflowed = true;
+        return 0;
+    }
+
+    return first * second;
+}
+
+uint64_t _TIFFAdd64Ext(TIFF *tif, uint64_t first, uint64_t second,
+                       const char *where, bool *pOverflowed)
+{
+    if (first > UINT64_MAX - second)
+    {
+        if (tif != NULL && where != NULL)
+        {
+            TIFFErrorExtR(tif, where, "Integer overflow in %s", where);
+        }
+        if (pOverflowed != NULL)
+            *pOverflowed = true;
+        return 0;
+    }
+
+    return first + second;
+}
+
+uint32_t _TIFFCastUInt64ToUInt32Ext(TIFF *tif, uint64_t val, const char *module,
+                                    bool *pOverflowed)
+{
     if (val > UINT32_MAX)
     {
         if (tif != NULL && module != NULL)
         {
             TIFFErrorExtR(tif, module, "Integer overflow");
         }
+        if (pOverflowed != NULL)
+            *pOverflowed = true;
         return 0;
     }
     return (uint32_t)val;

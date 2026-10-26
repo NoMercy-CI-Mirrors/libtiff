@@ -180,6 +180,12 @@ if(NOT BUILD_SHARED_LIBS)
   set_target_properties(test_transferfunction_write_read PROPERTIES LINKER_LANGUAGE CXX)
   target_link_libraries(test_transferfunction_write_read PRIVATE tiff)
   list(APPEND simple_tests test_transferfunction_write_read)
+
+  add_executable(test_overflow_ext ../placeholder.h)
+  target_sources(test_overflow_ext PRIVATE test_overflow_ext.c)
+  set_target_properties(test_overflow_ext PROPERTIES LINKER_LANGUAGE CXX)
+  target_link_libraries(test_overflow_ext PRIVATE tiff tiff_port)
+  list(APPEND simple_tests test_overflow_ext)
 endif()
 
 add_executable(custom_dir_EXIF_231 ../placeholder.h)

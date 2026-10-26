@@ -35,11 +35,25 @@
 uint32_t TIFFComputeTile(TIFF *tif, uint32_t x, uint32_t y, uint32_t z,
                          uint16_t s)
 {
+    return _TIFFComputeTileExt(tif, x, y, z, s, NULL);
+}
+
+/*
+ * Same as TIFFComputeTile(), and also sets *pOverflowed to true when the tile
+ * index overflows. 0 is a valid tile index, so the return value alone cannot
+ * tell. Other errors, such as a sample out of range, do not set the flag:
+ * callers are expected to have checked the coordinates with TIFFCheckTile().
+ */
+uint32_t _TIFFComputeTileExt(TIFF *tif, uint32_t x, uint32_t y, uint32_t z,
+                             uint16_t s, bool *pOverflowed)
+{
+    static const char module[] = "TIFFComputeTile";
     TIFFDirectory *td = &tif->tif_dir;
     uint32_t dx = td->td_tilewidth;
     uint32_t dy = td->td_tilelength;
     uint32_t dz = td->td_tiledepth;
     uint32_t tile = 1;
+    bool overflow = false;
 
     if (td->td_imagedepth == 1)
         z = 0;
@@ -54,52 +68,42 @@ uint32_t TIFFComputeTile(TIFF *tif, uint32_t x, uint32_t y, uint32_t z,
         uint32_t xpt = TIFFhowmany_32(td->td_imagewidth, dx);
         uint32_t ypt = TIFFhowmany_32(td->td_imagelength, dy);
         uint32_t zpt = TIFFhowmany_32(td->td_imagedepth, dz);
-        uint32_t xpt_ypt = _TIFFMultiply32(tif, xpt, ypt, "TIFFComputeTile");
+        uint32_t xpt_ypt = _TIFFMultiply32Ext(tif, xpt, ypt, module, &overflow);
         uint32_t xpt_ypt_zpt =
-            _TIFFMultiply32(tif, xpt_ypt, zpt, "TIFFComputeTile");
-        uint64_t z_offset;
-        uint64_t y_offset;
+            _TIFFMultiply32Ext(tif, xpt_ypt, zpt, module, &overflow);
         uint64_t tile64;
 
-        if ((xpt_ypt == 0 && xpt != 0 && ypt != 0) ||
-            (xpt_ypt_zpt == 0 && xpt_ypt != 0 && zpt != 0))
-            return (0);
-
-        z_offset = _TIFFMultiply64(tif, xpt_ypt, z / dz, "TIFFComputeTile");
-        y_offset = _TIFFMultiply64(tif, xpt, y / dy, "TIFFComputeTile");
-        if ((z_offset == 0 && xpt_ypt != 0 && (z / dz) != 0) ||
-            (y_offset == 0 && xpt != 0 && (y / dy) != 0))
-            return (0);
-        tile64 = _TIFFAdd64(tif, z_offset, y_offset, "TIFFComputeTile");
-        if (tile64 == 0 && (z_offset != 0 || y_offset != 0))
-            return (0);
-        tile64 = _TIFFAdd64(tif, tile64, x / dx, "TIFFComputeTile");
-        if (tile64 == 0 && (z_offset != 0 || y_offset != 0 || (x / dx) != 0))
-            return (0);
+        if (overflow)
+            goto overflowed;
+        /* A product of two uint32_t values cannot overflow uint64_t. */
+        tile64 = _TIFFAdd64Ext(tif, (uint64_t)xpt_ypt * (z / dz),
+                               (uint64_t)xpt * (y / dy), module, &overflow);
+        tile64 = _TIFFAdd64Ext(tif, tile64, x / dx, module, &overflow);
+        if (overflow)
+            goto overflowed;
         if (td->td_planarconfig == PLANARCONFIG_SEPARATE)
         {
-            uint64_t sample_offset;
             if (s >= td->td_samplesperpixel)
             {
-                TIFFErrorExtR(
-                    tif, "TIFFComputeTile", "%lu: Sample out of range, max %lu",
-                    (unsigned long)s, (unsigned long)td->td_samplesperpixel);
+                TIFFErrorExtR(tif, module, "%lu: Sample out of range, max %lu",
+                              (unsigned long)s,
+                              (unsigned long)td->td_samplesperpixel);
                 return (0);
             }
-            sample_offset =
-                _TIFFMultiply64(tif, xpt_ypt_zpt, s, "TIFFComputeTile");
-            if (sample_offset == 0 && xpt_ypt_zpt != 0 && s != 0)
-                return (0);
-            tile64 = _TIFFAdd64(tif, sample_offset, tile64, "TIFFComputeTile");
-            if (tile64 == 0 && (sample_offset != 0 || z_offset != 0 ||
-                                y_offset != 0 || (x / dx) != 0))
-                return (0);
+            /* A uint32_t times a uint16_t cannot overflow uint64_t. */
+            tile64 = _TIFFAdd64Ext(tif, (uint64_t)xpt_ypt_zpt * s, tile64,
+                                   module, &overflow);
         }
-        tile = _TIFFCastUInt64ToUInt32(tif, tile64, "TIFFComputeTile");
-        if (tile == 0 && tile64 != 0)
-            return (0);
+        tile = _TIFFCastUInt64ToUInt32Ext(tif, tile64, module, &overflow);
+        if (overflow)
+            goto overflowed;
     }
     return (tile);
+
+overflowed:
+    if (pOverflowed != NULL)
+        *pOverflowed = true;
+    return (0);
 }
 
 /*
