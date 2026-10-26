@@ -707,6 +707,8 @@ void TIFFPrintDirectory(TIFF *tif, FILE *fd, long flags)
                     int tv_size = TIFFFieldSetGetSize(fip);
                     raw_data = _TIFFCheckMalloc(tif, value_count, tv_size,
                                                 "for tag data");
+                    if (raw_data == NULL)
+                        continue;
                     mem_alloc = 1;
                     if (TIFFGetField(tif, tag, raw_data) != 1)
                     {

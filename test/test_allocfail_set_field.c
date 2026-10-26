@@ -40,6 +40,7 @@
 static const char filename[] = "test_allocfail_set_field.tif";
 
 static char description[1000];
+static FILE *sink;
 
 static int write_file(void)
 {
@@ -136,6 +137,11 @@ static int set_inkset(size_t len)
         fprintf(stderr, "InkSet set after a failed TIFFSetField()\n");
         ret = -1;
     }
+    else if (sink)
+    {
+        /* Needs memory for the InkSet value. */
+        TIFFPrintDirectory(tif, sink, 0);
+    }
     description[len] = 'x';
     TIFFClose(tif);
     return ret;
@@ -159,6 +165,7 @@ int main(void)
         if (ret == 1)
             break;
     }
+    sink = tmpfile();
     for (len = 0; len < sizeof(description) - 1; len++)
     {
         int ret = set_inkset(len);
@@ -167,6 +174,8 @@ int main(void)
         if (ret == 1)
             break;
     }
+    if (sink)
+        fclose(sink);
     remove(filename);
     return 0;
 }
