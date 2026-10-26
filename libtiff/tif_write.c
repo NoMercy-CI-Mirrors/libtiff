@@ -450,7 +450,14 @@ tmsize_t TIFFWriteRawStrip(TIFF *tif, uint32_t strip, void *data, tmsize_t cc)
 tmsize_t TIFFWriteTile(TIFF *tif, void *buf, uint32_t x, uint32_t y, uint32_t z,
                        uint16_t s)
 {
+    bool overflow = false;
+    uint32_t tile;
+
     if (!TIFFCheckTile(tif, x, y, z, s))
+        return ((tmsize_t)(-1));
+    /* An overflow returns 0, which is also a valid tile. */
+    tile = _TIFFComputeTileExt(tif, x, y, z, s, &overflow);
+    if (overflow)
         return ((tmsize_t)(-1));
     /*
      * NB: A tile size of -1 is used instead of tif_tilesize knowing
@@ -458,8 +465,7 @@ tmsize_t TIFFWriteTile(TIFF *tif, void *buf, uint32_t x, uint32_t y, uint32_t z,
      *     This is done because the tile size may not be defined until
      *     after the output buffer is setup in TIFFWriteBufferSetup.
      */
-    return (TIFFWriteEncodedTile(tif, TIFFComputeTile(tif, x, y, z, s), buf,
-                                 (tmsize_t)(-1)));
+    return (TIFFWriteEncodedTile(tif, tile, buf, (tmsize_t)(-1)));
 }
 
 /*

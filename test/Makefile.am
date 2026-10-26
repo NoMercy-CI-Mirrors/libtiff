@@ -93,7 +93,7 @@ if TIFF_TESTS
 check_PROGRAMS = \
 	ascii_tag long_tag short_tag strip_rw rewrite custom_dir custom_dir_EXIF_231 \
 	defer_strile_loading defer_strile_writing test_directory test_IFD_enlargement test_open_options \
-	test_append_to_strip test_ifd_loop_detection test_RGBAImage testtypes test_signed_tags thunder_decode $(JPEG_DEPENDENT_CHECK_PROG) $(STATIC_CHECK_PROGS)
+	test_append_to_strip test_ifd_loop_detection test_tile_index_overflow test_RGBAImage testtypes test_signed_tags thunder_decode $(JPEG_DEPENDENT_CHECK_PROG) $(STATIC_CHECK_PROGS)
 endif
 
 # Test scripts to execute
@@ -309,6 +309,8 @@ test_append_to_strip_LDADD = $(LIBTIFF)
 test_ifd_loop_detection_CFLAGS = -DSOURCE_DIR=\"@srcdir@\"
 test_ifd_loop_detection_SOURCES = test_ifd_loop_detection.c
 test_ifd_loop_detection_LDADD = $(LIBTIFF)
+test_tile_index_overflow_SOURCES = test_tile_index_overflow.c
+test_tile_index_overflow_LDADD = $(LIBTIFF)
 test_RGBAImage_SOURCES = test_RGBAImage.c
 test_RGBAImage_LDADD = $(LIBTIFF)
 

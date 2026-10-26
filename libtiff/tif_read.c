@@ -1026,10 +1026,16 @@ int TIFFFillStrip(TIFF *tif, uint32_t strip)
 tmsize_t TIFFReadTile(TIFF *tif, void *buf, uint32_t x, uint32_t y, uint32_t z,
                       uint16_t s)
 {
+    bool overflow = false;
+    uint32_t tile;
+
     if (!TIFFCheckRead(tif, 1) || !TIFFCheckTile(tif, x, y, z, s))
         return ((tmsize_t)(-1));
-    return (TIFFReadEncodedTile(tif, TIFFComputeTile(tif, x, y, z, s), buf,
-                                (tmsize_t)(-1)));
+    /* An overflow returns 0, which is also a valid tile. */
+    tile = _TIFFComputeTileExt(tif, x, y, z, s, &overflow);
+    if (overflow)
+        return ((tmsize_t)(-1));
+    return (TIFFReadEncodedTile(tif, tile, buf, (tmsize_t)(-1)));
 }
 
 /*
@@ -1099,11 +1105,17 @@ tmsize_t _TIFFReadTileAndAllocBuffer(TIFF *tif, void **buf,
                                      tmsize_t bufsizetoalloc, uint32_t x,
                                      uint32_t y, uint32_t z, uint16_t s)
 {
+    bool overflow = false;
+    uint32_t tile;
+
     if (!TIFFCheckRead(tif, 1) || !TIFFCheckTile(tif, x, y, z, s))
         return ((tmsize_t)(-1));
-    return (_TIFFReadEncodedTileAndAllocBuffer(
-        tif, TIFFComputeTile(tif, x, y, z, s), buf, bufsizetoalloc,
-        (tmsize_t)(-1)));
+    /* An overflow returns 0, which is also a valid tile. */
+    tile = _TIFFComputeTileExt(tif, x, y, z, s, &overflow);
+    if (overflow)
+        return ((tmsize_t)(-1));
+    return (_TIFFReadEncodedTileAndAllocBuffer(tif, tile, buf, bufsizetoalloc,
+                                               (tmsize_t)(-1)));
 }
 
 /* Variant of TIFFReadEncodedTile() that does
