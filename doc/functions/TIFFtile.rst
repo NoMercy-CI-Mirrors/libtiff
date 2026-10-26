@@ -57,8 +57,10 @@ in a tile.
 If an error occurs, 0 is returned.
 
 :c:func:`TIFFComputeTile` returns the tile that contains the specified
-coordinates. A valid tile is always returned; out-of-range coordinate
-values are clamped to the bounds of the image. The *x* and *y*
+coordinates. The coordinates are not checked against the bounds of the
+image; use :c:func:`TIFFCheckTile` for that. If an error occurs, such as
+a *sample* out of range or a tile number that does not fit in 32 bits,
+0 is returned. The *x* and *y*
 parameters are always used in calculating a tile. The *z*
 parameter is used if the image is deeper than 1 slice
 (``ImageDepth`` > 1).
