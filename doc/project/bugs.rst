@@ -41,9 +41,16 @@ Please see the :doc:`mailinglist` page for further details.
 Reporting a security issue
 --------------------------
 
-If you'd like to inform us about some kind of security issue that should not
-be disclosed for a period of time, then you can contact the maintainers directly.
-Send a copies of your report to the following people:
+By default, GitLab bug reports are immediately visible to the public
+at large. If a bug report represents a security issue, then knowledge
+from it could be used to form attacks on deployed libtiff. If you
+would like to inform us about a security issue that should not be
+immediately disclosed (e.g. until the fix is submitted to Gitlab),
+then please report a bug (via GitLab) as described above but select
+the checkbox which is described as "Turn on confidentiality: Limit
+visibility to project members with at least the Planner role".
 
-* Frank Warmerdam `<warmerdam@pobox.com>`_
-* Bob Friesenhahn `<bfriesen@simple.dallas.tx.us>`_.
+The libtiff project is primarily maintained by volunteers. Given this,
+please to not expect us to participate in arbitrary "disclosure"
+timelines.  Disclosure occurs when the fix is submitted to the source
+code repository.
