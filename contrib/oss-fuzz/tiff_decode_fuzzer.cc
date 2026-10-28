@@ -24,9 +24,9 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <sstream>
 #include <tiffio.h>
-#include <tiffio.hxx>
+
+#include "tiff_memory_reader.h"
 
 /* stolen from tiffiop.h, which is a private header so we can't just include it
  */
@@ -36,7 +36,7 @@
          ? (t)((v) * (m))                                                      \
          : (t)0)
 
-const uint64_t MAX_SIZE = 500000000;
+const uint64_t MAX_SIZE = TIFF_FUZZ_MAX_ALLOC;
 const uint32_t MAX_STRILES = 4096;
 const int MAX_DIRS = 16;
 
@@ -135,8 +135,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size)
     setenv("JSIMD_FORCENONE", "1", 1);
 #endif
 #endif
-    std::istringstream s(std::string(Data, Data + Size));
-    TIFF *tif = TIFFStreamOpen("MemTIFF", &s);
+    TIFFMemoryReader reader;
+    TIFF *tif = TIFFOpenMemory("MemTIFF", Data, Size, &reader);
     if (!tif)
     {
         return 0;
@@ -156,7 +156,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size)
         TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &w);
         TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &h);
         uint32_t size = __TIFFSafeMultiply(uint32_t, w, h);
-        if (size != 0 && size <= MAX_SIZE)
+        if (size != 0 && size <= MAX_SIZE / sizeof(uint32_t))
         {
             uint32_t *raster =
                 (uint32_t *)_TIFFmalloc(size * sizeof(uint32_t));

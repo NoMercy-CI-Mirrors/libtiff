@@ -24,9 +24,9 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <sstream>
 #include <tiffio.h>
-#include <tiffio.hxx>
+
+#include "tiff_memory_reader.h"
 
 /* stolen from tiffiop.h, which is a private header so we can't just include it
  */
@@ -36,7 +36,7 @@
          ? (t)((v) * (m))                                                      \
          : (t)0)
 
-const uint64_t MAX_SIZE = 500000000;
+const uint64_t MAX_SIZE = TIFF_FUZZ_MAX_ALLOC;
 
 extern "C" void handle_error(const char *unused, const char *unused2,
                              va_list unused3)
@@ -58,13 +58,13 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size)
     setenv("JSIMD_FORCENONE", "1", 1);
 #endif
 #endif
-    std::istringstream s(std::string(Data, Data + Size));
-    TIFF *tif = TIFFStreamOpen("MemTIFF", &s);
+    TIFFMemoryReader reader;
+    TIFF *tif = TIFFOpenMemory("MemTIFF", Data, Size, &reader);
     if (!tif)
     {
         return 0;
     }
-    uint32_t w, h;
+    uint32_t w = 0, h = 0;
     uint32_t *raster;
 
     TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &w);
@@ -118,7 +118,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size)
 
     uint32_t size = __TIFFSafeMultiply(uint32_t, w, h);
 
-    if (size > MAX_SIZE || size == 0)
+    if (size == 0 || size > MAX_SIZE / sizeof(uint32_t))
     {
         TIFFClose(tif);
         return 0;
@@ -133,7 +133,12 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size)
         if (!TIFFIsTiled(tif))
         {
             // Allocate a buffer to hold one scanline
-            tsize_t scanlineSize = TIFFScanlineSize(tif);
+            tmsize_t scanlineSize = TIFFScanlineSize(tif);
+            if (scanlineSize <= 0 ||
+                static_cast<uint64_t>(scanlineSize) > MAX_SIZE)
+            {
+                goto cleanup;
+            }
             void *buffer = _TIFFmalloc(scanlineSize);
             if (!buffer)
             {
