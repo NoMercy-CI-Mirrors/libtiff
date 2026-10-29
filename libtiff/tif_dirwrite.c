@@ -351,11 +351,18 @@ static int TIFFRewriteDirectorySec(TIFF *tif, int isimage, int imagedone,
         else
         {
             uint32_t nextdir;
+            tdir_t nextdirnum = 0;
             nextdir = tif->tif_header.classic.tiff_diroff;
             while (1)
             {
                 uint16_t dircount;
                 uint32_t nextnextdir;
+
+                if (!_TIFFCheckDirNumberAndOffset(tif, nextdirnum, nextdir))
+                {
+                    TIFFErrorExtR(tif, module, "Error IFD loop detected");
+                    return (0);
+                }
 
                 if (!SeekOK(tif, nextdir) || !ReadOK(tif, &dircount, 2))
                 {
@@ -391,6 +398,7 @@ static int TIFFRewriteDirectorySec(TIFF *tif, int isimage, int imagedone,
                     break;
                 }
                 nextdir = nextnextdir;
+                nextdirnum++;
             }
         }
         /* Remove skipped offset from IFD loop directory list. */
@@ -413,11 +421,18 @@ static int TIFFRewriteDirectorySec(TIFF *tif, int isimage, int imagedone,
         else
         {
             uint64_t nextdir;
+            tdir_t nextdirnum = 0;
             nextdir = tif->tif_header.big.tiff_diroff;
             while (1)
             {
                 uint64_t dircount64;
                 uint64_t nextnextdir;
+
+                if (!_TIFFCheckDirNumberAndOffset(tif, nextdirnum, nextdir))
+                {
+                    TIFFErrorExtR(tif, module, "Error IFD loop detected");
+                    return (0);
+                }
 
                 if (!SeekOK(tif, nextdir) || !ReadOK(tif, &dircount64, 8))
                 {
@@ -461,6 +476,7 @@ static int TIFFRewriteDirectorySec(TIFF *tif, int isimage, int imagedone,
                     break;
                 }
                 nextdir = nextnextdir;
+                nextdirnum++;
             }
         }
         /* Remove skipped offset from IFD loop directory list. */

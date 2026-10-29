@@ -561,6 +561,12 @@ static int test_write_link_loop(unsigned int openMode)
             fprintf(stderr, "TIFFOpen(%s, \"a\") failed\n", filename);
             goto failure;
         }
+        /* Leave a dirty directory after the expected write failure. This
+         * exercises the rewrite traversal performed by TIFFClose(). */
+        if (write_data_to_current_directory(tif, i + 1, false))
+        {
+            goto failure;
+        }
         /* Trigger TIFFLinkDirectory() from write path.
          * Error from TIFFWriteDirectory() expected. */
         if (TIFFWriteDirectory(tif))
