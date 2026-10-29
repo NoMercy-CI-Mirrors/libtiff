@@ -1241,8 +1241,15 @@ static int TIFFWriteDirectorySec(TIFF *tif, int isimage, int imagedone,
                    tif->tif_dir.td_dirdatasize_read)))
             {
                 /* Append at end of file and increment to an even offset. */
-                tif->tif_diroff =
-                    (TIFFSeekFile(tif, 0, SEEK_END) + 1) & (~((toff_t)1));
+                const toff_t end_offset = TIFFSeekFile(tif, 0, SEEK_END);
+                if (end_offset == (toff_t)-1)
+                {
+                    TIFFErrorExtR(tif, module,
+                                  "Error seeking to end of file before "
+                                  "writing custom directory");
+                    goto bad;
+                }
+                tif->tif_diroff = (end_offset + 1) & (~((toff_t)1));
             }
         }
         /* Return IFD offset */

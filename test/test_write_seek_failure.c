@@ -1,5 +1,6 @@
 /*
- * Regression test for a failed SEEK_END in TIFFLinkDirectory().
+ * Regression test for a failed SEEK_END in TIFFLinkDirectory() and when
+ * appending a custom directory in TIFFWriteDirectorySec().
  *
  * The second TIFFWriteDirectory() must report the seek error without changing
  * the in-memory file. A retry after the transient error must then succeed.
@@ -150,9 +151,52 @@ static int test_mode(const char *mode)
     return 0;
 }
 
+static int test_custom_directory(const char *mode)
+{
+    MemoryFile file = {{0}, 0, 0, 0, 0};
+    TIFF *tif = TIFFClientOpen("seek-failure-custom", mode, (thandle_t)&file,
+                               read_proc, write_proc, seek_proc, close_proc,
+                               size_proc, map_proc, unmap_proc);
+    if (tif == NULL)
+        return 1;
+
+    if (!set_fields(tif) || !TIFFWriteDirectory(tif))
+        return 1;
+
+    if (TIFFCreateEXIFDirectory(tif) != 0 ||
+        !TIFFSetField(tif, EXIFTAG_EXPOSURETIME, 0.5))
+        return 1;
+
+    const toff_t size_before_failure = file.size;
+    uint64_t diroff = 0;
+    file.fail_next_seek_to_end = 1;
+    if (TIFFWriteCustomDirectory(tif, &diroff) != 0)
+    {
+        fprintf(stderr,
+                "TIFFWriteCustomDirectory() ignored a failed seek\n");
+        return 1;
+    }
+    if (!file.observed_seek_failure || file.size != size_before_failure)
+    {
+        fprintf(stderr, "failed seek unexpectedly changed the output\n");
+        return 1;
+    }
+
+    if (!TIFFWriteCustomDirectory(tif, &diroff) || diroff == 0)
+    {
+        fprintf(stderr, "TIFFWriteCustomDirectory() retry failed\n");
+        return 1;
+    }
+
+    TIFFClose(tif);
+    return 0;
+}
+
 int main(void)
 {
     int ret = test_mode("w");
     ret |= test_mode("w8");
+    ret |= test_custom_directory("w");
+    ret |= test_custom_directory("w8");
     return ret;
 }
