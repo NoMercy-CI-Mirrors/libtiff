@@ -93,7 +93,7 @@ if TIFF_TESTS
 check_PROGRAMS = \
 	ascii_tag long_tag short_tag strip_rw rewrite custom_dir custom_dir_EXIF_231 \
 	defer_strile_loading defer_strile_writing test_directory test_IFD_enlargement test_open_options \
-	test_append_to_strip test_ifd_loop_detection test_RGBAImage testtypes test_signed_tags $(JPEG_DEPENDENT_CHECK_PROG) $(STATIC_CHECK_PROGS)
+	test_append_to_strip test_write_seek_failure test_ifd_loop_detection test_RGBAImage testtypes test_signed_tags $(JPEG_DEPENDENT_CHECK_PROG) $(STATIC_CHECK_PROGS)
 endif
 
 # Test scripts to execute
@@ -301,6 +301,8 @@ test_open_options_SOURCES = test_open_options.c
 test_open_options_LDADD = $(LIBTIFF)
 test_append_to_strip_SOURCES = test_append_to_strip.c
 test_append_to_strip_LDADD = $(LIBTIFF)
+test_write_seek_failure_SOURCES = test_write_seek_failure.c
+test_write_seek_failure_LDADD = $(LIBTIFF)
 test_ifd_loop_detection_CFLAGS = -DSOURCE_DIR=\"@srcdir@\"
 test_ifd_loop_detection_SOURCES = test_ifd_loop_detection.c
 test_ifd_loop_detection_LDADD = $(LIBTIFF)
