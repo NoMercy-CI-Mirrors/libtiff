@@ -26,10 +26,13 @@ have unfortunately been lost.
 Reporting a bug
 ---------------
 
-If you think you've discovered a bug, please first check to see if it is
-already known by looking at the list of already reported bugs. Also, please
-verify that the problem is still reproducible with the current development
-software from GitLab.
+If you think you've discovered a bug, please first check to see if it
+is already known by looking at the list of already reported
+bugs. Please verify that the problem is still reproducible with the
+current development software from GitLab. If you are capable of
+developing a solution for the bug, please include a proposed
+improvement via a subsequent merge request. Bug reports with an
+associated merge request are resolved most quickly.
 
 If you'd like to enter a new bug report, you can create a
 `new GitLab issue <https://gitlab.com/libtiff/libtiff/issues/new/>`_
@@ -41,14 +44,15 @@ Please see the :doc:`mailinglist` page for further details.
 Reporting a security issue
 --------------------------
 
-By default, GitLab bug reports are immediately visible to the public
-at large. If a bug report represents a security issue, then knowledge
-from it could be used to form attacks on deployed libtiff. If you
-would like to inform us about a security issue that should not be
-immediately disclosed (e.g. until the fix is submitted to Gitlab),
-then please report a bug (via GitLab) as described above but select
-the checkbox which is described as "Turn on confidentiality: Limit
-visibility to project members with at least the Planner role".
+If a bug represents a dire security issue that should not be
+immediately disclosed, then you may report the bug as described above,
+but select the checkbox which is described as "Turn on
+confidentiality: Limit visibility to project members with at least the
+Planner role". This option should be used sparingly given that it
+reduces the number of volunteers available to help with addressing the
+bug, and prevents others from seeing that the issue has already been
+reported.  We reserve the right to de-select this checkbox and make
+the bug report visible to all.
 
 The libtiff project is primarily maintained by volunteers. Given this,
 please to not expect us to participate in arbitrary "disclosure"
