@@ -172,6 +172,8 @@ static void _TIFFEmitErrorAboveMaxCumulatedMemAlloc(TIFF *tif,
 /** malloc() version that takes into account memory-specific open options */
 void *_TIFFmallocExt(TIFF *tif, tmsize_t s)
 {
+    if (s <= 0)
+        return NULL;
     if (tif != NULL && tif->tif_max_single_mem_alloc > 0 &&
         s > tif->tif_max_single_mem_alloc)
     {
@@ -234,6 +236,11 @@ void *_TIFFcallocExt(TIFF *tif, tmsize_t nmemb, tmsize_t siz)
 /** realloc() version that takes into account memory-specific open options */
 void *_TIFFreallocExt(TIFF *tif, void *p, tmsize_t s)
 {
+    if (s <= 0)
+    {
+        _TIFFfreeExt(tif, p);
+        return NULL;
+    }
     if (tif != NULL && tif->tif_max_single_mem_alloc > 0 &&
         s > tif->tif_max_single_mem_alloc)
     {
