@@ -18,7 +18,7 @@ Synopsis
 
 .. c:function:: int TIFFRGBAImageBegin(TIFFRGBAImage* img, TIFF* tif, int stopOnError, char emsg[1024])
 
-.. c:function:: int TIFFRGBAImageGet(TIFFRGBAImage* img, uint32_t* raster, uint32_t width, uint32_t height)
+.. c:function:: int TIFFRGBAImageGet(TIFFRGBAImage* img, uint32_t* raster, uint32_t rwidth, uint32_t rheight)
 
 .. c:function:: void TIFFRGBAImageEnd(TIFFRGBAImage* img)
 
@@ -51,16 +51,19 @@ space for each of the decoded rasters, multiple state blocks can
 be managed and then calls can be made to :c:func:`TIFFRGBAImageGet`
 as needed to display an image.
 
-The generated raster is assumed to be an array of
-*width* × *height*
-32-bit entries, where *width* must be less than or equal to the width of
-the image (*height* may be any non-zero size).
+The user supplied *raster* is assumed to be an array of *rwidth* × *rheight*
+32-bit entries.
+
+- *rheight* may be any non-zero size.
+- Up to libtiff v4.7.2, *rwidth* must be less than or equal to the width of the image.
+- Starting with version v4.7.3, *rwidth* may be any non-zero size.
+
 If the raster dimensions are smaller than the image, the image data
 is cropped to the raster bounds.
-If the raster height is greater than that of the image, then the
-image data are placed in the lower part of the raster.
+If the raster dimensions are greater than that of the image, then the
+image data are placed in the lower-left part of the raster.
 (Note that the raster is assumed to be organized such that the pixel
-at location (*x*, *y*) is *raster* [ *y* × *width* + *x* ];
+at location (*x*, *y*) is *raster* [ *y* × *rwidth* + *x* ];
 with the raster origin in the *lower-left hand corner*.)
 
 Raster pixels are 8-bit packed red, green, blue, alpha samples.
