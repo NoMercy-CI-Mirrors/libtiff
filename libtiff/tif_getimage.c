@@ -880,6 +880,28 @@ static int calcCopyToRasterParameter(TIFFRGBAImage *img, uint32_t *raster,
 }
 
 /*
+ * The sub-byte put routines (bitspersample 1/2/4) always begin reading at a
+ * byte boundary, so a horizontal offset whose bit position is not a multiple
+ * of 8 would make them emit pixels shifted left within the first byte.  Reject
+ * such a request rather than return wrong content.  bitoffset is the bit
+ * position of the first sample to read (a multiple of 8 for bps >= 8).
+ */
+static int checkColOffsetByteAligned(TIFFRGBAImage *img, const char *module,
+                                     tmsize_t bitoffset)
+{
+    if ((bitoffset % 8) != 0)
+    {
+        TIFFErrorExtR(img->tif, TIFFFileName(img->tif),
+                      "%s: column offset %d does not align to a byte boundary "
+                      "for bitspersample %u / samplesperpixel %u",
+                      module, img->col_offset, (unsigned)img->bitspersample,
+                      (unsigned)img->samplesperpixel);
+        return 0;
+    }
+    return 1;
+}
+
+/*
  * Get an tile-organized image that has
  *	PlanarConfiguration contiguous if SamplesPerPixel > 1
  * or
@@ -947,6 +969,11 @@ static int gtTileContig(TIFFRGBAImage *img, uint32_t *raster, uint32_t rwidth,
         return 0;
     }
     leftmost_toskew = (int32_t)skew_i64;
+    if (!checkColOffsetByteAligned(img, "gtTileContig",
+                                   (tmsize_t)leftmost_fromskew *
+                                       img->samplesperpixel *
+                                       img->bitspersample))
+        return 0;
     for (row = 0; ret != 0 && row < hcpy; row += nrow)
     {
         rowstoread = th - ((uint32_t)row + (uint32_t)img->row_offset) % th;
@@ -970,7 +997,9 @@ static int gtTileContig(TIFFRGBAImage *img, uint32_t *raster, uint32_t rwidth,
             }
             pos = (((uint32_t)row + (uint32_t)img->row_offset) % th) *
                       TIFFTileRowSize(tif) +
-                  ((tmsize_t)fromskew * img->samplesperpixel);
+                  (((tmsize_t)fromskew * img->samplesperpixel *
+                    img->bitspersample) /
+                   8);
             if (tocol + this_tw > wcpy)
             {
                 /*
@@ -1116,6 +1145,10 @@ static int gtTileSeparate(TIFFRGBAImage *img, uint32_t *raster, uint32_t rwidth,
         return 0;
     }
     leftmost_toskew = (int32_t)skew_i64;
+    if (!checkColOffsetByteAligned(img, "gtTileSeparate",
+                                   (tmsize_t)leftmost_fromskew *
+                                       img->bitspersample))
+        return 0;
     for (row = 0; ret != 0 && row < hcpy; row += nrow)
     {
         rowstoread = th - ((uint32_t)row + (uint32_t)img->row_offset) % th;
@@ -1192,7 +1225,7 @@ static int gtTileSeparate(TIFFRGBAImage *img, uint32_t *raster, uint32_t rwidth,
              * multiplied by img->samplesperpixel. */
             pos = (tmsize_t)((uint32_t)((int32_t)row + img->row_offset) % th) *
                       TIFFTileRowSize(tif) +
-                  (tmsize_t)fromskew;
+                  ((tmsize_t)fromskew * img->bitspersample / 8);
             if (tocol + this_tw > wcpy)
             {
                 /*
@@ -1282,6 +1315,12 @@ static int gtStripContig(TIFFRGBAImage *img, uint32_t *raster, uint32_t rwidth,
         return 0;
     }
 
+    if (!checkColOffsetByteAligned(img, "gtStripContig",
+                                   (tmsize_t)img->col_offset *
+                                       img->samplesperpixel *
+                                       img->bitspersample))
+        return 0;
+
     TIFFGetFieldDefaulted(tif, TIFFTAG_YCBCRSUBSAMPLING, &subsamplinghor,
                           &subsamplingver);
     if (subsamplingver == 0)
@@ -1349,7 +1388,9 @@ static int gtStripContig(TIFFRGBAImage *img, uint32_t *raster, uint32_t rwidth,
         pos = (tmsize_t)((uint32_t)((int32_t)row + img->row_offset) %
                          rowsperstrip) *
                   scanline +
-              ((tmsize_t)img->col_offset * img->samplesperpixel);
+              (((tmsize_t)img->col_offset * img->samplesperpixel *
+                img->bitspersample) /
+               8);
         /* roffset = offset into raster, where to write. */
         tmsize_t roffset = (tmsize_t)y * rwidth;
         (*put)(img, p_raster_start + roffset, 0, y, wcpy, nrow, fromskew,
@@ -1423,6 +1464,11 @@ static int gtStripSeparate(TIFFRGBAImage *img, uint32_t *raster,
     {
         return 0;
     }
+
+    if (!checkColOffsetByteAligned(img, "gtStripSeparate",
+                                   (tmsize_t)img->col_offset *
+                                       img->bitspersample))
+        return 0;
 
     stripsize = TIFFStripSize(tif);
     bufsize =
@@ -1535,7 +1581,7 @@ static int gtStripSeparate(TIFFRGBAImage *img, uint32_t *raster,
         pos = (tmsize_t)((uint32_t)((int32_t)row + img->row_offset) %
                          rowsperstrip) *
                   scanline +
-              (tmsize_t)img->col_offset;
+              ((tmsize_t)img->col_offset * img->bitspersample / 8);
         tmsize_t roffset = (tmsize_t)y * rwidth;
         (*put)(img, p_raster_start + roffset, 0, y, wcpy, nrow, fromskew,
                toskew, p0 + pos, p1 + pos, p2 + pos,
