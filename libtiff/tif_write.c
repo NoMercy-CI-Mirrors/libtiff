@@ -279,6 +279,14 @@ tmsize_t TIFFWriteEncodedStrip(TIFF *tif, uint32_t strip, void *data,
                 "Can not grow image by strips when using separate planes");
             return ((tmsize_t)-1);
         }
+        /* TIFFGrowStrips() below extends the strip arrays by exactly one
+         * entry, so only the index immediately past the end can be served. */
+        if (strip > td->td_nstrips)
+        {
+            TIFFErrorExtR(tif, module, "%lu: Strip out of range, max %lu",
+                          (unsigned long)strip, (unsigned long)td->td_nstrips);
+            return ((tmsize_t)-1);
+        }
         if (!TIFFGrowStrips(tif, 1, module))
             return ((tmsize_t)-1);
         td->td_stripsperimage =
@@ -395,6 +403,14 @@ tmsize_t TIFFWriteRawStrip(TIFF *tif, uint32_t strip, void *data, tmsize_t cc)
          * strips/image will initially be 1 (since it
          * can't be deduced until the imagelength is known).
          */
+        /* TIFFGrowStrips() below extends the strip arrays by exactly one
+         * entry, so only the index immediately past the end can be served. */
+        if (strip > td->td_nstrips)
+        {
+            TIFFErrorExtR(tif, module, "%lu: Strip out of range, max %lu",
+                          (unsigned long)strip, (unsigned long)td->td_nstrips);
+            return ((tmsize_t)-1);
+        }
         if (strip >= td->td_stripsperimage)
             td->td_stripsperimage =
                 TIFFhowmany_32(td->td_imagelength, td->td_rowsperstrip);
@@ -830,6 +846,12 @@ static int TIFFAppendToStrip(TIFF *tif, uint32_t strip, uint8_t *data,
     if (strip == NOSTRIP)
     {
         TIFFErrorExtR(tif, module, "Strip number not valid (NOSTRIP)");
+        return (0);
+    }
+    if (strip >= td->td_nstrips)
+    {
+        TIFFErrorExtR(tif, module, "%lu: Strip out of range, max %lu",
+                      (unsigned long)strip, (unsigned long)td->td_nstrips);
         return (0);
     }
 
