@@ -180,6 +180,14 @@ static int NeXTPreDecode(TIFF *tif, uint16_t s)
                       td->td_bitspersample);
         return (0);
     }
+    if (td->td_samplesperpixel != 1 &&
+        td->td_planarconfig != PLANARCONFIG_SEPARATE)
+    {
+        TIFFErrorExtR(tif, module,
+                      "Samples/pixel shall be 1 for NeXT decoding, "
+                      "or PlanarConfiguration must be set to Separate.");
+        return (0);
+    }
     return (1);
 }
 
