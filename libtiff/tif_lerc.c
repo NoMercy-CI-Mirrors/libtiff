@@ -1112,8 +1112,17 @@ static int LERCPostEncode(TIFF *tif)
 #if LERC_AT_LEAST_VERSION(3, 0, 0)
     if (mask_count > 1)
     {
-        estimated_compressed_size +=
-            (unsigned int)(nb_pixels * (unsigned int)mask_count / 8);
+        uint64_t mask_overhead =
+            ((uint64_t)sp->segment_width * sp->segment_height *
+             (unsigned)mask_count + 7) /
+            8;
+        if (mask_overhead > UINT_MAX - estimated_compressed_size)
+        {
+            TIFFErrorExtR(tif, module,
+                          "Integer overflow in estimated compressed size");
+            return 0;
+        }
+        estimated_compressed_size += (unsigned int)mask_overhead;
     }
 #endif
 
