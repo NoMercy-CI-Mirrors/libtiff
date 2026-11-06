@@ -26,34 +26,42 @@ Synopsis
 
     :c:expr:`(((abgr) >> 24) & 0xff)`
 
-.. c:function:: int TIFFReadRGBAImage(TIFF* tif, uint32_t width, uint32_t height, uint32_t* raster, int stopOnError)
+.. c:function:: int TIFFReadRGBAImage(TIFF* tif, uint32_t rwidth, uint32_t rheight, uint32_t* raster, int stopOnError)
 
-.. c:function:: int TIFFReadRGBAImageOriented(TIFF* tif, uint32_t width, uint32_t height, uint32_t * raster, int orientation, int stopOnError)
+.. c:function:: int TIFFReadRGBAImageOriented(TIFF* tif, uint32_t rwidth, uint32_t rheight, uint32_t * raster, int req_orientation, int stopOnError)
 
 Description
 -----------
 
 :c:func:`TIFFReadRGBAImage` reads a strip- or tile-based image into memory,
 storing the result in the user supplied *raster*.
-The raster is assumed to be an array of *width* × *height* 32-bit entries,
-where *width* must be less than or equal to the width of the image
-(*height* may be any non-zero size).
+The raster is assumed to be an array of *rwidth* × *rheight* 32-bit entries.
+
+- *rheight* may be any non-zero size.
+- Up to libtiff v4.7.2, *rwidth* must be less than or equal to the width of the image.
+- Starting with version v4.7.3, *rwidth* may be any non-zero size.
+
 If the raster dimensions are smaller than the image, the image data is
 cropped to the raster bounds.
-If the raster height is greater than that of the image, then the image data
-are placed in the lower part of the raster.
+If the raster dimensions are greater than that of the image, then the image data
+are placed in the lower-left part of the raster.
 (Note that the raster is assume to be organized such that the pixel
-at location (*x*, *y*) is *raster* [ *y* × *width* + *x* ];
+at location (*x*, *y*) is *raster* [ *y* × *rwidth* + *x* ];
 with the raster origin in the lower-left hand corner.)
 
 :c:func:`TIFFReadRGBAImageOriented` works like :c:func:`TIFFReadRGBAImage`
 except that the user can specify the raster origin position with the
-*orientation* parameter. Four orientations are supported:
+*req_orientation* parameter. The four canonical orientations are:
 
 * :c:macro:`ORIENTATION_TOPLEFT`: origin in top-left corner,
 * :c:macro:`ORIENTATION_TOPRIGHT`: origin in top-right corner,
-* :c:macro:`ORIENTATION_BOTLEFT`: origin in bottom-left corner
+* :c:macro:`ORIENTATION_BOTLEFT`: origin in bottom-left corner,
 * :c:macro:`ORIENTATION_BOTRIGHT`: origin in bottom-right corner.
+
+The four transposed orientations (:c:macro:`ORIENTATION_LEFTTOP`,
+:c:macro:`ORIENTATION_RIGHTTOP`, :c:macro:`ORIENTATION_RIGHTBOT`,
+:c:macro:`ORIENTATION_LEFTBOT`) are also accepted and treated as
+equivalent to their non-transposed counterparts.
 
 If you choose :c:macro:`ORIENTATION_BOTLEFT`, the result will be the same
 as returned by the :c:func:`TIFFReadRGBAImage`.
