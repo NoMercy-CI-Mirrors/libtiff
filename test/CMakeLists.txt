@@ -244,6 +244,12 @@ target_link_libraries(test_RGBAImage PRIVATE tiff tiff_port)
 target_compile_definitions(test_RGBAImage PRIVATE SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\")
 list(APPEND simple_tests test_RGBAImage)
 
+add_executable(test_RGBAImageYCbCrOffsets ../placeholder.h)
+target_sources(test_RGBAImageYCbCrOffsets PRIVATE test_RGBAImageYCbCrOffsets.c)
+set_target_properties(test_RGBAImageYCbCrOffsets PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_RGBAImageYCbCrOffsets PRIVATE tiff tiff_port)
+list(APPEND simple_tests test_RGBAImageYCbCrOffsets)
+
 # Apply C++ compatibility mode to all test targets if enabled
 foreach(target ${simple_tests})
   tiff_target_compile_as_cxx(${target})
