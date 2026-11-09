@@ -902,6 +902,34 @@ static int checkColOffsetByteAligned(TIFFRGBAImage *img, const char *module,
 }
 
 /*
+ * Return the byte offset of the first sample of a packed YCbCr block row
+ * after skipping "samples" pixels, or -1 if the offset does not fall on a
+ * sampling block boundary.
+ *
+ * A horizontal YCbCr sampling block stores HorizontalSampling *
+ * VerticalSampling Y samples followed by one Cb and one Cr sample, so the
+ * generic samples * samplesperpixel * bitspersample / 8 calculation is only
+ * correct for some layouts.  Starting the packed YCbCr put routines in the
+ * middle of a block makes them walk past the end of the decoded strip or
+ * tile buffer, so such offsets have to be rejected.
+ */
+static tmsize_t getPackedYCbCrColOffset(TIFFRGBAImage *img, tmsize_t samples)
+{
+    TIFF *tif = img->tif;
+    uint16_t hsub, vsub;
+
+    if (img->photometric != PHOTOMETRIC_YCBCR || img->bitspersample != 8 ||
+        img->samplesperpixel != 3 || isUpSampled(tif))
+        return samples * img->samplesperpixel * img->bitspersample / 8;
+
+    TIFFGetFieldDefaulted(tif, TIFFTAG_YCBCRSUBSAMPLING, &hsub, &vsub);
+    if (hsub == 0 || vsub == 0 || (samples % hsub) != 0)
+        return -1;
+    return (samples / hsub) * (tmsize_t)(hsub * vsub + 2) *
+           (img->bitspersample / 8);
+}
+
+/*
  * Get an tile-organized image that has
  *	PlanarConfiguration contiguous if SamplesPerPixel > 1
  * or
@@ -995,11 +1023,19 @@ static int gtTileContig(TIFFRGBAImage *img, uint32_t *raster, uint32_t rwidth,
                 ret = 0;
                 break;
             }
+            tmsize_t coloffset = getPackedYCbCrColOffset(img, fromskew);
+            if (coloffset < 0)
+            {
+                TIFFErrorExtR(tif, TIFFFileName(tif),
+                              "gtTileContig: column offset %d does not align "
+                              "to the YCbCr subsampling block",
+                              img->col_offset);
+                ret = 0;
+                break;
+            }
             pos = (((uint32_t)row + (uint32_t)img->row_offset) % th) *
                       TIFFTileRowSize(tif) +
-                  (((tmsize_t)fromskew * img->samplesperpixel *
-                    img->bitspersample) /
-                   8);
+                  coloffset;
             if (tocol + this_tw > wcpy)
             {
                 /*
@@ -1321,6 +1357,16 @@ static int gtStripContig(TIFFRGBAImage *img, uint32_t *raster, uint32_t rwidth,
                                        img->bitspersample))
         return 0;
 
+    tmsize_t coloffset = getPackedYCbCrColOffset(img, img->col_offset);
+    if (coloffset < 0)
+    {
+        TIFFErrorExtR(tif, TIFFFileName(tif),
+                      "gtStripContig: column offset %d does not align to the "
+                      "YCbCr subsampling block",
+                      img->col_offset);
+        return 0;
+    }
+
     TIFFGetFieldDefaulted(tif, TIFFTAG_YCBCRSUBSAMPLING, &subsamplinghor,
                           &subsamplingver);
     if (subsamplingver == 0)
@@ -1388,9 +1434,7 @@ static int gtStripContig(TIFFRGBAImage *img, uint32_t *raster, uint32_t rwidth,
         pos = (tmsize_t)((uint32_t)((int32_t)row + img->row_offset) %
                          rowsperstrip) *
                   scanline +
-              (((tmsize_t)img->col_offset * img->samplesperpixel *
-                img->bitspersample) /
-               8);
+              coloffset;
         /* roffset = offset into raster, where to write. */
         tmsize_t roffset = (tmsize_t)y * rwidth;
         (*put)(img, p_raster_start + roffset, 0, y, wcpy, nrow, fromskew,
