@@ -1228,17 +1228,25 @@ static tmsize_t TIFFReadRawTile1(TIFF *tif, uint32_t tile, void *buf,
     }
     else
     {
-        tmsize_t ma, mb;
+        tmsize_t ma = 0; /* assigned in if-condition below */
         tmsize_t n;
-        ma = (tmsize_t)TIFFGetStrileOffset(tif, tile);
-        mb = ma + size;
         if ((TIFFGetStrileOffset(tif, tile) > (uint64_t)TIFF_TMSIZE_T_MAX) ||
-            (ma > tif->tif_size))
+            ((ma = (tmsize_t)TIFFGetStrileOffset(tif, tile)) > tif->tif_size))
+        {
             n = 0;
-        else if ((mb < ma) || (mb < size) || (mb > tif->tif_size))
-            n = tif->tif_size - ma;
+        }
+        else if (ma > TIFF_TMSIZE_T_MAX - size)
+        {
+            n = 0;
+        }
         else
-            n = size;
+        {
+            tmsize_t mb = ma + size;
+            if (mb > tif->tif_size)
+                n = tif->tif_size - ma;
+            else
+                n = size;
+        }
         if (n != size)
         {
             TIFFErrorExtR(tif, module,
