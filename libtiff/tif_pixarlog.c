@@ -1867,7 +1867,12 @@ int TIFFInitPixarLog(TIFF *tif, int scheme)
     /*
      * build the companding tables
      */
-    PixarLogMakeTables(tif, sp);
+    if (!PixarLogMakeTables(tif, sp))
+    {
+        TIFFErrorExtR(tif, module,
+                      "Failed to allocate memory for PixarLog tables");
+        return (0);
+    }
 
     return (1);
 bad:
