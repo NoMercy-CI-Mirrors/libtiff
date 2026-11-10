@@ -739,11 +739,25 @@ static void setImage1(const uint8_t *br, uint32_t rw, uint32_t rh)
     }
 }
 
-static void setImage(const uint8_t *br, uint32_t rw, uint32_t rh)
+static int setImage(const uint8_t *br, uint32_t rw, uint32_t rh)
 {
-    filterWidth = (uint16_t)ceil((double)rw / (double)tnw);
+    uint64_t requiredWidth;
+
+    if (tnw == 0)
+    {
+        TIFFError("thumbnail", "Invalid thumbnail width");
+        return 0;
+    }
+    requiredWidth = ((uint64_t)rw + tnw - 1) / tnw;
+    if (requiredWidth == 0 || requiredWidth > UINT16_MAX)
+    {
+        TIFFError("thumbnail", "Image width exceeds the scaling limit");
+        return 0;
+    }
+    filterWidth = (uint16_t)requiredWidth;
     setupStepTables(rw);
     setImage1(br, rw, rh);
+    return 1;
 }
 
 static int generateThumbnail(TIFF *in, TIFF *out)
@@ -799,7 +813,11 @@ static int generateThumbnail(TIFF *in, TIFF *out)
     }
     TIFFGetField(in, TIFFTAG_PHOTOMETRIC, &photometric);
     setupCmap();
-    setImage(raster, sw, sh);
+    if (!setImage(raster, sw, sh))
+    {
+        _TIFFfree(raster);
+        return 0;
+    }
     _TIFFfree(raster);
 
     TIFFSetField(out, TIFFTAG_SUBFILETYPE, FILETYPE_REDUCEDIMAGE);
