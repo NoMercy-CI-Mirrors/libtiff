@@ -396,7 +396,12 @@ static int LogLuvDecodeStrip(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
     if (rowlen == 0)
         return 0;
 
-    assert(cc % rowlen == 0);
+    if (cc % rowlen != 0)
+    {
+        TIFFErrorExtR(tif, "LogLuvDecodeStrip",
+                      "Fractional scanline cannot be read");
+        return 0;
+    }
     while (cc && (*tif->tif_decoderow)(tif, bp, rowlen, s))
     {
         bp += rowlen;
@@ -417,7 +422,12 @@ static int LogLuvDecodeTile(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
     if (rowlen == 0)
         return 0;
 
-    assert(cc % rowlen == 0);
+    if (cc % rowlen != 0)
+    {
+        TIFFErrorExtR(tif, "LogLuvDecodeTile",
+                      "Fractional scanline cannot be read");
+        return 0;
+    }
     while (cc && (*tif->tif_decoderow)(tif, bp, rowlen, s))
     {
         bp += rowlen;
@@ -713,7 +723,12 @@ static int LogLuvEncodeStrip(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
     if (rowlen == 0)
         return 0;
 
-    assert(cc % rowlen == 0);
+    if (cc % rowlen != 0)
+    {
+        TIFFErrorExtR(tif, "LogLuvEncodeStrip",
+                      "Fractional scanline cannot be written");
+        return 0;
+    }
     while (cc && (*tif->tif_encoderow)(tif, bp, rowlen, s) == 1)
     {
         bp += rowlen;
@@ -733,7 +748,12 @@ static int LogLuvEncodeTile(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
     if (rowlen == 0)
         return 0;
 
-    assert(cc % rowlen == 0);
+    if (cc % rowlen != 0)
+    {
+        TIFFErrorExtR(tif, "LogLuvEncodeTile",
+                      "Fractional scanline cannot be written");
+        return 0;
+    }
     while (cc && (*tif->tif_encoderow)(tif, bp, rowlen, s) == 1)
     {
         bp += rowlen;
