@@ -54,6 +54,7 @@ static int PackBitsPostEncode(TIFF *tif)
 {
     if (tif->tif_data)
         _TIFFfreeExt(tif, tif->tif_data);
+    tif->tif_data = NULL;
     return (1);
 }
 
@@ -62,11 +63,13 @@ static int PackBitsPostEncode(TIFF *tif)
  */
 static int PackBitsEncode(TIFF *tif, uint8_t *buf, tmsize_t cc, uint16_t s)
 {
+    static const char module[] = "PackBitsEncode";
     unsigned char *bp = (unsigned char *)buf;
     uint8_t *op;
     uint8_t *ep;
     uint8_t *lastliteral;
     long n, slop;
+    tmsize_t need;
     int b;
     enum
     {
@@ -118,6 +121,26 @@ static int PackBitsEncode(TIFF *tif, uint8_t *buf, tmsize_t cc, uint16_t s)
                     return (0);
                 op = tif->tif_rawcp;
             }
+        }
+        /*
+         * The flush above does not guarantee room for the next unit when the
+         * caller's raw buffer is small: a carried literal can fill it, and an
+         * empty buffer may still be smaller than the two bytes written next.
+         * Check the room the switch below needs and refuse rather than write
+         * past the end of the buffer.  Extending a literal needs one byte;
+         * LITERAL_RUN writes nothing and restarts the loop.
+         */
+        need =
+            (state == LITERAL && n == 1) ? 1 : (state == LITERAL_RUN ? 0 : 2);
+        if ((tmsize_t)(ep - op) < need)
+        {
+            tif->tif_rawcc += (tmsize_t)(op - tif->tif_rawcp);
+            tif->tif_rawcp = op;
+            TIFFErrorExtR(tif, module,
+                          "Raw data buffer of %" TIFF_SSIZE_FORMAT
+                          " bytes is too small for PackBits encoding",
+                          tif->tif_rawdatasize);
+            return (0);
         }
         switch (state)
         {
@@ -230,8 +253,15 @@ static int PackBitsEncodeChunk(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
         if (cc < chunk)
             chunk = cc;
 
-        if (PackBitsEncode(tif, bp, chunk, s) < 0)
-            return (-1);
+        if (!PackBitsEncode(tif, bp, chunk, s))
+        {
+            /*
+             * The caller returns without calling tif_postencode, so release
+             * the per-strip state that tif_preencode allocated here.
+             */
+            PackBitsPostEncode(tif);
+            return (0);
+        }
         bp += chunk;
         cc -= chunk;
     }

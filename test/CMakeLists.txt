@@ -230,6 +230,12 @@ set_target_properties(test_append_to_strip PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_append_to_strip PRIVATE tiff tiff_port)
 list(APPEND simple_tests test_append_to_strip)
 
+add_executable(test_packbits_small_write_buffer ../placeholder.h)
+target_sources(test_packbits_small_write_buffer PRIVATE test_packbits_small_write_buffer.c)
+set_target_properties(test_packbits_small_write_buffer PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_packbits_small_write_buffer PRIVATE tiff tiff_port)
+list(APPEND simple_tests test_packbits_small_write_buffer)
+
 add_executable(test_ifd_loop_detection ../placeholder.h)
 target_sources(test_ifd_loop_detection PRIVATE test_ifd_loop_detection.c)
 set_target_properties(test_ifd_loop_detection PROPERTIES LINKER_LANGUAGE CXX)
