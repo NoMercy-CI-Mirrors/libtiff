@@ -333,6 +333,17 @@ struct TIFFOpenOptions
          ? (t)(((t)(v)) * ((t)(m)))                                            \
          : (t)0)
 
+/*
+ * Overflow-safe computation of uint32_t parameters: (index % count) *
+ * dimension. Sets `result` to the product, or 0 when either operand is 0.
+ * Evaluates to 0 on success, nonzero on overflow.
+ */
+#define TIFFSafeModMul32(tif, module, index, count, dimension, result)         \
+    ((dimension) == 0 || ((index) % (count) == 0)                              \
+         ? ((result) = 0, 0)                                                   \
+         : (((result) = _TIFFMultiply32((tif), (index) % (count), (dimension), \
+                                        (module))) == 0))
+
 #define TIFFmax(A, B) ((A) > (B) ? (A) : (B))
 #define TIFFmin(A, B) ((A) < (B) ? (A) : (B))
 
