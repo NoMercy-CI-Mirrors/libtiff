@@ -28,6 +28,7 @@
  * Scanline-oriented Write Support
  */
 #include "tiffiop.h"
+
 #include <assert.h>
 #include <stdio.h>
 
@@ -145,8 +146,9 @@ int TIFFWriteScanline(TIFF *tif, void *buf, uint32_t row, uint16_t sample)
             TIFFErrorExtR(tif, module, "Zero strips per image");
             return (-1);
         }
-        tif->tif_dir.td_row =
-            (strip % td->td_stripsperimage) * td->td_rowsperstrip;
+        if (TIFFSafeModMul32(tif, module, strip, td->td_stripsperimage,
+                             td->td_rowsperstrip, tif->tif_dir.td_row))
+            return (-1);
         if ((tif->tif_flags & TIFF_CODERSETUP) == 0)
         {
             if (!(*tif->tif_setupencode)(tif))
@@ -183,8 +185,9 @@ int TIFFWriteScanline(TIFF *tif, void *buf, uint32_t row, uint16_t sample)
              * positive.
              */
             assert(td->td_stripsperimage != 0);
-            tif->tif_dir.td_row =
-                (strip % td->td_stripsperimage) * td->td_rowsperstrip;
+            if (TIFFSafeModMul32(tif, module, strip, td->td_stripsperimage,
+                                 td->td_rowsperstrip, tif->tif_dir.td_row))
+                return (-1);
             tif->tif_rawcp = tif->tif_rawdata;
         }
         /*
@@ -321,7 +324,9 @@ tmsize_t TIFFWriteEncodedStrip(TIFF *tif, uint32_t strip, void *data,
         return ((tmsize_t)-1);
     }
 
-    tif->tif_dir.td_row = (strip % td->td_stripsperimage) * td->td_rowsperstrip;
+    if (TIFFSafeModMul32(tif, module, strip, td->td_stripsperimage,
+                         td->td_rowsperstrip, tif->tif_dir.td_row))
+        return ((tmsize_t)-1);
     if ((tif->tif_flags & TIFF_CODERSETUP) == 0)
     {
         if (!(*tif->tif_setupencode)(tif))
@@ -431,7 +436,9 @@ tmsize_t TIFFWriteRawStrip(TIFF *tif, uint32_t strip, void *data, tmsize_t cc)
         TIFFErrorExtR(tif, module, "Zero strips per image");
         return ((tmsize_t)-1);
     }
-    tif->tif_dir.td_row = (strip % td->td_stripsperimage) * td->td_rowsperstrip;
+    if (TIFFSafeModMul32(tif, module, strip, td->td_stripsperimage,
+                         td->td_rowsperstrip, tif->tif_dir.td_row))
+        return ((tmsize_t)-1);
     return (TIFFAppendToStrip(tif, strip, (uint8_t *)data, cc) ? cc
                                                                : (tmsize_t)-1);
 }
@@ -516,14 +523,18 @@ tmsize_t TIFFWriteEncodedTile(TIFF *tif, uint32_t tile, void *data, tmsize_t cc)
         TIFFErrorExtR(tif, module, "Zero tiles");
         return ((tmsize_t)(-1));
     }
-    tif->tif_dir.td_row = (tile % howmany32) * td->td_tilelength;
+    if (TIFFSafeModMul32(tif, module, tile, howmany32, td->td_tilelength,
+                         tif->tif_dir.td_row))
+        return ((tmsize_t)(-1));
     howmany32 = TIFFhowmany_32(td->td_imagewidth, td->td_tilewidth);
     if (howmany32 == 0)
     {
         TIFFErrorExtR(tif, module, "Zero tiles");
         return ((tmsize_t)(-1));
     }
-    tif->tif_dir.td_col = (tile % howmany32) * td->td_tilewidth;
+    if (TIFFSafeModMul32(tif, module, tile, howmany32, td->td_tilewidth,
+                         tif->tif_dir.td_col))
+        return ((tmsize_t)(-1));
 
     if ((tif->tif_flags & TIFF_CODERSETUP) == 0)
     {
