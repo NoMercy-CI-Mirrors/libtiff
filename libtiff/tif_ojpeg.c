@@ -899,7 +899,8 @@ static int OJPEGDecodeRaw(TIFF *tif, uint8_t *buf, tmsize_t cc)
         TIFFErrorExtR(tif, module, "Fractional scanline not read");
         return (0);
     }
-    assert(cc > 0);
+    if (cc <= 0)
+        return (0);
     m = buf;
     n = cc;
     do
@@ -956,7 +957,8 @@ static int OJPEGDecodeScanlines(TIFF *tif, uint8_t *buf, tmsize_t cc)
         TIFFErrorExtR(tif, module, "Fractional scanline not read");
         return (0);
     }
-    assert(cc > 0);
+    if (cc <= 0)
+        return (0);
     m = buf;
     n = cc;
     do
