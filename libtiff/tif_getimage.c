@@ -1340,12 +1340,14 @@ static int gtStripContig(TIFFRGBAImage *img, uint32_t *raster, uint32_t rwidth,
     }
 
     scanline = TIFFScanlineSize(tif);
-    fromskew = (int32_t)(wcpy < img->width ? img->width - wcpy : 0);
-    if (fromskew != (int32_t)(img->width - wcpy))
+    if (wcpy < img->width && (img->width - wcpy) > (uint32_t)INT32_MAX)
     {
-        /* should never happen */
-        TIFFErrorExtR(tif, TIFFFileName(tif), "fromskew got unexpected value");
+        TIFFErrorExtR(tif, TIFFFileName(tif),
+                      "Too large fromskew value (width=%" PRIu32 ")",
+                      img->width);
+        return 0;
     }
+    fromskew = (int32_t)(wcpy < img->width ? img->width - wcpy : 0);
 
     for (row = 0; row < hcpy; row += nrow)
     {
@@ -1497,12 +1499,14 @@ static int gtStripSeparate(TIFFRGBAImage *img, uint32_t *raster,
     }
 
     scanline = TIFFScanlineSize(tif);
-    fromskew = (int32_t)(wcpy < img->width ? img->width - wcpy : 0);
-    if (fromskew != (int32_t)(img->width - wcpy))
+    if (wcpy < img->width && (img->width - wcpy) > (uint32_t)INT32_MAX)
     {
-        /* should never happen */
-        TIFFErrorExtR(tif, TIFFFileName(tif), "fromskew got unexpected value");
+        TIFFErrorExtR(tif, TIFFFileName(tif),
+                      "Too large fromskew value (width=%" PRIu32 ")",
+                      img->width);
+        return 0;
     }
+    fromskew = (int32_t)(wcpy < img->width ? img->width - wcpy : 0);
     for (row = 0; row < hcpy; row += nrow)
     {
         uint32_t temp;
