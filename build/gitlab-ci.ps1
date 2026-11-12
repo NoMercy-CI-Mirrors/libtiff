@@ -152,6 +152,20 @@ function Invoke-CMakeConfigure {
             Write-Host "Using vcpkg toolchain: $VcpkgToolchain (triplet: $vcpkgTriplet)"
             $cmakeArgs += "-DCMAKE_TOOLCHAIN_FILE=$VcpkgToolchain"
             $cmakeArgs += "-DVCPKG_TARGET_TRIPLET=$vcpkgTriplet"
+
+            # vcpkg's VCPKG_APPLOCAL_DEPS adds a "vcpkg z-applocal" POST_BUILD
+            # step to every executable, copying the same dependency DLLs into
+            # the executable's output directory.  Ninja folds POST_BUILD into
+            # the link edge, so parallel links of executables sharing a
+            # directory (tools\, test\) race on overwriting those DLLs and fail
+            # with "being used by another process" / "Access is denied".
+            # Serialize link edges (compilation remains parallel).  Note that
+            # X_VCPKG_APPLOCAL_DEPS_SERIALIZED does not help here: it adds
+            # USES_TERMINAL, which Ninja ignores for POST_BUILD commands.
+            if ($Generator -like "Ninja*") {
+                $cmakeArgs += "-DCMAKE_JOB_POOLS=link_pool=1"
+                $cmakeArgs += "-DCMAKE_JOB_POOL_LINK=link_pool"
+            }
         }
 
         # Static or shared build
