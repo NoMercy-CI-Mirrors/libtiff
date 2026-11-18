@@ -79,6 +79,7 @@ void TIFFSetClientInfo(TIFF *tif, void *data, const char *name)
 
 {
     TIFFClientInfoLink *psLink = tif->tif_clientinfo;
+    size_t name_len = strlen(name) + 1;
 
     /*
     ** Do we have an existing link with this name?  If so, just
@@ -102,14 +103,14 @@ void TIFFSetClientInfo(TIFF *tif, void *data, const char *name)
     if (psLink == NULL)
         return;
     psLink->next = tif->tif_clientinfo;
-    psLink->name = (char *)_TIFFCheckMalloc(tif, (tmsize_t)(strlen(name) + 1),
+    psLink->name = (char *)_TIFFCheckMalloc(tif, (tmsize_t)name_len,
                                             sizeof(char), "client info name");
     if (psLink->name == NULL)
     {
         _TIFFfreeExt(tif, psLink);
         return;
     }
-    strcpy(psLink->name, name);
+    _TIFFmemcpy(psLink->name, name, (tmsize_t)name_len);
     psLink->data = data;
 
     tif->tif_clientinfo = psLink;

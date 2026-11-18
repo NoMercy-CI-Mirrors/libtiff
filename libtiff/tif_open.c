@@ -315,6 +315,7 @@ TIFF *TIFFClientOpenExt(const char *name, const char *mode,
     TIFF *tif;
     int m;
     const char *cp;
+    size_t name_len;
     tmsize_t size_to_alloc;
 
     /* The following are configuration checks. They should be redundant, but
@@ -348,7 +349,10 @@ TIFF *TIFFClientOpenExt(const char *name, const char *mode,
     m = _TIFFgetMode(opts, clientdata, mode, module);
     if (m == -1)
         goto bad2;
-    size_to_alloc = (tmsize_t)(sizeof(TIFF) + strlen(name) + 1);
+    /* Keep the length used for the allocation and the one used for the copy
+     * in a single variable, so they cannot drift apart. */
+    name_len = strlen(name) + 1;
+    size_to_alloc = (tmsize_t)(sizeof(TIFF) + name_len);
     if (opts && opts->max_single_mem_alloc > 0 &&
         size_to_alloc > opts->max_single_mem_alloc)
     {
@@ -380,7 +384,7 @@ TIFF *TIFFClientOpenExt(const char *name, const char *mode,
     }
     _TIFFmemset(tif, 0, sizeof(*tif));
     tif->tif_name = (char *)tif + sizeof(TIFF);
-    strcpy(tif->tif_name, name);
+    _TIFFmemcpy(tif->tif_name, name, (tmsize_t)name_len);
     tif->tif_mode = m & ~(O_CREAT | O_TRUNC);
     tif->tif_curdir = TIFF_NON_EXISTENT_DIR_NUMBER; /* non-existent directory */
     tif->tif_curdircount = TIFF_NON_EXISTENT_DIR_NUMBER;

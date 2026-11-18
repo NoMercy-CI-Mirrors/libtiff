@@ -228,16 +228,16 @@ const TIFFCodec *TIFFFindCODEC(uint16_t scheme)
 TIFFCodec *TIFFRegisterCODEC(uint16_t scheme, const char *name,
                              TIFFInitMethod init)
 {
+    size_t name_len = strlen(name) + 1;
     codec_t *cd = (codec_t *)_TIFFmallocExt(
-        NULL,
-        (tmsize_t)(sizeof(codec_t) + sizeof(TIFFCodec) + strlen(name) + 1));
+        NULL, (tmsize_t)(sizeof(codec_t) + sizeof(TIFFCodec) + name_len));
 
     if (cd != NULL)
     {
         char *codec_name;
         cd->info = (TIFFCodec *)((uint8_t *)cd + sizeof(codec_t));
         codec_name = (char *)((uint8_t *)cd->info + sizeof(TIFFCodec));
-        strcpy(codec_name, name);
+        _TIFFmemcpy(codec_name, name, (tmsize_t)name_len);
         cd->info->name = codec_name;
         cd->info->scheme = scheme;
         cd->info->init = init;
