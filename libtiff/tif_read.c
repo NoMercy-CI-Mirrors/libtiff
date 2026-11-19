@@ -575,6 +575,11 @@ tmsize_t TIFFReadEncodedStrip(TIFF *tif, uint32_t strip, void *buf,
     tmsize_t stripsize;
     uint16_t plane;
 
+    if ((size < 0) && (size != (tmsize_t)(-1)))
+    {
+        TIFFErrorExtR(tif, module, "Invalid size %" TIFF_SSIZE_FORMAT, size);
+        return ((tmsize_t)(-1));
+    }
     stripsize = TIFFReadEncodedStripGetStripSize(tif, strip, &plane);
     if (stripsize == ((tmsize_t)(-1)))
         return ((tmsize_t)(-1));
@@ -779,6 +784,11 @@ tmsize_t TIFFReadRawStrip(TIFF *tif, uint32_t strip, void *buf, tmsize_t size)
     uint64_t bytecount64;
     tmsize_t bytecountm;
 
+    if ((size < 0) && (size != (tmsize_t)(-1)))
+    {
+        TIFFErrorExtR(tif, module, "Invalid size %" TIFF_SSIZE_FORMAT, size);
+        return ((tmsize_t)(-1));
+    }
     if (!TIFFCheckRead(tif, 0))
         return ((tmsize_t)(-1));
     if (strip >= td->td_nstrips)
@@ -1042,6 +1052,11 @@ tmsize_t TIFFReadEncodedTile(TIFF *tif, uint32_t tile, void *buf, tmsize_t size)
     TIFFDirectory *td = &tif->tif_dir;
     tmsize_t tilesize = tif->tif_dir.td_tilesize;
 
+    if ((size < 0) && (size != (tmsize_t)(-1)))
+    {
+        TIFFErrorExtR(tif, module, "Invalid size %" TIFF_SSIZE_FORMAT, size);
+        return ((tmsize_t)(-1));
+    }
     if (!TIFFCheckRead(tif, 1))
         return ((tmsize_t)(-1));
     if (tile >= td->td_nstrips)
@@ -1272,6 +1287,11 @@ tmsize_t TIFFReadRawTile(TIFF *tif, uint32_t tile, void *buf, tmsize_t size)
     uint64_t bytecount64;
     tmsize_t bytecountm;
 
+    if ((size < 0) && (size != (tmsize_t)(-1)))
+    {
+        TIFFErrorExtR(tif, module, "Invalid size %" TIFF_SSIZE_FORMAT, size);
+        return ((tmsize_t)(-1));
+    }
     if (!TIFFCheckRead(tif, 1))
         return ((tmsize_t)(-1));
     if (tile >= td->td_nstrips)
@@ -1694,6 +1714,12 @@ int TIFFReadFromUserBuffer(TIFF *tif, uint32_t strile, void *inbuf,
     tmsize_t old_rawdatasize = tif->tif_rawdatasize;
     void *old_rawdata = tif->tif_rawdata;
 
+    if (outsize < 0)
+    {
+        TIFFErrorExtR(tif, module, "Invalid output size %" TIFF_SSIZE_FORMAT,
+                      outsize);
+        return 0;
+    }
     if (tif->tif_mode == O_WRONLY)
     {
         TIFFErrorExtR(tif, tif->tif_name, "File not open for reading");

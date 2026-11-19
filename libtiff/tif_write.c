@@ -383,6 +383,11 @@ tmsize_t TIFFWriteRawStrip(TIFF *tif, uint32_t strip, void *data, tmsize_t cc)
     static const char module[] = "TIFFWriteRawStrip";
     TIFFDirectory *td = &tif->tif_dir;
 
+    if (cc < 0)
+    {
+        TIFFErrorExtR(tif, module, "Invalid data size %" TIFF_SSIZE_FORMAT, cc);
+        return ((tmsize_t)-1);
+    }
     if (!WRITECHECKSTRIPS(tif, module))
         return ((tmsize_t)-1);
     /*
@@ -601,6 +606,11 @@ tmsize_t TIFFWriteRawTile(TIFF *tif, uint32_t tile, void *data, tmsize_t cc)
 {
     static const char module[] = "TIFFWriteRawTile";
 
+    if (cc < 0)
+    {
+        TIFFErrorExtR(tif, module, "Invalid data size %" TIFF_SSIZE_FORMAT, cc);
+        return ((tmsize_t)(-1));
+    }
     if (!WRITECHECKTILES(tif, module))
         return ((tmsize_t)(-1));
     if (tile >= tif->tif_dir.td_nstrips)

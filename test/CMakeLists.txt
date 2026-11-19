@@ -155,6 +155,12 @@ set_target_properties(thunder_decode PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(thunder_decode PRIVATE tiff tiff_port)
 list(APPEND simple_tests thunder_decode)
 
+add_executable(test_negative_size_args ../placeholder.h)
+target_sources(test_negative_size_args PRIVATE test_negative_size_args.c)
+set_target_properties(test_negative_size_args PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_negative_size_args PRIVATE tiff)
+list(APPEND simple_tests test_negative_size_args)
+
 add_executable(custom_dir ../placeholder.h)
 target_sources(custom_dir PRIVATE custom_dir.c)
 set_target_properties(custom_dir PROPERTIES LINKER_LANGUAGE CXX)
