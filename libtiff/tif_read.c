@@ -1511,6 +1511,13 @@ int TIFFReadBufferSetup(TIFF *tif, void *bp, tmsize_t size)
         tif->tif_rawdata = NULL;
         tif->tif_rawdatasize = 0;
     }
+    /* The decode position pointed into the old buffer; force a reload. */
+    tif->tif_rawcp = NULL;
+    tif->tif_rawcc = 0;
+    tif->tif_rawdataoff = 0;
+    tif->tif_rawdataloaded = 0;
+    tif->tif_dir.td_curstrip = NOSTRIP;
+    tif->tif_dir.td_curtile = NOTILE;
     if (bp)
     {
         tif->tif_rawdatasize = size;
