@@ -734,7 +734,12 @@ int TIFFWriteCheck(TIFF *tif, int tiles, const char *module)
         tif->tif_dir.td_stripbytecount_entry.tdir_offset.toff_long8 == 0 &&
         !(tif->tif_flags & TIFF_DIRTYDIRECT))
     {
-        TIFFForceStrileArrayWriting(tif);
+        if (!TIFFForceStrileArrayWriting(tif))
+        {
+            /* Let the next write call go through TIFFWriteCheck() again */
+            tif->tif_flags &= ~TIFF_BEENWRITING;
+            return (0);
+        }
     }
 
     return (1);
