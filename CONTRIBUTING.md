@@ -1,5 +1,21 @@
 Contributing
-------------
+============
+
+AI policy
+---------
+
+The use of AI tools and services is permitted, but you are fully
+responsible for anything you submit. You are expected to have read,
+understood, reviewed and tested all AI-generated code and documentation
+in your submission, and that you have the right to contribute it under
+the libtiff license. Please disclose the AI tool and model used (in an
+`Assisted-by:` commit trailer, the merge request description, or at the
+end of issue text). Please read the
+[AI policy](doc/project/ai-policy.rst) before using AI tools to prepare
+a merge request, issue or security report.
+
+Code formatting
+---------------
 
 libtiff uses a ``.clang-format`` file to enforce code formatting rules.
 

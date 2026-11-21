@@ -36,6 +36,26 @@ Previously, the project used
 [Bugzilla](http://bugzilla.maptools.org/buglist.cgi?product=libtiff). This
 is no longer in use, and all remaining issues have been migrated to GitLab.
 
+Contributing
+------------
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for information about contributing
+changes to libtiff.
+
+AI policy
+---------
+
+The libtiff project permits the responsible use of AI tools and services
+when preparing contributions. The human submitter bears full
+responsibility for every submission, and is expected to have read,
+understood, reviewed and tested all AI-generated code and documentation
+before submitting it. AI tools are not considered authors, but their use
+should be disclosed, naming the tool and model used. The submitter must
+ensure that the contribution does not reproduce code or text with
+incompatible licensing. See the
+[AI policy](doc/project/ai-policy.rst) for full details
+([online](https://libtiff.gitlab.io/libtiff/project/ai-policy.html)).
+
 Use and Copyright
 -----------------
 Silicon Graphics has seen fit to allow us to give this work away.  It

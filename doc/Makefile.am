@@ -55,6 +55,7 @@ rst_sources = \
 	project/index.rst \
 	project/acknowledgements.rst \
 	project/bugs.rst \
+	project/ai-policy.rst \
 	project/mailinglist.rst \
 	project/psc.rst \
 	addingtags.rst \

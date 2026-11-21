@@ -23,5 +23,6 @@ Questions should be sent to the :doc:`mailinglist`.
     license
     mailinglist
     bugs
+    ai-policy
     psc
     acknowledgements
