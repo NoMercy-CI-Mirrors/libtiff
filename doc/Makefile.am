@@ -129,6 +129,7 @@ rst_sources = \
 	rfcs/index.rst \
 	rfcs/rfc1_psc.rst \
 	rfcs/rfc2_restoring_needed_tools.rst \
+	rfcs/rfc3_layered_api.rst \
 	functions.rst \
 	tools.rst \
 	terms.rst \

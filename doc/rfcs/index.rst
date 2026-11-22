@@ -12,3 +12,4 @@ of the libtiff project are conducted.
 
     rfc1_psc
     rfc2_restoring_needed_tools
+    rfc3_layered_api
