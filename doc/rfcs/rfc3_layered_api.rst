@@ -215,16 +215,22 @@ and merged.
 Costs and risks
 ---------------
 
-This is a multi-person-year programme: a rough estimate is 24–40
-person-months to the switchover, which exceeds current volunteer
-capacity; the proposal is explicit that funding or additional
-contributors are needed, and the stages are designed so that each is
-independently valuable (the Stage 1–2 safe reader alone is a useful,
-fuzzable artefact for security-sensitive consumers). The principal
-technical risk is behavioural fidelity of the compatibility layer,
-which the policy mechanism, the frozen legacy test suite and the
-differential CI are designed to contain. Performance parity is
-tracked by benchmarks from Stage 1.
+The bulk of the implementation will be produced with AI assistance,
+in accordance with the project AI policy: every change is reviewed,
+tested and submitted by the current volunteer maintainers, who remain
+responsible for all content. The limiting resource is therefore
+maintainer review bandwidth rather than implementation effort, and
+the proposal is shaped around that: work arrives as small, focused
+merge requests carrying their tests and requirement annotations; each
+stage is independently valuable (the Stage 1–2 safe reader alone is a
+useful, fuzzable artefact for security-sensitive consumers); and a
+stage gate passes only on green differential and traceability
+evidence, so review can lean on machine-checked conformance rather
+than line-by-line re-derivation. The principal technical risk is
+behavioural fidelity of the compatibility layer, which the policy
+mechanism, the frozen legacy test suite and the differential CI are
+designed to contain. Performance parity is tracked by benchmarks from
+Stage 1.
 
 What is asked of reviewers
 --------------------------
@@ -238,8 +244,10 @@ What is asked of reviewers
 4. The support decision for the hard legacy extension points
    (out-of-tree codecs, tag-method overrides, buffer-control calls),
    informed by the downstream survey.
-5. Volunteers, funding leads, or employer interest for staffing the
-   stages.
+5. Agreement on the development model: implementation produced in
+   large part with AI assistance under the project AI policy, with
+   every merge request reviewed and owned by the current volunteer
+   maintainers.
 
 References
 ----------
