@@ -61,8 +61,11 @@ exercised end-to-end on synthesised files and a real corpus image, and
 the traceability gate caught a genuine conformance bug (LONG8 offsets
 accepted in a classic file, BTF-009) on its first run.
 
-**The honest costs:** this is a multi-person-year effort (rough estimate in
-§16); it raises the toolchain floor to C++17 for building (not for using) the
+**The honest costs:** the implementation will be produced in large part
+with AI assistance under the project AI policy, reviewed and owned by the
+current volunteer maintainers, so the binding constraint is sustained
+review bandwidth rather than implementation effort (§16); it raises the
+toolchain floor to C++17 for building (not for using) the
 library; a small number of legacy extension points (``TIFFAccessTagMethods``,
 out-of-tree codecs that write into ``struct tiff`` via private headers) cannot
 be expressed through the safe C API and need a thin, documented compat-support
@@ -1623,12 +1626,16 @@ be replaced beneath it:
 16. Staged migration plan
 -------------------------
 
-Each stage is releasable; gates are explicit. Rough effort in parentheses
-(single experienced-developer months, wall-clock will differ; total ≈
-24–40 pm, i.e. a multi-year programme at current staffing — co-funding or
-contributors needed, which the RFC should say plainly).
+Each stage is releasable; gates are explicit. The development model (RFC
+3): implementation produced in large part with AI assistance under the
+project AI policy, arriving as small, focused merge requests that carry
+their tests and requirement annotations, with every change reviewed,
+tested and submitted by the current volunteer maintainers. Pacing is set
+by review bandwidth, so stage gates lean on machine-checked evidence
+(the differential harness and the traceability matrix) rather than
+line-by-line re-derivation.
 
-**Stage 0 — Decisions and scaffolding (2–3 pm).**
+**Stage 0 — Decisions and scaffolding.**
 RFC from this document; community sign-off on the ``libtiff_<component>``
 naming, §10.4 support levels, C++17 floor, GoogleTest adoption. One
 style decision is already made from the spike: the core permits a single
@@ -1644,7 +1651,7 @@ branch. Gate: RFC accepted; empty-but-building skeleton in CI on all
 primary platforms, with the (initially empty) traceability matrix
 published.
 
-**Stage 1 — Vertical slice, read-only (4–6 pm).**
+**Stage 1 — Vertical slice, read-only.**
 Core: I/O provider, header parse (classic+BigTIFF), IFD parse with
 policies, geometry module, tag table generator + baseline tags, codecs
 none/PackBits/LZW/Deflate, strip/tile read. Safe API over the slice.
@@ -1654,20 +1661,20 @@ without findings on strict and legacy policies; every STR/BTF MUST and
 the slice's GEN/TAG/CMP MUSTs traced to implementation and verifying
 tests in the matrix (§13.2).
 
-**Stage 2 — Full read path (6–9 pm).**
+**Stage 2 — Full read path.**
 All directory kinds (EXIF/GPS/custom/SubIFD), full tag system incl.
 runtime registration and defaults, remaining decoders (JPEG, OJPEG
 [legacy-codec build option], CCITT fax, Thunder, NeXT, SGILog, LERC/ZSTD/
 WebP/JBIG per configuration), RGBA decode, client I/O. Gate: whole corpus
 differential-clean on decode; policy matrix tested.
 
-**Stage 3 — Write path (5–8 pm).**
+**Stage 3 — Write path.**
 Directory writer/builder, append/rewrite/checkpoint, strile-array
 deferral, all encoders, custom directory write. Gate: round-trip
 differential (legacy reads what core writes and vice versa, tag-for-tag,
 plus ``tiffcmp``-level pixel identity).
 
-**Stage 4 — Compat layer (5–8 pm).**
+**Stage 4 — Compat layer.**
 ``compat/`` implements all 206 symbols per §11 tables; compat-support
 interface kept to the audited minimum; varargs machinery; handler chains;
 getimage move; ``tiffiop.h`` user remediation (§12.4). Gate: **entire
@@ -1676,7 +1683,7 @@ compat-on-core on all CI platforms**; differential harness shows no
 unexplained divergence; ABI checker (abidiff) reports identical exported
 surface for ``libtiff.so.6``.
 
-**Stage 5 — Switchover (2–3 pm).**
+**Stage 5 — Switchover.**
 ``-Dimplementation=core`` becomes the default; legacy implementation moves
 to a maintenance branch (security fixes only, time-boxed by RFC). Release
 (suggested: libtiff 5.0.0, soname unchanged at ``.so.6``; ``libtiff_core`` 1.0
@@ -1728,8 +1735,8 @@ entered by its own RFC once libtiff_core is stable and adopted.
      - Out-of-tree codecs and ``tiffiop.h`` users
      - §10.4 decision via RFC; survey downstream first (GDAL, ImageMagick, poppler, Qt, pillow, OpenCV are the de-facto compat gate)
    * - 3
-     - Effort vs. maintainer bandwidth
-     - Plan is explicit that this needs funding/contributors; stages are independently valuable (Stage 1–2 alone yields a fuzzable safe reader usable by security-sensitive consumers)
+     - Sustained maintainer review bandwidth (AI-assisted implementation, volunteer review per the AI policy)
+     - Small, focused MRs carrying tests and requirement annotations; stage gates rest on machine-checked differential and traceability evidence; stages are independently valuable (Stage 1–2 alone yields a fuzzable safe reader usable by security-sensitive consumers)
    * - 4
      - Performance regressions (checked arithmetic, layer hops)
      - Benchmarks in the new suite from Stage 1 (decode/encode throughput per codec); compat fast-paths where measurements demand; checked arithmetic compiles to branch-on-overflow intrinsics
