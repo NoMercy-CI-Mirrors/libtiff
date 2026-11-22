@@ -37,6 +37,9 @@ associated merge request are resolved most quickly.
 If you'd like to enter a new bug report, you can create a
 `new GitLab issue <https://gitlab.com/libtiff/libtiff/issues/new/>`_
 
+If you used AI tools to find or analyse the problem, please note the
+requirements for verifying reports in the :doc:`ai-policy`.
+
 Of course, reporting bugs is no substitute for discussion.
 Please see the :doc:`mailinglist` page for further details.
 
