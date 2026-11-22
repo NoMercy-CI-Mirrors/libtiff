@@ -7,22 +7,29 @@ Status: draft for discussion. Not yet an RFC; intended to become one.
 
 This document follows up on:
 
-- work item 771 — Proposal for conversion of codebase to C++
-- work item 772 — Exploration of options for C API refactoring
-- work item 956 — LibTIFF maintenance defect patterns and development priorities
-- ``libtiff-cpp-rust-migration.md`` (early C++ roadmap)
-- ``libtiff-incremental-improvements.md`` (conservative C-only plan)
-- ``~/tiff-specification`` — the machine-readable TIFF requirements
-  database (§13)
+- `Work item 771
+  <https://gitlab.com/libtiff/libtiff/-/work_items/771>`__ — Proposal
+  for conversion of codebase to C++ (which incorporates the earlier
+  C++ roadmap document)
+- `Work item 772
+  <https://gitlab.com/libtiff/libtiff/-/work_items/772>`__ —
+  Exploration of options for C API refactoring
+- `Work item 956
+  <https://gitlab.com/libtiff/libtiff/-/work_items/956>`__ — LibTIFF
+  maintenance defect patterns and development priorities
+- the `TIFF specification requirements database
+  <https://gitlab.com/libtiff/tiff-specification>`__ —
+  machine-readable requirements distilled from the collected
+  specification documents (§13)
 - ``spike/`` — the Stage-1 feasibility spike validating this plan
   (findings in ``spike/FINDINGS.md``)
 
-It supersedes the *architectural* parts of 771 and the earlier roadmap: instead
-of compiling the existing code as C++ and modernising it in place, it proposes
+It supersedes the *architectural* parts of work item 771: instead of
+compiling the existing code as C++ and modernising it in place, it proposes
 a new core with **two** C interfaces — the existing ``TIFF*`` API preserved as a
 compatibility layer, and a new safe ``tiff_*`` C API that the compatibility
-layer is itself built on. The C-only improvements of 772 and the incremental
-plan remain valid for the maintenance branch and inform the new API design,
+layer is itself built on. The C-only improvements of work item 772 remain
+valid for the maintenance branch and inform the new API design,
 but they do not change the underlying implementation's safety properties.
 
 1. Summary and verdict
@@ -101,8 +108,8 @@ Work item 956 (November 2026 snapshot) quantifies the maintenance situation:
 - Only ~13% of merged production MRs historically carried tests.
 
 A major contributor has left, and the remaining maintainer bandwidth is
-consumed by this defect stream. Incremental hardening (the
-``libtiff-incremental-improvements.md`` programme) reduces the bleeding but
+consumed by this defect stream. Incremental hardening of the
+C codebase reduces the bleeding but
 cannot change the underlying properties of a 1988-vintage C design: unchecked
 arithmetic by default, manual ownership, varargs type punning, and global
 mutable state. A memory-safe or strongly-typed core removes whole defect
@@ -1467,9 +1474,12 @@ both implementations.
 13. Specification traceability
 ------------------------------
 
-``~/tiff-specification`` (its own repository, with its own CI and a
-published Sphinx/JSON/SQLite rendering) restates the collected TIFF
-specification documents as a machine-readable requirements database,
+The `tiff-specification repository
+<https://gitlab.com/libtiff/tiff-specification>`__ (its own project,
+with its own CI and a published Sphinx/JSON/SQLite rendering at
+https://libtiff.gitlab.io/tiff-specification/) restates the collected
+TIFF specification documents as a machine-readable requirements
+database,
 built for exactly this purpose — its README names "citation from an
 implementation (libtiff source, unit tests, integration tests)" and
 "driving a file validator" as design goals. Current contents (a work in
