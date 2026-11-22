@@ -251,8 +251,7 @@ References
   refactoring options) and `work item 956
   <https://gitlab.com/libtiff/libtiff/-/work_items/956>`__
   (maintenance defect patterns and priorities).
-* The `layered API migration plan
-  <https://gitlab.com/libtiff/libtiff/-/blob/master/libtiff-layered-api-migration.md>`__
+* The :ref:`layered API migration plan <layered_api_migration_plan>`
   (companion document to this RFC, with the full symbol and type
   inventory).
 * The `TIFF specification requirements database

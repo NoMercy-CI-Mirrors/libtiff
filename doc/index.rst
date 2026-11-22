@@ -63,5 +63,6 @@ The following sections are included in this documentation:
     tools
     contrib
     rfcs/index
+    plan/libtiff-layered-api-migration
     project/index
     releases/index

@@ -1,5 +1,5 @@
 /* tiff_core spike: safe C API (C99). Throwaway prototype of the API
- * conventions in libtiff-layered-api-migration.md §9: status returns,
+ * conventions in doc/plan/libtiff-layered-api-migration.rst §9: status returns,
  * out-parameters, unsigned sizes, caller-provided buffers, per-handle
  * errors, no varargs, no globals, no macros for constants.
  *

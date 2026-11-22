@@ -1,7 +1,7 @@
 # libtiff_core Stage-1 spike (THROWAWAY)
 
 This directory is the feasibility spike called for by
-`libtiff-layered-api-migration.md` §19 item 3. It is **throwaway
+`doc/plan/libtiff-layered-api-migration.rst` §19 item 3. It is **throwaway
 prototype code**: not shipped, not part of either build system, not held
 to production standards, and deliberately minimal. Its only purpose is to
 validate, on real code:

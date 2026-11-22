@@ -1,7 +1,7 @@
 # Spike findings
 
 Status: complete. The spike validates the layered design of
-`libtiff-layered-api-migration.md` at Stage-1-slice scale. ~1,100 lines
+`doc/plan/libtiff-layered-api-migration.rst` at Stage-1-slice scale. ~1,100 lines
 of core + C API, ~750 lines of tests; built with `-Wall -Wextra`, clean;
 all tests pass; the traceability matrix covers 38 requirements, each
 implemented and verified.
