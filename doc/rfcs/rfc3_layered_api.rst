@@ -45,8 +45,9 @@ mapping, and the staging detail. This RFC summarises it for decision.
 Motivation
 ----------
 
-An analysis of the issue tracker in November 2026 (work item 956)
-found 950 accessible issues, of which bounds/data-extent and
+An analysis of the issue tracker in November 2026 (`work item 956
+<https://gitlab.com/libtiff/libtiff/-/work_items/956>`__) found 950
+accessible issues, of which bounds/data-extent and
 arithmetic/conversion classes alone account for 34%. Issue intake has
 grown from 38 (2024) to 109 (2025) to 179 (January–November 2026),
 against shrinking maintainer capacity. The recurring defect families
@@ -57,9 +58,12 @@ failure conventions (six different return-value patterns across the
 155+ documented functions).
 
 Incremental hardening of the C codebase continues and remains
-worthwhile, but it cannot change those underlying properties. Work
-items 771 (C++ conversion) and 772 (C API refactoring) explored the
-space; this RFC supersedes 771's in-place-conversion architecture
+worthwhile, but it cannot change those underlying properties. `Work
+item 771 <https://gitlab.com/libtiff/libtiff/-/work_items/771>`__
+(C++ conversion) and `work item 772
+<https://gitlab.com/libtiff/libtiff/-/work_items/772>`__ (C API
+refactoring) explored the space; this RFC supersedes 771's
+in-place-conversion architecture
 with a design that keeps compatibility and safety in separate layers,
 so that neither compromises the other.
 
@@ -240,12 +244,21 @@ What is asked of reviewers
 References
 ----------
 
-* Work items 771 (C++ conversion proposal), 772 (C API refactoring
-  options) and 956 (maintenance defect patterns and priorities).
-* The layered API migration plan (companion document to this RFC,
-  with the full symbol and type inventory).
-* The TIFF specification requirements database and its deviation
-  registry.
+* `Work item 771
+  <https://gitlab.com/libtiff/libtiff/-/work_items/771>`__ (C++
+  conversion proposal), `work item 772
+  <https://gitlab.com/libtiff/libtiff/-/work_items/772>`__ (C API
+  refactoring options) and `work item 956
+  <https://gitlab.com/libtiff/libtiff/-/work_items/956>`__
+  (maintenance defect patterns and priorities).
+* The `layered API migration plan
+  <https://gitlab.com/libtiff/libtiff/-/blob/master/libtiff-layered-api-migration.md>`__
+  (companion document to this RFC, with the full symbol and type
+  inventory).
+* The `TIFF specification requirements database
+  <https://gitlab.com/libtiff/tiff-specification>`__ and its deviation
+  registry (published rendering at
+  https://libtiff.gitlab.io/tiff-specification/).
 * The Stage-1 feasibility spike and its findings
   (``spike/FINDINGS.md`` on the development branch).
 
