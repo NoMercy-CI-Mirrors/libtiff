@@ -441,20 +441,27 @@ reproduce behaviour. Design:
 - `ReadPolicy` — a value object of named toggles plus numeric limits
   (max single/cumulated allocation, max directory count, …).
 - Toggle names come from the requirements database's deviation registry
-  (§13), which already defines `tolerate.unsorted-ifd`,
-  `tolerate.missing-nul`, `tolerate.unaligned-values`,
-  `tolerate.type-mismatch`, `tolerate.lzw-old-style`,
-  `tolerate.deflate-32946`, `tolerate.iptc-as-long`,
-  `tolerate.datetime-format`, `repair.rowsperstrip-zero` and
-  `repair.colormap-8bit`. Quirks that compat work uncovers beyond these
-  (strip-byte-count estimation, truncated-last-strip tolerance, …) are
-  added to the registry first and implemented second, so core leniency
-  and the documented specification deviations can never drift apart.
-- The spike already fed this flow twice: `repair.bitspersample-count` is
-  cited by TAG-258-01 but missing from the registry (database fix), and
-  whether PackBits decoding enforces CMP-32773-01's row-boundary rule
-  strictly — with a tolerance flag for runs that cross rows — is a
-  Stage-1 decision that will add a flag the same way.
+  (§13), which defines `tolerate.unsorted-ifd`, `tolerate.missing-nul`,
+  `tolerate.unaligned-values`, `tolerate.type-mismatch`,
+  `tolerate.lzw-old-style`, `tolerate.deflate-32946`,
+  `tolerate.iptc-as-long`, `tolerate.datetime-format`,
+  `tolerate.packbits-cross-row-runs`, `repair.rowsperstrip-zero` and
+  `repair.colormap-8bit`, plus per-rule repair flags defined by a
+  rule's own repair block and indexed by the registry (such as
+  `repair.bitspersample-count` on DEP-010). Quirks that compat work
+  uncovers beyond these (strip-byte-count estimation,
+  truncated-last-strip tolerance, …) are added to the registry first
+  and implemented second, so core leniency and the documented
+  specification deviations can never drift apart.
+- The spike fed this flow twice, and both items are merged in the
+  database (its `reg-review-libtiff.md`): TAG-258-01 now points at
+  DEP-010's `repair.bitspersample-count` repair (single value
+  replicated across samples; other short counts stay at error), and
+  `tolerate.packbits-cross-row-runs` settles CMP-32773-01's
+  row-boundary question — strip/tile decode accepts runs that span
+  rows, while runs overrunning the decoded size are damaged data
+  outside the flag. The core's PackBits decoder implements exactly
+  those semantics.
 - Presets: `ReadPolicy::strict()` (new-API default),
   `ReadPolicy::legacy()` (compat default, matching current observable
   behaviour).
@@ -1169,9 +1176,11 @@ entered by its own RFC once libtiff_core is stable and adopted.
    §7.1, §8.3 and Stage 0.
 4. Pin a first tiff-specification release and vendor its
    `requirements.json` (§13); the scanner prototype
-   (`spike/tools/trace_scan.py`) currently reads a live checkout. Feed
-   the spike-found registry gap (`repair.bitspersample-count`,
-   TAG-258-01) back to the database.
+   (`spike/tools/trace_scan.py`) currently reads a live checkout. The
+   spike-found registry items are resolved and merged in the database
+   (its `reg-review-libtiff.md`: the registry flag index covering
+   DEP-010's `repair.bitspersample-count`, and the new
+   `tolerate.packbits-cross-row-runs` flag cited by CMP-32773-01).
 5. Survey the major downstreams on §10.4 (custom codecs, tag methods,
    `tiffiop.h` usage) — their answers size the compat-support interface.
 
