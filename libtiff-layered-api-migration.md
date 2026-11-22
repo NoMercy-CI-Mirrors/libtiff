@@ -11,6 +11,8 @@ This document follows up on:
 - `libtiff-incremental-improvements.md` (conservative C-only plan)
 - `~/tiff-specification` — the machine-readable TIFF requirements
   database (§13)
+- `spike/` — the Stage-1 feasibility spike validating this plan
+  (findings in `spike/FINDINGS.md`)
 
 It supersedes the *architectural* parts of 771 and the earlier roadmap: instead
 of compiling the existing code as C++ and modernising it in place, it proposes
@@ -40,6 +42,13 @@ but they do not change the underlying implementation's safety properties.
    out (repeated size arithmetic, mutable metadata ownership, stale I/O
    state, failure postconditions); these become structural properties of the
    core rather than per-bug patches.
+
+A working spike (`spike/`, findings in `spike/FINDINGS.md`) now backs
+these observations in code: the C API boundary, the port interfaces, the
+strict/legacy policy toggles and the requirement-trace annotations were
+exercised end-to-end on synthesised files and a real corpus image, and
+the traceability gate caught a genuine conformance bug (LONG8 offsets
+accepted in a classic file, BTF-009) on its first run.
 
 **The honest costs:** this is a multi-person-year effort (rough estimate in
 §16); it raises the toolchain floor to C++17 for building (not for using) the
@@ -267,8 +276,11 @@ happens — the C++ core adopts Rust's naming conventions:
 | error handling | `Result<T>` = `expected<T, Error>` | mirrors Rust's `Result<T, E>` |
 | file names | `snake_case` matching the module | `core/geometry.cpp` |
 
-The core defines no macros and never includes the legacy headers, so
-`SCREAMING_SNAKE_CASE` constants cannot collide with `tiff.h` defines.
+The core defines no macros, with one sanctioned exception: a single
+internal `TRY` macro for `Result` propagation (§7.1), confined to one
+core-private header and never present in any installed header. Since the
+core never includes the legacy headers, `SCREAMING_SNAKE_CASE` constants
+cannot collide with `tiff.h` defines.
 Module boundaries are chosen to map one-to-one onto future crate modules
 (§8.1's ports and domain modules are that map).
 
@@ -281,10 +293,19 @@ Module boundaries are chosen to map one-to-one onto future crate modules
   (taxonomy below), the module/component name, a formatted human message,
   and optionally a source location and the offending offset/tag id.
 - Minimum C++17 means `std::expected` (C++23) is not assumed: `Result` is
-  implemented over a vendored single-header `expected` (tl::expected or
-  an in-tree minimal implementation) under C++17, switching to
-  `std::expected` when the compiler provides it. The alias is internal,
-  so the choice is not ABI.
+  implemented over a vendored single-header `expected` under C++17,
+  switching to `std::expected` when the compiler provides it. The spike
+  confirmed vendoring is unavoidable (likewise for `span`); maintained
+  implementations (tl::expected, tcb::span) are preferred over in-tree
+  ones. The alias is internal, so the choice is not ABI.
+- Error propagation uses a single internal `TRY(expr)` macro — decided
+  from the spike, which measured three lines of boilerplate per fallible
+  call without one (C++17 has no try-operator). It lives in one
+  core-private header and is the only macro in the core (§6.1).
+- `Error` must be constructible without allocating (static module
+  names; fixed-size or lazily formatted message text), so reporting a
+  failure can never itself fail under memory exhaustion — a spike
+  finding.
 - Error codes use the banded taxonomy from work item 772 §1: memory
   (1–99), I/O (100–199), format (200–299), tag (300–399), codec (400–499),
   state (500–599), parameter (600–699). The band values are shared verbatim
@@ -429,6 +450,11 @@ reproduce behaviour. Design:
   (strip-byte-count estimation, truncated-last-strip tolerance, …) are
   added to the registry first and implemented second, so core leniency
   and the documented specification deviations can never drift apart.
+- The spike already fed this flow twice: `repair.bitspersample-count` is
+  cited by TAG-258-01 but missing from the registry (database fix), and
+  whether PackBits decoding enforces CMP-32773-01's row-boundary rule
+  strictly — with a tolerance flag for runs that cross rows — is a
+  Stage-1 decision that will add a flag the same way.
 - Presets: `ReadPolicy::strict()` (new-API default),
   `ReadPolicy::legacy()` (compat default, matching current observable
   behaviour).
@@ -927,7 +953,8 @@ Markdown, `requirements.json`, and SQLite with traceability views.
 
 ### 13.2 Tooling and CI
 
-- A trace scanner (natural home: `tools/` in this repository, reusing
+- A trace scanner (prototyped as `spike/tools/trace_scan.py`; natural
+  home: `tools/` in this repository, reusing
   the database's `tools/reqdb` model code; the database side already has
   `gapscan.py`, which scans a libtiff checkout against the tag
   registries) parses annotations, validates every cited ID against the
@@ -1033,7 +1060,9 @@ contributors needed, which the RFC should say plainly).
 
 **Stage 0 — Decisions and scaffolding (2–3 pm).**
 RFC from this document; community sign-off on the `libtiff_<component>`
-naming, §10.4 support levels, C++17 floor, GoogleTest adoption. Repo
+naming, §10.4 support levels, C++17 floor, GoogleTest adoption. One
+style decision is already made from the spike: the core permits a single
+internal `TRY` macro for error propagation (§7.1). Repo
 layout (`core/`, `capi/`, `compat/` [initially empty], `test/core/`,
 `test/capi/`). Toolchain: CMake + Autotools C++17 wiring, vendored
 `expected`, clang-format/clang-tidy profiles for new code, CI jobs
@@ -1103,9 +1132,10 @@ entered by its own RFC once libtiff_core is stable and adopted.
   `target_compile_features(tiff_core PRIVATE cxx_std_17)`.
 - Platforms without C++17 keep working via the maintenance branch; the
   RFC must state the support window.
-- No new mandatory third-party dependencies: the `expected` polyfill is
-  vendored single-header; GoogleTest is test-only (FetchContent/vendored,
-  like other projects; never installed).
+- No new mandatory third-party dependencies: the `expected` and `span`
+  polyfills are vendored single-header libraries (tl::expected,
+  tcb::span — license review at Stage 0); GoogleTest is test-only
+  (FetchContent/vendored, like other projects; never installed).
 - `-Dfatal-warnings=ON -Dextra-warnings=ON` discipline extends to the new
   code with a stricter new-code-only profile (clang-tidy checks for
   naked `new`, unchecked narrowing, missing `[[nodiscard]]` — every
@@ -1132,15 +1162,16 @@ entered by its own RFC once libtiff_core is stable and adopted.
    `doc/project/rfcs/` alongside the work items.
 2. Land the independent quick fixes now (maintenance branch): `_TIFFcalloc`
    export, LogLuv export inconsistency documentation.
-3. Prototype the Stage-1 slice (header+IFD parse, geometry, PackBits,
-   safe-API open/read of a strip) as a spike to validate the layer
-   boundaries, the port interfaces, and the policy design before the RFC
-   is finalised — small enough to throw away, concrete enough to de-risk
-   §10. Annotate it with `[impl STR-*]`/`[verify STR-*]` markers to
-   exercise the trace scanner on real code.
-4. Pin a first tiff-specification release and build the trace scanner
-   against the vendored `requirements.json` (§13), so the RFC can show a
-   working traceability matrix rather than describe one.
+3. Done: the Stage-1 spike (`spike/`, findings in `spike/FINDINGS.md`)
+   validated the layer boundaries, port interfaces, policy design and
+   traceability annotations on real code, and the verify gate caught a
+   BTF-009 conformance bug. Its fold-forward decisions are recorded in
+   §7.1, §8.3 and Stage 0.
+4. Pin a first tiff-specification release and vendor its
+   `requirements.json` (§13); the scanner prototype
+   (`spike/tools/trace_scan.py`) currently reads a live checkout. Feed
+   the spike-found registry gap (`repair.bitspersample-count`,
+   TAG-258-01) back to the database.
 5. Survey the major downstreams on §10.4 (custom codecs, tag methods,
    `tiffiop.h` usage) — their answers size the compat-support interface.
 
