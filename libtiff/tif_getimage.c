@@ -1302,6 +1302,9 @@ static int gtStripContig(TIFFRGBAImage *img, uint32_t *raster, uint32_t rwidth,
     int32_t fromskew, toskew;
     int ret = 1, flip;
     tmsize_t maxstripsize;
+    int ycbcr_subsampled = 0;
+    uint32_t ycbcr_bpr = 0; /* blocks per strip row */
+    uint32_t ycbcr_bsz = 0; /* bytes per block */
 
     uint32_t wcpy;            /* samples to copy in raster width direction */
     uint32_t hcpy;            /* lines to copy in raster height direction */
@@ -1323,11 +1326,18 @@ static int gtStripContig(TIFFRGBAImage *img, uint32_t *raster, uint32_t rwidth,
 
     TIFFGetFieldDefaulted(tif, TIFFTAG_YCBCRSUBSAMPLING, &subsamplinghor,
                           &subsamplingver);
-    if (subsamplingver == 0)
+    if (subsamplinghor == 0 || subsamplingver == 0)
     {
         TIFFErrorExtR(tif, TIFFFileName(tif),
-                      "Invalid vertical YCbCr subsampling");
+                      "Invalid YCbCr subsampling");
         return 0;
+    }
+    if (img->photometric == PHOTOMETRIC_YCBCR && !isUpSampled(tif) &&
+        (subsamplinghor > 1 || subsamplingver > 1))
+    {
+        ycbcr_subsampled = 1;
+        ycbcr_bpr = TIFFhowmany_32(img->width, subsamplinghor);
+        ycbcr_bsz = (uint32_t)subsamplinghor * subsamplingver + 2;
     }
 
     maxstripsize = TIFFStripSize(tif);
@@ -1385,12 +1395,30 @@ static int gtStripContig(TIFFRGBAImage *img, uint32_t *raster, uint32_t rwidth,
             break;
         }
         /* pos = read offset into strip-buffer where to start reading. */
-        pos = (tmsize_t)((uint32_t)((int32_t)row + img->row_offset) %
-                         rowsperstrip) *
-                  scanline +
-              (((tmsize_t)img->col_offset * img->samplesperpixel *
-                img->bitspersample) /
-               8);
+        if (ycbcr_subsampled)
+        {
+            uint32_t row_in_strip =
+                (uint32_t)((int32_t)row + img->row_offset) % rowsperstrip;
+            tmsize_t row_byte_offset =
+                (tmsize_t)(row_in_strip / subsamplingver) * ycbcr_bpr *
+                ycbcr_bsz;
+            tmsize_t col_byte_offset =
+                (img->col_offset != 0)
+                    ? (tmsize_t)((uint32_t)img->col_offset / subsamplinghor) *
+                          ycbcr_bsz
+                    : 0;
+            pos = row_byte_offset + col_byte_offset;
+        }
+        else
+        {
+            pos =
+                (tmsize_t)((uint32_t)((int32_t)row + img->row_offset) %
+                           rowsperstrip) *
+                    scanline +
+                (((tmsize_t)img->col_offset * img->samplesperpixel *
+                  img->bitspersample) /
+                 8);
+        }
         /* roffset = offset into raster, where to write. */
         tmsize_t roffset = (tmsize_t)y * rwidth;
         (*put)(img, p_raster_start + roffset, 0, y, wcpy, nrow, fromskew,
