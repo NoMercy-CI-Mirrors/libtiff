@@ -44,11 +44,8 @@
 static void setByteArray(TIFF *tif, void **vpp, const void *vp, size_t nmemb,
                          size_t elem_size)
 {
-    if (*vpp)
-    {
-        _TIFFfreeExt(tif, *vpp);
-        *vpp = 0;
-    }
+    void *old = *vpp;
+    *vpp = NULL;
     if (vp)
     {
         tmsize_t bytes = _TIFFMultiplySSize(NULL, (tmsize_t)nmemb,
@@ -58,6 +55,8 @@ static void setByteArray(TIFF *tif, void **vpp, const void *vp, size_t nmemb,
         if (*vpp)
             _TIFFmemcpy(*vpp, vp, bytes);
     }
+    if (old)
+        _TIFFfreeExt(tif, old);
 }
 void _TIFFsetByteArray(void **vpp, const void *vp, uint32_t n)
 {
@@ -229,6 +228,7 @@ static int _TIFFVSetField(TIFF *tif, uint32_t tag, va_list ap)
     uint32_t v32, v;
     double dblval;
     char *s;
+    void *old_custom_value = NULL;
     const TIFFField *fip = TIFFFindField(tif, tag, TIFF_ANY);
     uint32_t standard_tag = tag;
     if (fip == NULL) /* cannot happen since OkToChangeTag() already checks it */
@@ -721,11 +721,8 @@ static int _TIFFVSetField(TIFF *tif, uint32_t tag, va_list ap)
                 if (td->td_customValues[iCustom].info->field_tag == tag)
                 {
                     tv = td->td_customValues + iCustom;
-                    if (tv->value != NULL)
-                    {
-                        _TIFFfreeExt(tif, tv->value);
-                        tv->value = NULL;
-                    }
+                    old_custom_value = tv->value;
+                    tv->value = NULL;
                     break;
                 }
             }
@@ -1046,6 +1043,11 @@ static int _TIFFVSetField(TIFF *tif, uint32_t tag, va_list ap)
                     }
                 }
             }
+            if (old_custom_value)
+            {
+                _TIFFfreeExt(tif, old_custom_value);
+                old_custom_value = NULL;
+            }
         }
     }
     if (status)
@@ -1057,6 +1059,8 @@ static int _TIFFVSetField(TIFF *tif, uint32_t tag, va_list ap)
     }
 
 end:
+    if (old_custom_value)
+        _TIFFfreeExt(tif, old_custom_value);
     va_end(ap);
     return (status);
 badvalue:
@@ -1117,6 +1121,8 @@ badvalueifd8long8:
     {
         assert(0);
     }
+    if (old_custom_value)
+        _TIFFfreeExt(tif, old_custom_value);
     va_end(ap);
 }
     return (0);
