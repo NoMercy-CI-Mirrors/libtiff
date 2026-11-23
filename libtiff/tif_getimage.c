@@ -974,6 +974,31 @@ static int gtTileContig(TIFFRGBAImage *img, uint32_t *raster, uint32_t rwidth,
                                        img->samplesperpixel *
                                        img->bitspersample))
         return 0;
+
+    /* Determine if YCbCr subsampling requires block-aware pos calculation. */
+    int ycbcr_subsampled = 0;
+    uint16_t ycbcr_ss_h = 1, ycbcr_ss_v = 1;
+    uint32_t ycbcr_bpr = 0; /* blocks per tile row */
+    uint32_t ycbcr_bsz = 0; /* bytes per block */
+    if (img->photometric == PHOTOMETRIC_YCBCR && !isUpSampled(tif))
+    {
+        TIFFGetFieldDefaulted(tif, TIFFTAG_YCBCRSUBSAMPLING, &ycbcr_ss_h,
+                              &ycbcr_ss_v);
+        if (ycbcr_ss_h == 0 || ycbcr_ss_v == 0)
+        {
+            TIFFErrorExtR(tif, TIFFFileName(tif),
+                          "Invalid YCbCr subsampling (%d, %d)", (int)ycbcr_ss_h,
+                          (int)ycbcr_ss_v);
+            return 0;
+        }
+        if (ycbcr_ss_h > 1 || ycbcr_ss_v > 1)
+        {
+            ycbcr_subsampled = 1;
+            ycbcr_bpr = TIFFhowmany_32(tw, ycbcr_ss_h);
+            ycbcr_bsz = (uint32_t)ycbcr_ss_h * ycbcr_ss_v + 2;
+        }
+    }
+
     for (row = 0; ret != 0 && row < hcpy; row += nrow)
     {
         rowstoread = th - ((uint32_t)row + (uint32_t)img->row_offset) % th;
@@ -995,11 +1020,22 @@ static int gtTileContig(TIFFRGBAImage *img, uint32_t *raster, uint32_t rwidth,
                 ret = 0;
                 break;
             }
-            pos = (((uint32_t)row + (uint32_t)img->row_offset) % th) *
-                      TIFFTileRowSize(tif) +
-                  (((tmsize_t)fromskew * img->samplesperpixel *
-                    img->bitspersample) /
-                   8);
+            if (ycbcr_subsampled)
+            {
+                uint32_t rit =
+                    ((uint32_t)row + (uint32_t)img->row_offset) % th;
+                pos = (tmsize_t)(rit / ycbcr_ss_v) * ycbcr_bpr * ycbcr_bsz +
+                      (tmsize_t)(fromskew / ycbcr_ss_h) * ycbcr_bsz;
+            }
+            else
+            {
+                pos =
+                    (((uint32_t)row + (uint32_t)img->row_offset) % th) *
+                        TIFFTileRowSize(tif) +
+                    (((tmsize_t)fromskew * img->samplesperpixel *
+                      img->bitspersample) /
+                     8);
+            }
             if (tocol + this_tw > wcpy)
             {
                 /*
