@@ -95,15 +95,6 @@ static const char *const orientNames[] = {
 #define NORIENTNAMES (sizeof(orientNames) / sizeof(orientNames[0]))
 
 /**
- * @var tagnames
- * @brief Supply display labels for anonymous GDAL metadata and nodata tags.
- * @ingroup libtiff_private_directory_printing
- *
- * Only generic printing consults these static overrides, and only for
- * anonymous descriptors; no registration or ownership change occurs.
- */
-
-/**
  * @struct tagname
  * @brief Associate an anonymous on-disk tag with a friendly print label.
  * @ingroup libtiff_private_directory_printing
@@ -111,17 +102,26 @@ static const char *const orientNames[] = {
  * Source-local records own no storage; name points to a static literal. The
  * overrides do not register descriptors or change tag-getter contracts.
  */
-
-static const struct tagname
+struct tagname
 {
     /** @brief On-disk tag identifier to relabel. */
     uint16_t tag;
     /** @brief Borrowed static null-terminated display name. */
     const char *name;
-} tagnames[] = {
+};
+
+/**
+ * @brief Supply display labels for anonymous GDAL metadata and nodata tags.
+ * @ingroup libtiff_private_directory_printing
+ *
+ * Only generic printing consults these static overrides, and only for
+ * anonymous descriptors; no registration or ownership change occurs.
+ */
+static const struct tagname tagnames[] = {
     {TIFFTAG_GDAL_METADATA, "GDAL Metadata"},
     {TIFFTAG_GDAL_NODATA, "GDAL NoDataValue"},
 };
+
 /**
  * @brief Count the anonymous-tag friendly-name overrides.
  * @ingroup libtiff_private_directory_printing

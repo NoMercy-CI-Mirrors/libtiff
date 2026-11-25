@@ -57,6 +57,8 @@ purpose. Add an extended description for behaviour that needs explanation;
 do not repeat the brief in different words.
 
 - Document public declarations in installed headers, including `tiffio.hxx`.
+  Declarations that the reference's preprocessing does not see, such as the
+  Windows-only `TIFFOpenW()` family, are documented beside their definitions.
 - Document private declarations and members in their existing private headers.
 - Document source-local functions, types, and members beside their definitions.
 - Maintain one authoritative contract per symbol. Move or reconcile existing
@@ -73,6 +75,9 @@ do not repeat the brief in different words.
 - For generated declarations, edit the template or generator, preserving any
   formatting requirements. Keep CMake and Autotools templates consistent. Do not
   hand-edit generated tables or headers.
+- Attach documentation blocks to the declaration they describe. Do not use
+  detached `@fn` or `@var` blocks: Doxygen 1.9.8 drops them when they also carry
+  `@ingroup` (or sit in an `@addtogroup` region).
 - Put each documentation block on its own lines before the declaration, macro,
   enumerator or member it describes. Do not put documentation at the end of a
   line of code, such as `#define X 1 /**< ... */`.
@@ -180,7 +185,10 @@ Input discovery is restricted to library C/C++ headers and sources plus these
 documentation pages and configured library headers. Both platform backends and
 optional codec files are inputs, but preprocessing still controls which
 conditional declarations are visible. Configured headers describe the current
-build. JBIG source contracts are additionally enabled for documentation when
+build. They are documented through generated copies in which each option the
+build leaves undefined is defined and marked as not defined in this build, so
+that every option keeps its own documentation; the real configured headers
+still control preprocessing. JBIG source contracts are additionally enabled for documentation when
 that optional dependency is absent. The JPEG source view also exposes the
 IJG 9d compatibility helper through documentation-only version macros. These
 preprocessing choices select source contracts for the reference; they do not

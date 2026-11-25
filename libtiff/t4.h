@@ -65,25 +65,6 @@ typedef struct tableentry
  * NB: The G3CODE_INVALID entries are only used
  *     during state generation (see mkg3states.c).
  */
-/**
- * @var const tableentry TIFFFaxWhiteCodes[]
- * @brief Describe white CCITT terminating and makeup run codes.
- * @ingroup libtiff_private_fax
- *
- * Immutable library-lifetime storage; index by terminating run or
- * sixty-four-pixel makeup offset as used by putspan. Negative sentinels
- * also support state-table generation. Do not modify or free it.
- */
-
-/**
- * @var const tableentry TIFFFaxBlackCodes[]
- * @brief Describe black CCITT terminating and makeup run codes.
- * @ingroup libtiff_private_fax
- *
- * Immutable library-lifetime storage; index by terminating run or
- * sixty-four-pixel makeup offset as used by putspan. Negative sentinels
- * also support state-table generation. Do not modify or free it.
- */
 
 #ifdef G3CODES
 const tableentry TIFFFaxWhiteCodes[] = {
@@ -310,7 +291,23 @@ const tableentry TIFFFaxBlackCodes[] = {
     {12, 0x0, G3CODE_INVALID}, /* 0000 0000 0000 */
 };
 #else
+/**
+ * @brief Describe white CCITT terminating and makeup run codes.
+ * @ingroup libtiff_private_fax
+ *
+ * Immutable library-lifetime storage; index by terminating run or
+ * sixty-four-pixel makeup offset as used by putspan. Negative sentinels
+ * also support state-table generation. Do not modify or free it.
+ */
 extern const tableentry TIFFFaxWhiteCodes[];
+/**
+ * @brief Describe black CCITT terminating and makeup run codes.
+ * @ingroup libtiff_private_fax
+ *
+ * Immutable library-lifetime storage; index by terminating run or
+ * sixty-four-pixel makeup offset as used by putspan. Negative sentinels
+ * also support state-table generation. Do not modify or free it.
+ */
 extern const tableentry TIFFFaxBlackCodes[];
 #endif
 #endif /* _T4_ */

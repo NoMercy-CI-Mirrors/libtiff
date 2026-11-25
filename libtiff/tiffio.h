@@ -3224,110 +3224,118 @@ extern "C"
      */
     extern int TIFFForceStrileArrayWriting(TIFF *tif);
 
-    /**
-     * @fn void TIFFPrintDirectory(TIFF *tif, FILE *fd, long flags)
-     * @brief Print a human-readable description of the current directory.
-     * @ingroup libtiff_public_directory_printing
-     *
-     * Requires consistent initialised directory/codec state, including valid
-     * present-tag pointers and array lengths. Prints core fields, stored custom
-     * values, the installed print callback, then optional strile rows. Flags
-     * control selected large core tables, not all custom output; even
-     * TIFFPRINT_NONE can emit full custom arrays or raw XML. C++ permits
-     * omitting flags (default zero); C requires all three arguments. See @ref
-     * directory_printing for formatting and representation limits.
-     *
-     * Borrows the handle/stream and all values without transferring ownership.
-     * Can allocate temporary scalar getter buffers, invoke tag/codec/print
-     * callbacks, change field-lookup/cache state, and load deferred strile
-     * arrays with I/O; borrowed array pointers can be invalidated by loading.
-     * Does not change directory selection or decode pixels in the core path,
-     * and does not save dirty metadata. Callbacks may have additional effects.
-     * Serialise handle access and output externally if ordering matters.
-     *
-     * Returns no status, does not check stdio failures, and does not flush or
-     * close the stream. Output can be partial; use ferror() and
-     * caller-controlled flushing for stream status. Getter/metadata/allocation
-     * failures can dispatch diagnostics or omit fields, and strile errors can
-     * appear as zero values without an aggregate error indicator. Scalar
-     * temporary allocation is not checked before passing its result to
-     * TIFFGetField(), so exhaustion is not uniformly handled safely. This is a
-     * diagnostic formatter, not validation or a complete serialisation API; no
-     * errno guarantee or rollback.
-     *
-     * @param[in,out] tif Non-NULL live handle with consistent current values
-     * and methods; may mutate caches and invoke callbacks.
-     * @param[in,out] fd Non-NULL writable caller-owned stdio stream; not closed
-     * or flushed by this helper.
-     * @param[in] flags Bitwise OR of TIFFPRINT_* values; zero for ordinary
-     * detail. Unrecognised/legacy bits are forwarded unchanged to the callback.
-     */
-
-    /**
-     * @fn int TIFFReadScanline(TIFF*, void*, uint32_t, uint16_t)
-     * @brief Decode one image scanline into caller storage.
-     * @ingroup libtiff_public_image_reading
-     *
-     * Requires readable strip organisation; validates row and separate-plane
-     * sample through TIFFSeek(). A whole decoded scanline must fit in buf.
-     * Invokes decoder and postdecode; after decoder dispatch caches row+1 even
-     * on failure. A failed seek can zero the output, while initial
-     * mode/organisation rejection or codec failure need not. NULL output is
-     * only supported by a specifically configured callback-based codec path,
-     * not generally. C++ defaults sample to zero. May allocate or replace
-     * handle-owned raw/strile buffers, load deferred metadata, seek and read
-     * client I/O, and invoke codec/tag/diagnostic callbacks; reading never
-     * writes to the file. No handle or caller-buffer ownership transfers.
-     * Failure is not transactional: buffers, codec progress, indices, flags,
-     * metadata, or file position can already have changed; disregard partial
-     * decoded output unless a codec explicitly documents otherwise. No errno or
-     * rollback guarantee. See @ref image_transfers.
-     *
-     * @param[in,out] tif Non-NULL live handle with matching current geometry
-     * and codec methods; serialise access externally.
-     * @param[out] buf Caller-owned writable output of at least
-     * TIFFScanlineSize() bytes.
-     * @param[in] row Zero-based row below ImageLength.
-     * @param[in] sample Separate sample plane; ordinary contiguous access uses
-     * zero.
-     * @return One after positive decoder success, minus one for mode, geometry,
-     * seek, or decode failure.
-     */
-
-    /**
-     * @fn int TIFFWriteScanline(TIFF*, void*, uint32_t, uint16_t)
-     * @brief Encode and buffer one image scanline.
-     * @ingroup libtiff_public_image_writing
-     *
-     * Requires strip organisation and a writable handle. Can extend ImageLength
-     * for contiguous storage, not separate planes; skipped/backward rows depend
-     * on codec seek support. Performs in-place postdecode byte swapping on the
-     * input before encoding and does not restore it. Does not by itself persist
-     * the IFD or guarantee all compressed data has reached the file. Row
-     * advances to row+1 after encoder dispatch even when it fails. C++ defaults
-     * sample to zero. May allocate or replace handle-owned raw/strile buffers,
-     * load deferred metadata, seek and write client I/O, and invoke
-     * codec/tag/diagnostic callbacks. No handle or caller-buffer ownership
-     * transfers. Failure is not transactional: buffers, codec progress,
-     * indices, flags, metadata, file position, or file bytes can already have
-     * changed, and data already written is not removed. No errno, rollback, or
-     * durability guarantee. See @ref image_transfers.
-     *
-     * @param[in,out] tif Non-NULL live handle with matching current geometry
-     * and codec methods; serialise access externally.
-     * @param[in,out] buf Caller-owned scanline of at least TIFFScanlineSize()
-     * bytes; may be byte-swapped in place before encoding.
-     * @param[in] row Zero-based row; for contiguous storage a row at or beyond
-     * ImageLength extends it to row+1.
-     * @param[in] sample Separate sample plane; ordinary contiguous access uses
-     * zero.
-     * @return Encoder callback status (normally one/zero), or minus one for
-     * setup/seek rejection; zero must also be treated as failure.
-     */
-
-    // clang-format off
+#if defined(c_plusplus) || defined(__cplusplus)
+    extern void TIFFPrintDirectory(TIFF *tif, FILE *fd, long flags = 0);
+    extern int TIFFReadScanline(TIFF *tif, void *buf, uint32_t row,
+                                uint16_t sample = 0);
+    extern int TIFFWriteScanline(TIFF *tif, void *buf, uint32_t row,
+                                 uint16_t sample = 0);
+    extern int TIFFReadRGBAImage(TIFF *, uint32_t, uint32_t, uint32_t *,
+                                 int = 0);
+    extern int TIFFReadRGBAImageOriented(TIFF *, uint32_t, uint32_t, uint32_t *,
+                                         int = ORIENTATION_BOTLEFT, int = 0);
+#else
 /**
- * @fn int TIFFReadRGBAImage(TIFF *tif, uint32_t rwidth, uint32_t rheight,                       uint32_t *raster, int stop)
+ * @brief Print a human-readable description of the current directory.
+ * @ingroup libtiff_public_directory_printing
+ *
+ * Requires consistent initialised directory/codec state, including valid
+ * present-tag pointers and array lengths. Prints core fields, stored custom
+ * values, the installed print callback, then optional strile rows. Flags
+ * control selected large core tables, not all custom output; even
+ * TIFFPRINT_NONE can emit full custom arrays or raw XML. C++ permits
+ * omitting flags (default zero); C requires all three arguments. See @ref
+ * directory_printing for formatting and representation limits.
+ *
+ * Borrows the handle/stream and all values without transferring ownership.
+ * Can allocate temporary scalar getter buffers, invoke tag/codec/print
+ * callbacks, change field-lookup/cache state, and load deferred strile
+ * arrays with I/O; borrowed array pointers can be invalidated by loading.
+ * Does not change directory selection or decode pixels in the core path,
+ * and does not save dirty metadata. Callbacks may have additional effects.
+ * Serialise handle access and output externally if ordering matters.
+ *
+ * Returns no status, does not check stdio failures, and does not flush or
+ * close the stream. Output can be partial; use ferror() and
+ * caller-controlled flushing for stream status. Getter/metadata/allocation
+ * failures can dispatch diagnostics or omit fields, and strile errors can
+ * appear as zero values without an aggregate error indicator. Scalar
+ * temporary allocation is not checked before passing its result to
+ * TIFFGetField(), so exhaustion is not uniformly handled safely. This is a
+ * diagnostic formatter, not validation or a complete serialisation API; no
+ * errno guarantee or rollback.
+ *
+ * @param[in,out] tif Non-NULL live handle with consistent current values
+ * and methods; may mutate caches and invoke callbacks.
+ * @param[in,out] fd Non-NULL writable caller-owned stdio stream; not closed
+ * or flushed by this helper.
+ * @param[in] flags Bitwise OR of TIFFPRINT_* values; zero for ordinary
+ * detail. Unrecognised/legacy bits are forwarded unchanged to the callback.
+ */
+extern void TIFFPrintDirectory(TIFF *tif, FILE *fd, long flags);
+/**
+ * @brief Decode one image scanline into caller storage.
+ * @ingroup libtiff_public_image_reading
+ *
+ * Requires readable strip organisation; validates row and separate-plane
+ * sample through TIFFSeek(). A whole decoded scanline must fit in buf.
+ * Invokes decoder and postdecode; after decoder dispatch caches row+1 even
+ * on failure. A failed seek can zero the output, while initial
+ * mode/organisation rejection or codec failure need not. NULL output is
+ * only supported by a specifically configured callback-based codec path,
+ * not generally. C++ defaults sample to zero. May allocate or replace
+ * handle-owned raw/strile buffers, load deferred metadata, seek and read
+ * client I/O, and invoke codec/tag/diagnostic callbacks; reading never
+ * writes to the file. No handle or caller-buffer ownership transfers.
+ * Failure is not transactional: buffers, codec progress, indices, flags,
+ * metadata, or file position can already have changed; disregard partial
+ * decoded output unless a codec explicitly documents otherwise. No errno or
+ * rollback guarantee. See @ref image_transfers.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching current geometry
+ * and codec methods; serialise access externally.
+ * @param[out] buf Caller-owned writable output of at least
+ * TIFFScanlineSize() bytes.
+ * @param[in] row Zero-based row below ImageLength.
+ * @param[in] sample Separate sample plane; ordinary contiguous access uses
+ * zero.
+ * @return One after positive decoder success, minus one for mode, geometry,
+ * seek, or decode failure.
+ */
+extern int TIFFReadScanline(TIFF *tif, void *buf, uint32_t row,
+                            uint16_t sample);
+/**
+ * @brief Encode and buffer one image scanline.
+ * @ingroup libtiff_public_image_writing
+ *
+ * Requires strip organisation and a writable handle. Can extend ImageLength
+ * for contiguous storage, not separate planes; skipped/backward rows depend
+ * on codec seek support. Performs in-place postdecode byte swapping on the
+ * input before encoding and does not restore it. Does not by itself persist
+ * the IFD or guarantee all compressed data has reached the file. Row
+ * advances to row+1 after encoder dispatch even when it fails. C++ defaults
+ * sample to zero. May allocate or replace handle-owned raw/strile buffers,
+ * load deferred metadata, seek and write client I/O, and invoke
+ * codec/tag/diagnostic callbacks. No handle or caller-buffer ownership
+ * transfers. Failure is not transactional: buffers, codec progress,
+ * indices, flags, metadata, file position, or file bytes can already have
+ * changed, and data already written is not removed. No errno, rollback, or
+ * durability guarantee. See @ref image_transfers.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching current geometry
+ * and codec methods; serialise access externally.
+ * @param[in,out] buf Caller-owned scanline of at least TIFFScanlineSize()
+ * bytes; may be byte-swapped in place before encoding.
+ * @param[in] row Zero-based row; for contiguous storage a row at or beyond
+ * ImageLength extends it to row+1.
+ * @param[in] sample Separate sample plane; ordinary contiguous access uses
+ * zero.
+ * @return Encoder callback status (normally one/zero), or minus one for
+ * setup/seek rejection; zero must also be treated as failure.
+ */
+extern int TIFFWriteScanline(TIFF *tif, void *buf, uint32_t row,
+                             uint16_t sample);
+/**
  * @brief Read the current image into a packed RGBA raster.
  * @ingroup libtiff_public_rgba
  *
@@ -3352,10 +3360,9 @@ extern "C"
  * @return One for default-getter completion, zero on setup/fatal read
  * failure; tolerated corrupt data can still yield one.
  */
-// clang-format on
-// clang-format off
+extern int TIFFReadRGBAImage(TIFF *tif, uint32_t rwidth, uint32_t rheight,
+                             uint32_t *raster, int stop);
 /**
- * @fn int TIFFReadRGBAImageOriented(TIFF *tif, uint32_t rwidth, uint32_t rheight,                               uint32_t *raster, int orientation, int stop)
  * @brief Read the current image into a packed RGBA raster.
  * @ingroup libtiff_public_rgba
  *
@@ -3383,26 +3390,9 @@ extern "C"
  * @return One for default-getter completion, zero on setup/fatal read
  * failure; tolerated corrupt data can still yield one.
  */
-// clang-format on
-#if defined(c_plusplus) || defined(__cplusplus)
-    extern void TIFFPrintDirectory(TIFF *tif, FILE *fd, long flags = 0);
-    extern int TIFFReadScanline(TIFF *tif, void *buf, uint32_t row,
-                                uint16_t sample = 0);
-    extern int TIFFWriteScanline(TIFF *tif, void *buf, uint32_t row,
-                                 uint16_t sample = 0);
-    extern int TIFFReadRGBAImage(TIFF *, uint32_t, uint32_t, uint32_t *,
-                                 int = 0);
-    extern int TIFFReadRGBAImageOriented(TIFF *, uint32_t, uint32_t, uint32_t *,
-                                         int = ORIENTATION_BOTLEFT, int = 0);
-#else
-extern void TIFFPrintDirectory(TIFF *tif, FILE *fd, long flags);
-extern int TIFFReadScanline(TIFF *tif, void *buf, uint32_t row,
-                            uint16_t sample);
-extern int TIFFWriteScanline(TIFF *tif, void *buf, uint32_t row,
-                             uint16_t sample);
-extern int TIFFReadRGBAImage(TIFF *, uint32_t, uint32_t, uint32_t *, int);
-extern int TIFFReadRGBAImageOriented(TIFF *, uint32_t, uint32_t, uint32_t *,
-                                     int, int);
+extern int TIFFReadRGBAImageOriented(TIFF *tif, uint32_t rwidth,
+                                     uint32_t rheight, uint32_t *raster,
+                                     int orientation, int stop);
 #endif
 
     /**
@@ -4090,75 +4080,12 @@ extern int TIFFReadRGBAImageOriented(TIFF *, uint32_t, uint32_t, uint32_t *,
      */
     extern TIFF *TIFFOpenExt(const char *name, const char *mode,
                              TIFFOpenOptions *opts);
-    /**
-     * @fn TIFF *TIFFOpenW(const wchar_t *name, const char *mode)
-     * @brief Open a TIFF file using a wide Windows pathname.
-     * @ingroup libtiff_public_lifecycle
-     *
-     * Opens the OS resource, then initialises a TIFF handle. Pathname mode w
-     * truncates an existing file, a may create one, and r/r+ require an
-     * existing resource. Opening may read a directory, map the file, or write a
-     * header; failures do not roll back file changes.
-     *
-     * Equivalent to TIFFOpenWExt(name, mode, NULL). Reports ordinary
-     * opening/initialisation failures through the configured error handlers.
-     * errno/GetLastError may reflect a platform failure but are not a complete
-     * library-error channel. See @ref lifecycle for mode and lifetime details.
-     *
-     * Available only on Windows. The original wide pathname opens the resource;
-     * an ANSI-code-page conversion is used for the diagnostic name, falling
-     * back to "<unknown>" if conversion sizing fails. The current
-     * filename-conversion allocation-failure path returns NULL without closing
-     * the just-opened OS resource; this implementation limitation is recorded
-     * in @ref lifecycle_limits.
-     *
-     * @param[in] name Non-NULL, null-terminated Windows wide-character
-     * pathname.
-     * @param[in] mode Non-NULL, null-terminated open mode; see @ref
-     * lifecycle_modes.
-     * @return An owned TIFF handle to release with TIFFClose(), or NULL on
-     * failure. On normal failure paths the internally opened resource is
-     * closed. The conversion-allocation failure exception to resource cleanup
-     * is described above.
-     */
-    /**
-     * @fn TIFF *TIFFOpenWExt(const wchar_t *name, const char *mode,
-     * TIFFOpenOptions *opts)
-     * @brief Open a TIFF file using a wide Windows pathname.
-     * @ingroup libtiff_public_lifecycle
-     *
-     * Opens the OS resource, then initialises a TIFF handle. Pathname mode w
-     * truncates an existing file, a may create one, and r/r+ require an
-     * existing resource. Opening may read a directory, map the file, or write a
-     * header; failures do not roll back file changes.
-     *
-     * Uses the supplied options. Diagnostic callbacks may run before a handle
-     * exists; per-handle callback contexts remain borrowed through close.
-     * Reports ordinary opening/initialisation failures through the configured
-     * error handlers. errno/GetLastError may reflect a platform failure but are
-     * not a complete library-error channel. See @ref lifecycle for mode and
-     * lifetime details.
-     *
-     * Available only on Windows. The original wide pathname opens the resource;
-     * an ANSI-code-page conversion is used for the diagnostic name, falling
-     * back to "<unknown>" if conversion sizing fails. The current
-     * filename-conversion allocation-failure path returns NULL without closing
-     * the just-opened OS resource; this implementation limitation is recorded
-     * in @ref lifecycle_limits.
-     *
-     * @param[in] name Non-NULL, null-terminated Windows wide-character
-     * pathname.
-     * @param[in] mode Non-NULL, null-terminated open mode; see @ref
-     * lifecycle_modes.
-     * @param[in] opts Borrowed open options, or NULL for defaults; copied
-     * before return.
-     * @return An owned TIFF handle to release with TIFFClose(), or NULL on
-     * failure. On normal failure paths the internally opened resource is
-     * closed. The conversion-allocation failure exception to resource cleanup
-     * is described above.
-     */
 #ifdef _WIN32
-
+    /*
+     * TIFFOpenW() and TIFFOpenWExt() are documented with their definitions in
+     * tif_win32.c: the reference is not generated for Windows, so these
+     * Windows-only declarations are not visible to Doxygen.
+     */
     extern TIFF *TIFFOpenW(const wchar_t *name, const char *mode);
 
     extern TIFF *TIFFOpenWExt(const wchar_t *name, const char *mode,
@@ -5277,128 +5204,6 @@ extern int TIFFReadRGBAImageOriented(TIFF *, uint32_t, uint32_t, uint32_t *,
      * @param[out] XYZ Non-NULL caller-owned writable three-float result.
      */
     extern void LogLuv32toXYZ(uint32_t p, float *XYZ);
-    // clang-format off
-/**
- * @fn int LogL16fromY(double Y, int em)
- * @brief Encode linear luminance as a 16-bit logarithmic value.
- * @ingroup libtiff_public_logluv
- *
- * Saturates magnitudes at approximately 1.8371976e19, maps magnitudes below
- * approximately 5.4136769e-20 to zero, and quantises log2 magnitude with
- * its sign. Negative encodings can be returned as sign-extended int values;
- * inspect the low sixteen bits rather than interpreting a negative result
- * as an error. SGILOGENCODE_NODITHER truncates deterministically; other
- * method values use the shared pseudo-random dither state. Serialise
- * dithering across threads; state is seeded from time on first use and is
- * not caller-owned. C++ defaults em to SGILOGENCODE_NODITHER. No
- * allocation, TIFF handle access, client I/O, diagnostics, retained
- * pointers, or ownership transfer occurs. There is no separate error status
- * unless stated.
- *
- * @param[in] Y Finite linear luminance; LogL16 supports signed values,
- * LogL10 clips low/nonpositive values to zero.
- * @param[in] em Encoding method, normally SGILOGENCODE_NODITHER or
- * SGILOGENCODE_RANDITHER.
- * @return Encoded code pattern; not a Boolean status or ownership result.
- */
-// clang-format on
-// clang-format off
-/**
- * @fn int LogL10fromY(double Y, int em)
- * @brief Encode linear luminance as a 10-bit logarithmic value.
- * @ingroup libtiff_public_logluv
- *
- * Saturates Y>=15.742 to 1023 and Y<=0.00024283 to zero; quantises the
- * intermediate log2 range. Requires finite Y; NaN can reach an invalid
- * integer conversion. SGILOGENCODE_NODITHER truncates deterministically;
- * other method values use the shared pseudo-random dither state. Serialise
- * dithering across threads; state is seeded from time on first use and is
- * not caller-owned. C++ defaults em to SGILOGENCODE_NODITHER. No
- * allocation, TIFF handle access, client I/O, diagnostics, retained
- * pointers, or ownership transfer occurs. There is no separate error status
- * unless stated.
- *
- * @param[in] Y Finite linear luminance; LogL16 supports signed values,
- * LogL10 clips low/nonpositive values to zero.
- * @param[in] em Encoding method, normally SGILOGENCODE_NODITHER or
- * SGILOGENCODE_RANDITHER.
- * @return Encoded code pattern; not a Boolean status or ownership result.
- */
-// clang-format on
-// clang-format off
-/**
- * @fn int uv_encode(double u, double v, int em)
- * @brief Encode chromaticity using the irregular LogLuv quantisation table.
- * @ingroup libtiff_public_logluv
- *
- * Maps NaN coordinates to neutral chromaticity, then selects a table bin.
- * Out-of-gamut values map to a hue-indexed perimeter bin through a lazily
- * initialised shared table. Require finite coordinates after NaN handling
- * and representable quantisation arithmetic; infinities are not generally
- * safe. Serialise first-use perimeter-table initialisation and dithering
- * across threads. SGILOGENCODE_NODITHER truncates deterministically; other
- * method values use the shared pseudo-random dither state. Serialise
- * dithering across threads; state is seeded from time on first use and is
- * not caller-owned. C++ defaults em to SGILOGENCODE_NODITHER. No
- * allocation, TIFF handle access, client I/O, diagnostics, retained
- * pointers, or ownership transfer occurs. There is no separate error status
- * unless stated.
- *
- * @param[in] u Finite CIE u-prime coordinate.
- * @param[in] v Finite CIE v-prime coordinate.
- * @param[in] em Quantisation/dithering method; C++ default is no dither.
- * @return Quantised chromaticity code; no independent success/failure
- * channel.
- */
-// clang-format on
-// clang-format off
-/**
- * @fn uint32_t LogLuv24fromXYZ(float *XYZ, int em)
- * @brief Encode linear XYZ as one packed 24-bit LogLuv pixel.
- * @ingroup libtiff_public_logluv
- *
- * Encodes luminance and derives u-prime/v-prime from X+15Y+3Z. Zero encoded
- * luminance or nonpositive sum uses neutral chromaticity. Uses the
- * irregular chromaticity table and hue-preserving perimeter fallback;
- * serialise its first-use initialisation. SGILOGENCODE_NODITHER truncates
- * deterministically; other method values use the shared pseudo-random
- * dither state. Serialise dithering across threads; state is seeded from
- * time on first use and is not caller-owned. C++ defaults em to
- * SGILOGENCODE_NODITHER. No allocation, TIFF handle access, client I/O,
- * diagnostics, retained pointers, or ownership transfer occurs. There is no
- * separate error status unless stated.
- *
- * @param[in] XYZ Borrowed readable three-float finite XYZ triplet;
- * arithmetic/quantisation must remain representable.
- * @param[in] em Quantisation/dithering method; C++ defaults to no dither.
- * @return Quantised packed code; upper eight bits zero for LogLuv24, no
- * independent error status.
- */
-// clang-format on
-// clang-format off
-/**
- * @fn uint32_t LogLuv32fromXYZ(float *XYZ, int em)
- * @brief Encode linear XYZ as one packed 32-bit LogLuv pixel.
- * @ingroup libtiff_public_logluv
- *
- * Encodes luminance and derives u-prime/v-prime from X+15Y+3Z. Zero encoded
- * luminance or nonpositive sum uses neutral chromaticity. Quantises scaled
- * chromaticity components and clips codes to 0..255; signed luminance codes
- * are retained in the high word. SGILOGENCODE_NODITHER truncates
- * deterministically; other method values use the shared pseudo-random
- * dither state. Serialise dithering across threads; state is seeded from
- * time on first use and is not caller-owned. C++ defaults em to
- * SGILOGENCODE_NODITHER. No allocation, TIFF handle access, client I/O,
- * diagnostics, retained pointers, or ownership transfer occurs. There is no
- * separate error status unless stated.
- *
- * @param[in] XYZ Borrowed readable three-float finite XYZ triplet;
- * arithmetic/quantisation must remain representable.
- * @param[in] em Quantisation/dithering method; C++ defaults to no dither.
- * @return Quantised packed code; upper eight bits zero for LogLuv24, no
- * independent error status.
- */
-// clang-format on
 #if defined(c_plusplus) || defined(__cplusplus)
     extern int LogL16fromY(double, int = SGILOGENCODE_NODITHER);
     extern int LogL10fromY(double, int = SGILOGENCODE_NODITHER);
@@ -5406,11 +5211,118 @@ extern int TIFFReadRGBAImageOriented(TIFF *, uint32_t, uint32_t, uint32_t *,
     extern uint32_t LogLuv24fromXYZ(float *, int = SGILOGENCODE_NODITHER);
     extern uint32_t LogLuv32fromXYZ(float *, int = SGILOGENCODE_NODITHER);
 #else
-    extern int LogL16fromY(double, int);
-    extern int LogL10fromY(double, int);
-    extern int uv_encode(double, double, int);
-    extern uint32_t LogLuv24fromXYZ(float *, int);
-    extern uint32_t LogLuv32fromXYZ(float *, int);
+    /**
+     * @brief Encode linear luminance as a 16-bit logarithmic value.
+     * @ingroup libtiff_public_logluv
+     *
+     * Saturates magnitudes at approximately 1.8371976e19, maps magnitudes below
+     * approximately 5.4136769e-20 to zero, and quantises log2 magnitude with
+     * its sign. Negative encodings can be returned as sign-extended int values;
+     * inspect the low sixteen bits rather than interpreting a negative result
+     * as an error. SGILOGENCODE_NODITHER truncates deterministically; other
+     * method values use the shared pseudo-random dither state. Serialise
+     * dithering across threads; state is seeded from time on first use and is
+     * not caller-owned. C++ defaults em to SGILOGENCODE_NODITHER. No
+     * allocation, TIFF handle access, client I/O, diagnostics, retained
+     * pointers, or ownership transfer occurs. There is no separate error status
+     * unless stated.
+     *
+     * @param[in] Y Finite linear luminance; LogL16 supports signed values,
+     * LogL10 clips low/nonpositive values to zero.
+     * @param[in] em Encoding method, normally SGILOGENCODE_NODITHER or
+     * SGILOGENCODE_RANDITHER.
+     * @return Encoded code pattern; not a Boolean status or ownership result.
+     */
+    extern int LogL16fromY(double Y, int em);
+    /**
+     * @brief Encode linear luminance as a 10-bit logarithmic value.
+     * @ingroup libtiff_public_logluv
+     *
+     * Saturates Y>=15.742 to 1023 and Y<=0.00024283 to zero; quantises the
+     * intermediate log2 range. Requires finite Y; NaN can reach an invalid
+     * integer conversion. SGILOGENCODE_NODITHER truncates deterministically;
+     * other method values use the shared pseudo-random dither state. Serialise
+     * dithering across threads; state is seeded from time on first use and is
+     * not caller-owned. C++ defaults em to SGILOGENCODE_NODITHER. No
+     * allocation, TIFF handle access, client I/O, diagnostics, retained
+     * pointers, or ownership transfer occurs. There is no separate error status
+     * unless stated.
+     *
+     * @param[in] Y Finite linear luminance; LogL16 supports signed values,
+     * LogL10 clips low/nonpositive values to zero.
+     * @param[in] em Encoding method, normally SGILOGENCODE_NODITHER or
+     * SGILOGENCODE_RANDITHER.
+     * @return Encoded code pattern; not a Boolean status or ownership result.
+     */
+    extern int LogL10fromY(double Y, int em);
+    /**
+     * @brief Encode chromaticity using the irregular LogLuv quantisation table.
+     * @ingroup libtiff_public_logluv
+     *
+     * Maps NaN coordinates to neutral chromaticity, then selects a table bin.
+     * Out-of-gamut values map to a hue-indexed perimeter bin through a lazily
+     * initialised shared table. Require finite coordinates after NaN handling
+     * and representable quantisation arithmetic; infinities are not generally
+     * safe. Serialise first-use perimeter-table initialisation and dithering
+     * across threads. SGILOGENCODE_NODITHER truncates deterministically; other
+     * method values use the shared pseudo-random dither state. Serialise
+     * dithering across threads; state is seeded from time on first use and is
+     * not caller-owned. C++ defaults em to SGILOGENCODE_NODITHER. No
+     * allocation, TIFF handle access, client I/O, diagnostics, retained
+     * pointers, or ownership transfer occurs. There is no separate error status
+     * unless stated.
+     *
+     * @param[in] u Finite CIE u-prime coordinate.
+     * @param[in] v Finite CIE v-prime coordinate.
+     * @param[in] em Quantisation/dithering method; C++ default is no dither.
+     * @return Quantised chromaticity code; no independent success/failure
+     * channel.
+     */
+    extern int uv_encode(double u, double v, int em);
+    /**
+     * @brief Encode linear XYZ as one packed 24-bit LogLuv pixel.
+     * @ingroup libtiff_public_logluv
+     *
+     * Encodes luminance and derives u-prime/v-prime from X+15Y+3Z. Zero encoded
+     * luminance or nonpositive sum uses neutral chromaticity. Uses the
+     * irregular chromaticity table and hue-preserving perimeter fallback;
+     * serialise its first-use initialisation. SGILOGENCODE_NODITHER truncates
+     * deterministically; other method values use the shared pseudo-random
+     * dither state. Serialise dithering across threads; state is seeded from
+     * time on first use and is not caller-owned. C++ defaults em to
+     * SGILOGENCODE_NODITHER. No allocation, TIFF handle access, client I/O,
+     * diagnostics, retained pointers, or ownership transfer occurs. There is no
+     * separate error status unless stated.
+     *
+     * @param[in] XYZ Borrowed readable three-float finite XYZ triplet;
+     * arithmetic/quantisation must remain representable.
+     * @param[in] em Quantisation/dithering method; C++ defaults to no dither.
+     * @return Quantised packed code; upper eight bits zero for LogLuv24, no
+     * independent error status.
+     */
+    extern uint32_t LogLuv24fromXYZ(float *XYZ, int em);
+    /**
+     * @brief Encode linear XYZ as one packed 32-bit LogLuv pixel.
+     * @ingroup libtiff_public_logluv
+     *
+     * Encodes luminance and derives u-prime/v-prime from X+15Y+3Z. Zero encoded
+     * luminance or nonpositive sum uses neutral chromaticity. Quantises scaled
+     * chromaticity components and clips codes to 0..255; signed luminance codes
+     * are retained in the high word. SGILOGENCODE_NODITHER truncates
+     * deterministically; other method values use the shared pseudo-random
+     * dither state. Serialise dithering across threads; state is seeded from
+     * time on first use and is not caller-owned. C++ defaults em to
+     * SGILOGENCODE_NODITHER. No allocation, TIFF handle access, client I/O,
+     * diagnostics, retained pointers, or ownership transfer occurs. There is no
+     * separate error status unless stated.
+     *
+     * @param[in] XYZ Borrowed readable three-float finite XYZ triplet;
+     * arithmetic/quantisation must remain representable.
+     * @param[in] em Quantisation/dithering method; C++ defaults to no dither.
+     * @return Quantised packed code; upper eight bits zero for LogLuv24, no
+     * independent error status.
+     */
+    extern uint32_t LogLuv32fromXYZ(float *XYZ, int em);
 #endif
 #endif /* LOGLUV_PUBLIC */
 

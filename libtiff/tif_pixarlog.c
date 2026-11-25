@@ -108,8 +108,34 @@
 
 #define CODE_MASK 0x7ff /* 11 bits. */
 
+/**
+ * @brief Scale low-range float lookup indices.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Process-global coefficient written by every PixarLogMakeTables call
+ * (always with the same value) and read by horizontalDifferenceF. The writes
+ * are unsynchronised, so serialise table construction against float encoding
+ * on other handles.
+ */
 static float Fltsize;
-static float LogK1, LogK2;
+/**
+ * @brief Scale logarithmic float companding.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Process-global coefficient written by every PixarLogMakeTables call
+ * (always with the same value) and read by horizontalDifferenceF. The writes
+ * are unsynchronised, so serialise table construction against float encoding
+ * on other handles.
+ */
+static float LogK1;
+/**
+ * @brief Normalise logarithmic float companding.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Process-global coefficient with the same lifetime and synchronisation
+ * requirements as LogK1.
+ */
+static float LogK2;
 
 #define REPEAT(n, op)                                                          \
     {                                                                          \
@@ -2585,37 +2611,4 @@ bad:
  * in horizontalDifference8 it indexes From8 with v; both evaluate v once.
  *
  * @param[in] v Input sample value.
- */
-
-/**
- * @var float Fltsize
- * @brief Scale low-range float lookup indices.
- * @ingroup libtiff_private_pixarlog
- *
- * Process-global coefficient written by every PixarLogMakeTables call
- * (always with the same value) and read by horizontalDifferenceF. The writes
- * are unsynchronised, so serialise table construction against float encoding
- * on other handles.
- */
-
-/**
- * @var float LogK1
- * @brief Scale logarithmic float companding.
- * @ingroup libtiff_private_pixarlog
- *
- * Process-global coefficient written by every PixarLogMakeTables call
- * (always with the same value) and read by horizontalDifferenceF. The writes
- * are unsynchronised, so serialise table construction against float encoding
- * on other handles.
- */
-
-/**
- * @var float LogK2
- * @brief Normalise logarithmic float companding.
- * @ingroup libtiff_private_pixarlog
- *
- * Process-global coefficient written by every PixarLogMakeTables call
- * (always with the same value) and read by horizontalDifferenceF. The writes
- * are unsynchronised, so serialise table construction against float encoding
- * on other handles.
  */

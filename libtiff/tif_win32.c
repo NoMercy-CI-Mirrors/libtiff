@@ -426,14 +426,75 @@ TIFF *TIFFOpenExt(const char *name, const char *mode, TIFFOpenOptions *opts)
     return tif;
 }
 
-/*
- * Open a TIFF file with a Unicode filename, for read/writing.
+/**
+ * @brief Open a TIFF file using a wide Windows pathname.
+ * @ingroup libtiff_public_lifecycle
+ *
+ * Opens the OS resource, then initialises a TIFF handle. Pathname mode w
+ * truncates an existing file, a may create one, and r/r+ require an
+ * existing resource. Opening may read a directory, map the file, or write a
+ * header; failures do not roll back file changes.
+ *
+ * Equivalent to TIFFOpenWExt(name, mode, NULL). Reports ordinary
+ * opening/initialisation failures through the configured error handlers.
+ * errno/GetLastError may reflect a platform failure but are not a complete
+ * library-error channel. See @ref lifecycle for mode and lifetime details.
+ *
+ * Available only on Windows. The original wide pathname opens the resource;
+ * an ANSI-code-page conversion is used for the diagnostic name, falling
+ * back to "<unknown>" if conversion sizing fails. The current
+ * filename-conversion allocation-failure path returns NULL without closing
+ * the just-opened OS resource; this implementation limitation is recorded
+ * in @ref lifecycle_limits.
+ *
+ * @param[in] name Non-NULL, null-terminated Windows wide-character
+ * pathname.
+ * @param[in] mode Non-NULL, null-terminated open mode; see @ref
+ * lifecycle_modes.
+ * @return An owned TIFF handle to release with TIFFClose(), or NULL on
+ * failure. On normal failure paths the internally opened resource is
+ * closed. The conversion-allocation failure exception to resource cleanup
+ * is described above.
  */
 TIFF *TIFFOpenW(const wchar_t *name, const char *mode)
 {
     return TIFFOpenWExt(name, mode, NULL);
 }
 
+/**
+ * @brief Open a TIFF file using a wide Windows pathname.
+ * @ingroup libtiff_public_lifecycle
+ *
+ * Opens the OS resource, then initialises a TIFF handle. Pathname mode w
+ * truncates an existing file, a may create one, and r/r+ require an
+ * existing resource. Opening may read a directory, map the file, or write a
+ * header; failures do not roll back file changes.
+ *
+ * Uses the supplied options. Diagnostic callbacks may run before a handle
+ * exists; per-handle callback contexts remain borrowed through close.
+ * Reports ordinary opening/initialisation failures through the configured
+ * error handlers. errno/GetLastError may reflect a platform failure but are
+ * not a complete library-error channel. See @ref lifecycle for mode and
+ * lifetime details.
+ *
+ * Available only on Windows. The original wide pathname opens the resource;
+ * an ANSI-code-page conversion is used for the diagnostic name, falling
+ * back to "<unknown>" if conversion sizing fails. The current
+ * filename-conversion allocation-failure path returns NULL without closing
+ * the just-opened OS resource; this implementation limitation is recorded
+ * in @ref lifecycle_limits.
+ *
+ * @param[in] name Non-NULL, null-terminated Windows wide-character
+ * pathname.
+ * @param[in] mode Non-NULL, null-terminated open mode; see @ref
+ * lifecycle_modes.
+ * @param[in] opts Borrowed open options, or NULL for defaults; copied
+ * before return.
+ * @return An owned TIFF handle to release with TIFFClose(), or NULL on
+ * failure. On normal failure paths the internally opened resource is
+ * closed. The conversion-allocation failure exception to resource cleanup
+ * is described above.
+ */
 TIFF *TIFFOpenWExt(const wchar_t *name, const char *mode, TIFFOpenOptions *opts)
 {
     static const char module[] = "TIFFOpenW";

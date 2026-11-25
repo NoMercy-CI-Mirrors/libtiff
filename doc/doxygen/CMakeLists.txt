@@ -32,7 +32,10 @@ set(DOXYGEN_GENERATE_LATEX NO)
 set(DOXYGEN_GENERATE_MAN NO)
 set(DOXYGEN_GENERATE_TAGFILE "${CMAKE_CURRENT_BINARY_DIR}/libtiff.tag")
 set(DOXYGEN_USE_MDFILE_AS_MAINPAGE "${CMAKE_CURRENT_SOURCE_DIR}/index.md")
-set(DOXYGEN_STRIP_FROM_PATH "${PROJECT_SOURCE_DIR}" "${PROJECT_BINARY_DIR}")
+# The configuration header views below are listed first so that they are
+# named libtiff/<header> like the headers they document.
+set(DOXYGEN_STRIP_FROM_PATH "${CMAKE_CURRENT_BINARY_DIR}/config-view"
+    "${PROJECT_SOURCE_DIR}" "${PROJECT_BINARY_DIR}")
 set(DOXYGEN_FULL_PATH_NAMES YES)
 set(DOXYGEN_OPTIMIZE_OUTPUT_FOR_C YES)
 set(DOXYGEN_JAVADOC_AUTOBRIEF NO)
@@ -93,6 +96,9 @@ file(GLOB doxygen_library_inputs CONFIGURE_DEPENDS
 file(GLOB doxygen_pages CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/*.md"
     "${CMAKE_CURRENT_SOURCE_DIR}/*.dox")
+# README.md introduces this directory when browsing the repository; its
+# Markdown links between pages are not part of the reference.
+list(REMOVE_ITEM doxygen_pages "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
 # Exclude the standalone table generator and any headers left by a different
 # in-source build. The configured headers for this build are appended below.
 list(REMOVE_ITEM doxygen_library_inputs
@@ -100,10 +106,30 @@ list(REMOVE_ITEM doxygen_library_inputs
     "${PROJECT_SOURCE_DIR}/libtiff/tiffconf.h"
     "${PROJECT_SOURCE_DIR}/libtiff/tiffvers.h"
     "${PROJECT_SOURCE_DIR}/libtiff/tif_config.h")
-list(APPEND doxygen_library_inputs
-    "${PROJECT_BINARY_DIR}/libtiff/tiffconf.h"
-    "${PROJECT_BINARY_DIR}/libtiff/tiffvers.h"
-    "${PROJECT_BINARY_DIR}/libtiff/tif_config.h")
+# Document the configured headers through documentation views of them. A
+# configuration option that this build leaves undefined is written as a
+# "/* #undef X */" comment, which leaves the option's documentation block with
+# nothing to attach to; Doxygen would then merge it into the next macro's
+# documentation. The views define each such option instead, preceded by a
+# further documentation block noting that it is undefined in this build, so
+# every option keeps its own documentation. The real configured headers remain
+# on the include path, so the preprocessing of the library sources still
+# follows this build.
+foreach(header tiffconf.h tiffvers.h tif_config.h)
+  file(READ "${PROJECT_BINARY_DIR}/libtiff/${header}" doxygen_config_view)
+  string(REGEX REPLACE
+         "/\\* #undef ([A-Za-z0-9_]+) \\*/"
+         "/** Not defined in the build configuration that generated this reference. */\n#define \\1"
+         doxygen_config_view "${doxygen_config_view}")
+  file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/config-view/libtiff/${header}"
+       CONTENT "${doxygen_config_view}" @ONLY)
+  list(APPEND doxygen_library_inputs
+       "${CMAKE_CURRENT_BINARY_DIR}/config-view/libtiff/${header}")
+endforeach()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+             "${PROJECT_BINARY_DIR}/libtiff/tiffconf.h"
+             "${PROJECT_BINARY_DIR}/libtiff/tiffvers.h"
+             "${PROJECT_BINARY_DIR}/libtiff/tif_config.h")
 list(REMOVE_DUPLICATES doxygen_library_inputs)
 
 if(doxygen-checks)
