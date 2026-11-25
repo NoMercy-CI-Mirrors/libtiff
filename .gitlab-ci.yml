@@ -31,10 +31,12 @@ basic-build:
 # Doxygen library reference with Graphviz graphs. The build fails on any
 # Doxygen warning other than a graph size limit, and on missing briefs,
 # parameter documentation, parameter directions or return contracts.
-# This also runs on forks so that merge requests are checked.
+# Like the basic build, these run in the pre-build stage and act as a gate:
+# if any fails, the main builds do not run. This also runs on forks so that
+# merge requests are checked.
 
 .doxygen-check:
-  stage: build
+  stage: pre-build
   script:
     - sh build/gitlab-ci cmake "Ninja" Debug doxygen
   artifacts:
