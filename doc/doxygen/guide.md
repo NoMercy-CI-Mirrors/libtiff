@@ -6,11 +6,12 @@ The Sphinx manual and man pages remain maintained alongside it. See
 
 ## Building and installing
 
-CMake 3.20 or later and Doxygen 1.9.1 or later are required; the reference has
-been validated with Doxygen 1.18.0 only. Graphviz `dot` is optional. The
-Autotools build distributes these sources but does not build the reference. CMake's standard `FindDoxygen` module discovers both tools and
-`doxygen_add_docs()` generates the configuration; do not maintain a second
-handwritten Doxyfile.
+CMake 3.20 or later and Doxygen 1.9.1 or later are required. CI checks the
+reference with Doxygen 1.9.1 and 1.9.8, and it has also been checked with
+Doxygen 1.18.0. Graphviz `dot` is optional. The Autotools build distributes
+these sources but does not build the reference. CMake's standard
+`FindDoxygen` module discovers both tools and `doxygen_add_docs()` generates
+the configuration; do not maintain a second handwritten Doxyfile.
 
 ```sh
 cmake -S . -B build-doxygen -Dtiff-docs=ON -Ddoxygen=ON
@@ -151,10 +152,26 @@ but their sources are not processed by this target. The same applies to
 `EXTRACT_ALL` stays disabled: enabling it suppresses useful missing-documentation
 warnings. Static/private extraction, internal documentation, parameter warnings,
 and documentation-error warnings are enabled. Documentation warnings
-are recorded in `warnings.log` without failing the default build. An empty log
-is not proof of complete contracts: verify parameter directions, return values,
-ownership, failure states, and side effects manually. Documentation changes
-should introduce no unresolved warnings for their symbols.
+are recorded in `warnings.log` without failing the default build.
+
+Pass `-Ddoxygen-checks=ON` (with `-Ddoxygen=ON`) to enforce the markup. The
+`tiff-doc-doxygen-check` target then runs in the default build after the
+reference is generated, and fails on any Doxygen warning other than a Graphviz
+graph size limit, or on any issue reported by the XML checks described in
+@ref documentation_completion. This covers undocumented declarations, unknown
+commands, misnamed parameters, missing parameter directions and missing return
+contracts. CI runs these checks with Graphviz on Doxygen 1.9.8 (Ubuntu 24.04,
+also for merge requests from forks) and 1.9.1 (Ubuntu 22.04); documentation
+changes must pass them:
+
+```sh
+cmake -S . -B build-doxygen -Ddoxygen=ON -Ddoxygen-checks=ON
+cmake --build build-doxygen --target tiff-doc-doxygen-check
+```
+
+A passing check is not proof of complete contracts: verify parameter
+directions, return values, ownership, failure states, and side effects
+manually.
 
 Input discovery is restricted to library C/C++ headers and sources plus these
 documentation pages and configured library headers. Both platform backends and

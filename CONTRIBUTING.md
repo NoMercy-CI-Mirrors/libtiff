@@ -21,6 +21,9 @@ Library API and implementation documentation uses Doxygen. See
 [the documentation guide](doc/doxygen/guide.md) for comment conventions,
 module organisation, build instructions, and downstream cross-references.
 The existing Sphinx manual and man pages remain maintained alongside it.
+CI fails on missing or invalid Doxygen markup; to check locally, configure
+with `-Ddoxygen=ON -Ddoxygen-checks=ON` and build the
+`tiff-doc-doxygen-check` target.
 
 Code formatting
 ---------------

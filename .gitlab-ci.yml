@@ -28,8 +28,41 @@ basic-build:
   script:
     - sh build/gitlab-ci cmake "Unix Makefiles" Debug static
 
+# Doxygen library reference with Graphviz graphs. The build fails on any
+# Doxygen warning other than a graph size limit, and on missing briefs,
+# parameter documentation, parameter directions or return contracts.
+# This also runs on forks so that merge requests are checked.
+
+.doxygen-check:
+  stage: build
+  script:
+    - sh build/gitlab-ci cmake "Ninja" Debug doxygen
+  artifacts:
+    name: $CI_PROJECT_NAME-$CI_JOB_NAME
+    when: always
+    paths:
+    - cmake-build/doc/doxygen/warnings.log
+
+doxygen-check-fork:
+  extends: .doxygen-check
+  tags: [saas-linux-small-amd64]
+  rules:
+    - if: '$CI_PROJECT_PATH != "libtiff/libtiff"'
+
+doxygen-check:
+  extends: .doxygen-check
+  rules:
+    - if: '$CI_PROJECT_PATH == "libtiff/libtiff"'
+
+# Oldest supported Doxygen (Ubuntu 22.04 provides 1.9.1)
+doxygen-check-old:
+  extends: .doxygen-check
+  rules:
+    - if: '$CI_PROJECT_PATH == "libtiff/libtiff"'
+  image: registry.gitlab.com/libtiff/libtiff-ci-ubuntu22.04:latest
+
 # All jobs below only run on the main libtiff/libtiff repository
-# Forks will only run the basic-build-fork job above
+# Forks will only run the basic-build-fork and doxygen-check-fork jobs above
 
 linux-ac-current:
   stage: build

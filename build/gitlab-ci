@@ -46,11 +46,15 @@ cmake_build()
     mkdir cmake-build
     cd cmake-build
     opts="-Dfatal-warnings=ON -Dextra-warnings=ON -Dcxx-compat-warnings=ON"
-    para3=`echo "$3" | sed 's/./\L&/g'`
+    para3=`echo "$3" | tr '[:upper:]' '[:lower:]'`
     if [ "$para3" = "static" ]; then
         opts2="-DBUILD_SHARED_LIBS:BOOL=OFF"
     elif [ "$para3" = "cxxcompat" ]; then
         opts2="-Dcxx-compat-mode:BOOL=ON"
+    elif [ "$para3" = "doxygen" ]; then
+        # Build the Doxygen reference (with Graphviz when available) and fail
+        # on missing or invalid documentation markup.
+        opts2="-Ddoxygen:BOOL=ON -Ddoxygen-checks:BOOL=ON"
     else
         opts2=""
     fi

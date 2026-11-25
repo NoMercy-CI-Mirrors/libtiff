@@ -64,6 +64,12 @@ Autotools:
 All changes must build without warnings and pass the test suite. Bug fixes
 should include a regression test where practical.
 
+Library code is documented with Doxygen; see `doc/doxygen/guide.md`. New or
+changed declarations need complete markup, which CI enforces with:
+
+    cmake -S . -B build-doxygen -Ddoxygen=ON -Ddoxygen-checks=ON
+    cmake --build build-doxygen --target tiff-doc-doxygen-check
+
 ## Code style
 
 - C code is formatted with `clang-format` using the repository's

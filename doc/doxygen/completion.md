@@ -48,14 +48,24 @@ that inactive branches were inspected, nor that a contract is semantically
 correct. Use source review alongside the XML checks, and inspect generated
 pages and cross-references after changing comments or preprocessing.
 
-XML output is optional and uses the same CMake-generated Doxyfile:
+`-Ddoxygen-checks=ON` enables XML output and runs these checks, together with
+the warnings-log check, as the `tiff-doc-doxygen-check` target (see
+@ref documentation_guide). To run them by hand, XML output uses the same
+CMake-generated Doxyfile:
 
 ```sh
 cmake -S . -B build-doxygen -Dtiff-docs=ON -Ddoxygen=ON \
   -DDOXYGEN_GENERATE_XML=YES
 cmake --build build-doxygen --target tiff-doc-doxygen
-python3 doc/doxygen/check-xml.py build-doxygen/doc/doxygen/xml
+python3 doc/doxygen/check-xml.py \
+  --warnings-log build-doxygen/doc/doxygen/warnings.log \
+  build-doxygen/doc/doxygen/xml
 ```
+
+With `--warnings-log`, any line in the Doxygen warnings log other than a
+Graphviz graph size limit is also reported. Doxygen warns about undocumented
+declarations and invalid markup, which the XML checks cannot see because
+undocumented declarations are not extracted.
 
 `check-xml.py` checks unique extracted members, compound types and source files
 for briefs, enumerators for descriptions, function and function-like macro

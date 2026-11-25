@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Check structural documentation coverage in a generated Doxygen XML tree.
 
-This checks extracted declarations only. It cannot establish semantic accuracy,
-source coverage in inactive branches, or the safety of documented operations.
+This checks extracted declarations only. Undocumented declarations are not
+extracted, so pass the Doxygen warnings log as well to also fail on missing
+documentation and invalid markup. Neither check can establish semantic
+accuracy, source coverage in inactive branches, or the safety of documented
+operations.
 """
 
 import argparse
@@ -13,6 +16,25 @@ import sys
 import xml.etree.ElementTree as ET
 
 
+# Graphviz size limits are a rendering choice, not a documentation defect.
+GRAPH_SIZE_WARNING = re.compile(
+    r"warning: .*graph for .* not generated, too many nodes \(\d+\), "
+    r"threshold is \d+\."
+)
+
+
+def check_warnings_log(path):
+    """Return the lines of a Doxygen warnings log that are not graph limits."""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as error:
+        return [f"{path}: cannot read Doxygen warnings log: {error}"]
+    return [
+        line for line in lines
+        if line.strip() and not GRAPH_SIZE_WARNING.search(line)
+    ]
+
+
 def content(element):
     return "".join(element.itertext()).strip() if element is not None else ""
 
@@ -20,7 +42,15 @@ def content(element):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("xml", type=Path, help="Doxygen XML output directory")
+    parser.add_argument(
+        "--warnings-log", type=Path,
+        help="Doxygen WARN_LOGFILE; any warning other than a graph size "
+        "limit is reported as an issue",
+    )
     args = parser.parse_args()
+    warnings = []
+    if args.warnings_log is not None:
+        warnings = check_warnings_log(args.warnings_log)
     index = ET.parse(args.xml / "index.xml")
     members = {}
     issues = []
@@ -116,11 +146,22 @@ def main():
     print(f"Checked {len(members)} unique extracted members, {types} compound "
           f"types, {files} files and {enumerators} enumerators")
     print(", ".join(f"{kind}: {count}" for kind, count in sorted(counts.items())))
+    status = 0
+    if warnings:
+        print(f"Doxygen reported {len(warnings)} warning line(s) in "
+              f"{args.warnings_log}:", file=sys.stderr)
+        print("\n".join(warnings), file=sys.stderr)
+        status = 1
+    elif args.warnings_log is not None:
+        print("Doxygen warnings log has no documentation warnings")
     if issues:
+        print(f"Doxygen XML check found {len(issues)} issue(s):",
+              file=sys.stderr)
         print("\n".join(issues), file=sys.stderr)
-        return 1
-    print("Brief, parameter-direction and function-return checks passed")
-    return 0
+        status = 1
+    else:
+        print("Brief, parameter-direction and function-return checks passed")
+    return status
 
 
 if __name__ == "__main__":

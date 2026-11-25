@@ -2,8 +2,14 @@
 # The full reference is slow to generate and large to install, so it is only
 # built when explicitly requested.
 option(doxygen "Build Doxygen library reference documentation" OFF)
+option(doxygen-checks
+       "Fail the build on Doxygen warnings or incomplete documentation markup"
+       OFF)
 
 if(NOT doxygen)
+  if(doxygen-checks)
+    message(FATAL_ERROR "-Ddoxygen-checks=ON requires -Ddoxygen=ON")
+  endif()
   message(STATUS "Doxygen library reference: disabled")
   return()
 endif()
@@ -42,7 +48,9 @@ set(DOXYGEN_WARNINGS YES)
 set(DOXYGEN_WARN_IF_UNDOCUMENTED YES)
 set(DOXYGEN_WARN_IF_DOC_ERROR YES)
 set(DOXYGEN_WARN_NO_PARAMDOC YES)
-# Report documentation warnings in the log without failing the build.
+# Record documentation warnings in the log. Doxygen itself does not fail on
+# them because graph size limits are also reported as warnings; the
+# doxygen-checks target below fails on every other warning instead.
 set(DOXYGEN_WARN_AS_ERROR NO)
 set(DOXYGEN_WARN_LOGFILE "${CMAKE_CURRENT_BINARY_DIR}/warnings.log")
 
@@ -98,11 +106,30 @@ list(APPEND doxygen_library_inputs
     "${PROJECT_BINARY_DIR}/libtiff/tif_config.h")
 list(REMOVE_DUPLICATES doxygen_library_inputs)
 
+if(doxygen-checks)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  # The structural checks read the XML output.
+  set(DOXYGEN_GENERATE_XML YES)
+endif()
+
 doxygen_add_docs(tiff-doc-doxygen
     ${doxygen_library_inputs} ${doxygen_pages}
     ALL
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
     COMMENT "Generating LibTIFF API and implementation reference")
+
+if(doxygen-checks)
+  # Run after every reference build, as part of the default build, so that
+  # missing documentation, invalid markup and incomplete contracts fail it.
+  add_custom_target(tiff-doc-doxygen-check ALL
+      COMMAND "${Python3_EXECUTABLE}" -B
+              "${CMAKE_CURRENT_SOURCE_DIR}/check-xml.py"
+              --warnings-log "${DOXYGEN_WARN_LOGFILE}"
+              "${CMAKE_CURRENT_BINARY_DIR}/xml"
+      COMMENT "Checking LibTIFF Doxygen warnings and documentation markup"
+      VERBATIM)
+  add_dependencies(tiff-doc-doxygen-check tiff-doc-doxygen)
+endif()
 
 if(tiff-install)
   install(DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/api"
@@ -114,6 +141,9 @@ if(tiff-install)
 endif()
 
 message(STATUS "Doxygen library reference: enabled (target tiff-doc-doxygen)")
+if(doxygen-checks)
+  message(STATUS "Doxygen markup checks: enabled (target tiff-doc-doxygen-check)")
+endif()
 if(TARGET Doxygen::dot)
   message(STATUS "Doxygen graphs: linked, interactive SVG (Graphviz)")
 else()
