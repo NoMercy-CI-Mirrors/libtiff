@@ -39,11 +39,16 @@ basic-build:
   stage: pre-build
   script:
     - sh build/gitlab-ci cmake "Ninja" Debug doxygen
+  # Later-stage jobs receive the artifacts of earlier stages, so keep the log
+  # outside cmake-build: those jobs create cmake-build themselves.
+  after_script:
+    - mkdir -p doxygen-warnings
+    - cp cmake-build/doc/doxygen/warnings.log "doxygen-warnings/$CI_JOB_NAME.log" || true
   artifacts:
     name: $CI_PROJECT_NAME-$CI_JOB_NAME
     when: always
     paths:
-    - cmake-build/doc/doxygen/warnings.log
+    - doxygen-warnings/
 
 doxygen-check-fork:
   extends: .doxygen-check
