@@ -41,6 +41,17 @@ if (BUILD_SPHINX AND SPHINX_BUILD)
   sphinx_manpage_dependencies("${sphinx_srcdir}" MAN_PAGE_DEPENDENCIES)
   sphinx_dependencies("${sphinx_srcdir}" SPHINX_DEPENDENCIES)
 
+  # When the Doxygen library reference is built, it is installed and
+  # published as the api/ subdirectory of the HTML manual; the "doxygen" tag
+  # enables the manual's links to it.
+  unset(sphinx_tags)
+  if(TARGET tiff-doc-doxygen)
+    set(sphinx_tags -t doxygen)
+  endif()
+  # Rebuild the HTML manual when the tags change.
+  file(CONFIGURE OUTPUT "${sphinx_builddir}/sphinx-tags.txt"
+       CONTENT "${sphinx_tags}\n")
+
   # Generate and install man pages
 
   unset(man_target)
@@ -82,10 +93,12 @@ if (BUILD_SPHINX AND SPHINX_BUILD)
                              -D "release=${tiff_VERSION}"
                              -D "version=${tiff_VERSION_MAJOR}.${tiff_VERSION_MINOR}"
                              -d "${sphinx_builddir}/cache"
+                             ${sphinx_tags}
                              -b html
                              "${sphinx_srcdir}" "${sphinx_builddir}/html"
                      WORKING_DIRECTORY "${sphinx_srcdir}"
-                     DEPENDS ${man_target} ${SPHINX_DEPENDENCIES})
+                     DEPENDS ${man_target} ${SPHINX_DEPENDENCIES}
+                             "${sphinx_builddir}/sphinx-tags.txt")
 
   if(NOT TARGET doc-html)
     add_custom_target(doc-html ALL)
@@ -112,6 +125,7 @@ if (BUILD_SPHINX AND SPHINX_BUILD)
                             -D "version=${tiff_VERSION_MAJOR}.${tiff_VERSION_MINOR}"
                             -c "${sphinx_builddir}"
                             -d "${sphinx_builddir}/cache"
+                            ${sphinx_tags}
                             -b linkcheck
                             "${sphinx_srcdir}" "${sphinx_builddir}/linkcheck"
                      COMMENT "Checking remote links in sphinx documentation"
@@ -129,7 +143,7 @@ if (BUILD_SPHINX AND SPHINX_BUILD)
                             "-DINTERNAL_REFERENCE=${sphinx_builddir}/html"
                             "-DEXTERNAL_REFERENCE=${CMAKE_INSTALL_FULL_DATAROOTDIR}/doc"
                             "-DDOXYGEN_REFERENCE=${PROJECT_BINARY_DIR}/doc/doxygen/api"
-                            "-DDOXYGEN_INSTALL_PATH=${PROJECT_NAME}/api"
+                            "-DDOXYGEN_INSTALL_PATH=${PROJECT_NAME}/manual/html/api"
                             -P "${PROJECT_SOURCE_DIR}/cmake/SphinxCheckInternalLinks.cmake"
                      COMMENT "Checking local links in sphinx documentation"
                      WORKING_DIRECTORY "${sphinx_srcdir}"

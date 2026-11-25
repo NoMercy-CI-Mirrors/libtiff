@@ -65,3 +65,9 @@ The following sections are included in this documentation:
     rfcs/index
     project/index
     releases/index
+
+.. only:: doxygen
+
+    The `library reference <api/index.html>`_, generated with Doxygen,
+    documents the public API and the library's internal interfaces, with
+    their parameters, return values, ownership and error behaviour.

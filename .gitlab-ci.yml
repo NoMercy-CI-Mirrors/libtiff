@@ -250,7 +250,10 @@ pages:
   rules:
     - if: '$CI_PROJECT_PATH == "libtiff/libtiff" && $CI_COMMIT_BRANCH == "master"'
   script:
-    - sh build/gitlab-ci cmake "Ninja" Debug
+    # Build the Sphinx manual together with the Doxygen library reference,
+    # which is installed into the manual's api/ subdirectory and linked from
+    # its index, so that both are published as one site.
+    - sh build/gitlab-ci cmake "Ninja" Debug doxygen
     - cp -r cmake-install/share/doc/tiff/manual/html public
   artifacts:
     name: $CI_PROJECT_NAME-$CI_JOB_NAME

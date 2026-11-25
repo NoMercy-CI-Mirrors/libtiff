@@ -132,8 +132,10 @@ if(doxygen-checks)
 endif()
 
 if(tiff-install)
+  # Install inside the Sphinx manual's HTML tree, so that the manual can link
+  # to it as api/index.html both when installed and when published together.
   install(DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/api"
-          DESTINATION "${LIBTIFF_DOCDIR}"
+          DESTINATION "${LIBTIFF_DOCDIR}/manual/html"
           COMPONENT documentation)
   install(FILES "${CMAKE_CURRENT_BINARY_DIR}/libtiff.tag"
           DESTINATION "${LIBTIFF_DOCDIR}"

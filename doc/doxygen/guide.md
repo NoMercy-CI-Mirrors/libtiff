@@ -42,7 +42,10 @@ cmake --install build-doxygen --component documentation
 ```
 
 When `tiff-install` is enabled, the HTML is installed under
-`${CMAKE_INSTALL_DOCDIR}/api` and the tagfile under `${CMAKE_INSTALL_DOCDIR}`.
+`${CMAKE_INSTALL_DOCDIR}/manual/html/api`, inside the Sphinx manual, and the
+tagfile under `${CMAKE_INSTALL_DOCDIR}`. When the reference is built, the
+Sphinx manual's index links to it as `api/index.html`; the GitLab Pages site
+publishes both together, with the reference at `api/`.
 Distribute the tagfile together with the HTML from the same build. Generated
 output belongs in the build tree and must not be committed.
 
