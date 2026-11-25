@@ -22,6 +22,11 @@
  * OF THIS SOFTWARE.
  */
 
+/**
+ * @file tif_next.c
+ * @brief Implement the NeXT 2-bit greyscale decoder.
+ */
+
 #include "tiffiop.h"
 #ifdef NEXT_SUPPORT
 /*
@@ -30,6 +35,22 @@
  * NeXT 2-bit Grey Scale Compression Algorithm Support
  */
 
+/**
+ * @brief Store a 2-bit pixel into the packed output byte at op.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * Statement macro used by the run branch of NeXTDecode(). Increments the
+ * caller local npixels and, by its previous value mod 4, places v in bits
+ * 7-6 (assigning op[0], which clears the rest), 5-4, 3-2 or 1-0 (ORing into
+ * op[0]). After the fourth pixel it advances op and increments the caller
+ * local op_offset. Performs no bounds check: the caller loop stops when
+ * npixels reaches the image width or op_offset reaches the scanline size.
+ * v is evaluated once and must fit in 2 bits. The `break` statements belong
+ * to the macro's internal switch; no hidden control flow.
+ *
+ * @param[in,out] op Output byte-pointer lvalue, advanced every fourth pixel.
+ * @param[in] v Pixel value 0-3.
+ */
 #define SETPIXEL(op, v)                                                        \
     {                                                                          \
         switch (npixels++ & 3)                                                 \
@@ -52,9 +73,43 @@
         }                                                                      \
     }
 
+/**
+ * @brief NeXT row opcode: the scanline follows as td_scanlinesize literal
+ * bytes.
+ * @ingroup libtiff_private_basic_codecs
+ */
 #define LITERALROW 0x00
+/**
+ * @brief NeXT row opcode: a 16-bit big-endian offset and length precede a
+ * literal byte span within the white scanline.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * Any other leading byte starts a sequence of grey runs.
+ */
 #define LITERALSPAN 0x40
 
+/**
+ * @brief Expand NeXT literal rows spans and grayscale runs.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * Initialises the whole requested output to white, then checks complete
+ * scanline divisibility and decodes available cached input. Requires
+ * positive cached row size, nonnegative output extent, matching width and
+ * disjoint storage. Malformed spans/runs diagnose and return zero without
+ * generally committing local raw cursor progress; output can already be
+ * changed. Input exhaustion between rows can end the loop with a successful
+ * status and white remaining rows. Normal completion commits raw
+ * cursor/counts. No allocation/client I/O or ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live handle with validated two-bit geometry
+ * whose raw cursor and count are updated on success; serialise access.
+ * @param[out] buf Borrowed writable decoded output covering the requested
+ * byte extent.
+ * @param[in] occ Nonnegative decoded output byte extent.
+ * @param[in] s Sample plane (ignored).
+ * @return One on normal loop exit, including between-row input exhaustion;
+ * zero on detected fractional/malformed/truncated row.
+ */
 static int NeXTDecode(TIFF *tif, uint8_t *buf, tmsize_t occ, uint16_t s)
 {
     static const char module[] = "NeXTDecode";
@@ -168,6 +223,19 @@ bad:
     return (0);
 }
 
+/**
+ * @brief Validate two-bit single-plane NeXT decoding.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * Requires BitsPerSample two and either one sample or separate planes.
+ * Diagnoses unsupported settings; no allocation, I/O, buffer changes or
+ * ownership transfer.
+ *
+ * @param[in] tif Non-NULL live handle whose BitsPerSample, SamplesPerPixel
+ * and PlanarConfiguration are checked; serialise access.
+ * @param[in] s Sample plane (ignored).
+ * @return One for accepted layout, zero otherwise.
+ */
 static int NeXTPreDecode(TIFF *tif, uint16_t s)
 {
     static const char module[] = "NeXTPreDecode";

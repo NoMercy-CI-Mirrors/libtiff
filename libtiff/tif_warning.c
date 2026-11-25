@@ -25,6 +25,11 @@
 /*
  * TIFF Library.
  */
+/**
+ * @file tif_warning.c
+ * @brief Dispatch warnings through per-handle and global callbacks.
+ */
+
 #include "tiffiop.h"
 
 TIFFErrorHandlerExt _TIFFwarningHandlerExt = NULL;

@@ -32,6 +32,11 @@
 #undef TIFF_DO_NOT_USE_NON_EXT_ALLOC_FUNCTIONS
 #endif
 
+/**
+ * @file tif_win32.c
+ * @brief Implement native Windows resource callbacks and pathname opening.
+ */
+
 #include "tiffiop.h"
 #include <stdlib.h>
 
@@ -55,13 +60,52 @@
   avoidance, as this integer type has the same size as HANDLE in all builds.
 */
 
+/**
+ * @brief Convert the native Windows integer handle representation to thandle_t.
+ * @ingroup libtiff_private_lifecycle
+ *
+ * Performs no OS validation, allocation, close, or diagnostic. Does not
+ * transfer ownership.
+ *
+ * @param[in] ifd Integer representation of a Windows HANDLE, not a CRT
+ * descriptor.
+ * @return The handle value cast through intptr_t.
+ */
 static inline thandle_t thandle_from_int(int ifd)
 {
     return (thandle_t)(intptr_t)ifd;
 }
 
+/**
+ * @brief Convert a native Windows handle to the backend integer representation.
+ * @ingroup libtiff_private_lifecycle
+ *
+ * Performs no OS validation, allocation, close, or diagnostic. Does not
+ * transfer ownership; this is the backend HANDLE convention, not a CRT-
+ * descriptor conversion.
+ *
+ * @param[in] fd Native Windows HANDLE represented as thandle_t.
+ * @return The integer representation produced through intptr_t.
+ */
 static inline int thandle_to_int(thandle_t fd) { return (int)(intptr_t)fd; }
 
+/**
+ * @brief Read bytes from the Windows HANDLE with ReadFile().
+ * @ingroup libtiff_private_lifecycle
+ *
+ * Reads in chunks no larger than 0x80000000 bytes and stops at a short
+ * read. Zero length returns zero. API errors are exposed through the
+ * Windows last-error state; there is no library diagnostic here. The file
+ * position and destination bytes may already have changed before failure.
+ * Buffer ownership is unchanged.
+ *
+ * @param[in,out] fd Live native Windows HANDLE encoded as thandle_t.
+ * @param[out] buf Writable destination of at least size bytes.
+ * @param[in] size Nonnegative byte request representable by tmsize_t and the
+ * backend.
+ * @return The number of bytes read (less than size at end of file), or zero
+ * on any ReadFile() failure even if earlier chunks transferred data.
+ */
 static tmsize_t _tiffReadProc(thandle_t fd, void *buf, tmsize_t size)
 {
     /* tmsize_t is 64bit on 64bit systems, but the WinAPI ReadFile takes
@@ -91,6 +135,23 @@ static tmsize_t _tiffReadProc(thandle_t fd, void *buf, tmsize_t size)
     return (p);
 }
 
+/**
+ * @brief Write bytes to the Windows HANDLE with WriteFile().
+ * @ingroup libtiff_private_lifecycle
+ *
+ * Writes in chunks no larger than 0x80000000 bytes and stops at a short
+ * write. Zero length returns zero. API errors are exposed through the
+ * Windows last-error state; there is no library diagnostic here. The file
+ * position and contents may already have changed before failure. Buffer
+ * ownership is unchanged.
+ *
+ * @param[in,out] fd Live native Windows HANDLE encoded as thandle_t.
+ * @param[in] buf Readable source of at least size bytes.
+ * @param[in] size Nonnegative byte request representable by tmsize_t and the
+ * backend.
+ * @return The number of bytes written (less than size after a short write),
+ * or zero on any WriteFile() failure even if earlier chunks transferred data.
+ */
 static tmsize_t _tiffWriteProc(thandle_t fd, void *buf, tmsize_t size)
 {
     /* tmsize_t is 64bit on 64bit systems, but the WinAPI WriteFile takes
@@ -120,6 +181,22 @@ static tmsize_t _tiffWriteProc(thandle_t fd, void *buf, tmsize_t size)
     return (p);
 }
 
+/**
+ * @brief Seek the platform resource and return its reported position.
+ * @ingroup libtiff_private_lifecycle
+ *
+ * Uses SetFilePointer; unsupported origins fall back to FILE_BEGIN. Failure
+ * is detected through GetLastError() and replaced with zero. Position
+ * preservation on failure is not guaranteed, and no library diagnostic is
+ * emitted.
+ *
+ * @param[in,out] fd Live native Windows HANDLE encoded as thandle_t.
+ * @param[in] off Byte offset, reinterpreted as a signed LONGLONG.
+ * @param[in] whence SEEK_SET, SEEK_CUR or SEEK_END; any other value is
+ * treated as SEEK_SET.
+ * @return The Windows position, or zero on SetFilePointer failure; zero is
+ * also a valid position.
+ */
 static uint64_t _tiffSeekProc(thandle_t fd, uint64_t off, int whence)
 {
     LARGE_INTEGER offli;
@@ -148,8 +225,30 @@ static uint64_t _tiffSeekProc(thandle_t fd, uint64_t off, int whence)
     return ((uint64_t)offli.QuadPart);
 }
 
+/**
+ * @brief Release the backend OS resource.
+ * @ingroup libtiff_private_lifecycle
+ *
+ * Calls CloseHandle(). Its result is translated to the callback convention;
+ * GetLastError() describes OS failure. No library diagnostic is added. The
+ * handle is invalid after successful close.
+ *
+ * @param[in,out] fd Live native Windows HANDLE encoded as thandle_t.
+ * @return Zero on success and -1 on failure.
+ */
 static int _tiffCloseProc(thandle_t fd) { return (CloseHandle(fd) ? 0 : -1); }
 
+/**
+ * @brief Query the backend resource length in bytes.
+ * @ingroup libtiff_private_lifecycle
+ *
+ * Uses GetFileSizeEx() without seeking. GetLastError() follows OS failure.
+ * Does not transfer ownership or emit library diagnostics.
+ *
+ * @param[in] fd Live native Windows HANDLE encoded as thandle_t.
+ * @return The byte length, or zero on query failure; an empty file also has
+ * length zero.
+ */
 static uint64_t _tiffSizeProc(thandle_t fd)
 {
     LARGE_INTEGER m;
@@ -169,6 +268,25 @@ static uint64_t _tiffSizeProc(thandle_t fd)
  *
  * This removes a nasty OS dependency and cures a problem
  * with Visual C++ 5.0
+ */
+/**
+ * @brief Create a read-only view of the entire backend resource.
+ * @ingroup libtiff_private_lifecycle
+ *
+ * Queries file size and maps the whole resource. The view must be released
+ * through _tiffUnmapProc(), not an allocator. The temporary Windows file-
+ * mapping HANDLE is closed after MapViewOfFile(), while the view remains
+ * valid. API failure may set *pbase to NULL; earlier failures leave it
+ * unchanged. No library diagnostic is emitted.
+ *
+ * @param[in] fd Live native Windows HANDLE encoded as thandle_t.
+ * @param[out] pbase Output view base on success; do not rely on it after
+ * failure.
+ * @param[out] psize Output view length in bytes on success; unchanged on
+ * failure.
+ * @return 1 for a mapped view; 0 for a CreateFileMapping() or MapViewOfFile()
+ * failure, an empty file or failed size query, or a length not
+ * representable as tmsize_t.
  */
 static int _tiffMapProc(thandle_t fd, void **pbase, toff_t *psize)
 {
@@ -194,6 +312,18 @@ static int _tiffMapProc(thandle_t fd, void **pbase, toff_t *psize)
     return (1);
 }
 
+/**
+ * @brief Release a read-only backend mapping.
+ * @ingroup libtiff_private_lifecycle
+ *
+ * Calls UnmapViewOfFile() and discards its result. The view must no longer
+ * be used after successful unmapping; failures have no callback status or
+ * library diagnostic. Does not close the file HANDLE.
+ *
+ * @param[in] fd Unused client context.
+ * @param[in] base Mapped-view base, or NULL during early failed-open cleanup.
+ * @param[in] size Mapped length in bytes; unused by the Windows API.
+ */
 static void _tiffUnmapProc(thandle_t fd, void *base, toff_t size)
 {
     (void)fd;
@@ -410,6 +540,20 @@ int _TIFFmemcmp(const void *p1, const void *p2, tmsize_t c)
 
 #ifndef _WIN32_WCE
 
+/**
+ * @brief Print a default warning diagnostic to stderr.
+ * @ingroup libtiff_private_diagnostics
+ *
+ * Writes to stderr using stdio. Prints the module prefix when non-NULL, then
+ * "Warning, ", then the formatted message and a final period/newline. Stdio
+ * failure is not checked and no status is returned. Does not own
+ * strings/arguments or terminate the process; output/errno effects follow
+ * stdio.
+ *
+ * @param[in] module Optional borrowed module name printed as a prefix.
+ * @param[in] fmt Non-NULL printf-style format string.
+ * @param[in,out] ap Borrowed matching arguments consumed by vfprintf().
+ */
 static void Win32WarningHandler(const char *module, const char *fmt, va_list ap)
 {
     if (module != NULL)
@@ -420,6 +564,19 @@ static void Win32WarningHandler(const char *module, const char *fmt, va_list ap)
 }
 TIFFErrorHandler _TIFFwarningHandler = Win32WarningHandler;
 
+/**
+ * @brief Print a default error diagnostic to stderr.
+ * @ingroup libtiff_private_diagnostics
+ *
+ * Writes to stderr using stdio. Prints the module prefix when non-NULL, then
+ * the formatted message and a final period/newline. Stdio failure is not
+ * checked and no status is returned. Does not own strings/arguments or
+ * terminate the process; output/errno effects follow stdio.
+ *
+ * @param[in] module Optional borrowed module name printed as a prefix.
+ * @param[in] fmt Non-NULL printf-style format string.
+ * @param[in,out] ap Borrowed matching arguments consumed by vfprintf().
+ */
 static void Win32ErrorHandler(const char *module, const char *fmt, va_list ap)
 {
     if (module != NULL)

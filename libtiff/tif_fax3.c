@@ -22,6 +22,11 @@
  * OF THIS SOFTWARE.
  */
 
+/**
+ * @file tif_fax3.c
+ * @brief Implement Group3 Group4 and aligned modified-Huffman fax coding.
+ */
+
 #include "tiffiop.h"
 #ifdef CCITT_SUPPORT
 /*
@@ -53,56 +58,118 @@
  * Compression+decompression state blocks are
  * derived from this ``base state'' block.
  */
+/**
+ * @brief Prefix fax state with geometry options and saved method chains.
+ * @ingroup libtiff_private_fax
+ *
+ * First member of Fax3CodecState; Fax3State() casts tif_data to this type.
+ * It owns no buffers. The parent tag and print methods are borrowed and
+ * restored during cleanup.
+ */
 typedef struct
 {
-    int rw_mode;        /* O_RDONLY for decode, else encode */
-    int mode;           /* operating mode */
-    tmsize_t rowbytes;  /* bytes in a decoded scanline */
-    uint32_t rowpixels; /* pixels in a scanline */
+    /** @brief Open mode saved during codec initialisation. */
+    int rw_mode;
+    /** @brief FAXMODE control bits. */
+    int mode;
+    /** @brief Positive decoded scanline/tile-row byte extent after setup. */
+    tmsize_t rowbytes;
+    /** @brief Pixels per scanline/tile row, within signed decoder limits. */
+    uint32_t rowpixels;
 
-    uint16_t cleanfaxdata; /* CleanFaxData tag */
-    uint32_t badfaxrun;    /* BadFaxRun tag */
-    uint32_t badfaxlines;  /* BadFaxLines tag */
-    uint32_t groupoptions; /* Group 3/4 options tag */
+    /** @brief Cached CleanFaxData tag value. */
+    uint16_t cleanfaxdata;
+    /** @brief Cached consecutive bad fax line count. */
+    uint32_t badfaxrun;
+    /** @brief Cached total bad fax line count. */
+    uint32_t badfaxlines;
+    /** @brief Cached Group3/4 options for the selected scheme. */
+    uint32_t groupoptions;
 
-    TIFFVGetMethod vgetparent; /* super-class method */
-    TIFFVSetMethod vsetparent; /* super-class method */
-    TIFFPrintMethod printdir;  /* super-class method */
+    /** @brief Borrowed parent tag getter restored during cleanup. */
+    TIFFVGetMethod vgetparent;
+    /** @brief Borrowed parent tag setter restored during cleanup. */
+    TIFFVSetMethod vsetparent;
+    /** @brief Borrowed optional parent printer restored during cleanup. */
+    TIFFPrintMethod printdir;
 } Fax3BaseState;
 #define Fax3State(tif) ((Fax3BaseState *)(tif)->tif_data)
 
+/**
+ * @brief Select the next Group3 encoded row dimensionality.
+ * @ingroup libtiff_private_fax
+ */
 typedef enum
 {
+    /** @brief Encode the next row independently. */
     G3_1D,
+    /** @brief Encode the next row relative to its predecessor. */
     G3_2D
 } Ttag;
+/**
+ * @brief Own fax run/reference buffers and bit-stream progress.
+ * @ingroup libtiff_private_fax
+ *
+ * Allocated as tif_data by InitCCITTFax3() and freed by Fax3Cleanup(). It
+ * owns the runs and refline allocations; bitmap and fill are borrowed.
+ */
 typedef struct
 {
+    /** @brief Shared base prefix, first in codec state. */
     Fax3BaseState b;
 
-    /* Decoder state info */
-    const unsigned char *bitmap; /* bit reversal table */
-    uint32_t data;               /* current i/o byte/word */
-    int bit;                     /* current i/o bit in byte */
-    int EOLcnt;                  /* count of EOL codes recognized */
-    int eofReachedCount;         /* number of times decode has been called with
-                                    EOF already reached */
-    int eolReachedCount;         /* number of times decode has been called with
-                                    EOL already reached */
-    int unexpectedReachedCount;  /* number of times decode has been called with
-                                    "unexpedted" already reached */
-    TIFFFaxFillFunc fill;        /* fill routine */
-    uint32_t *runs;              /* b&w runs for current/previous row */
-    uint32_t nruns;              /* size of the refruns / curruns arrays */
-    uint32_t *refruns;           /* runs for reference line */
-    uint32_t *curruns;           /* runs for current line */
+    /**
+     * @brief Borrowed immutable byte reversal table selected for current
+     * FillOrder.
+     */
+    const unsigned char *bitmap;
+    /** @brief Cached decoder bit accumulator or encoder partial byte. */
+    uint32_t data;
+    /** @brief Valid input bits or remaining output bit positions. */
+    int bit;
+    /** @brief Recognised end-of-line count/state. */
+    int EOLcnt;
+    /** @brief Repeated EOF recovery count in the current strile. */
+    int eofReachedCount;
+    /** @brief Repeated bad-length recovery count in the current strile. */
+    int eolReachedCount;
+    /** @brief Repeated invalid-code recovery count in the current strile. */
+    int unexpectedReachedCount;
+    /**
+     * @brief Borrowed synchronous run renderer; application code/context must
+     * remain live.
+     */
+    TIFFFaxFillFunc fill;
+    /**
+     * @brief Owned Ext allocation holding current and optional reference run
+     * arrays.
+     */
+    uint32_t *runs;
+    /** @brief Capacity of each run-array partition in uint32_t entries. */
+    uint32_t nruns;
+    /**
+     * @brief Borrowed reference partition within runs, or NULL for
+     * one-dimensional state.
+     */
+    uint32_t *refruns;
+    /**
+     * @brief Borrowed current partition within runs; swapped with reference in
+     * 2D decoding.
+     */
+    uint32_t *curruns;
 
-    /* Encoder state info */
-    Ttag tag;               /* encoding state */
-    unsigned char *refline; /* reference line for 2d decoding */
-    int k;                  /* #rows left that can be 2d encoded */
-    int maxk;               /* max #rows that can be 2d encoded */
+    /** @brief Next Group3 row dimensionality. */
+    Ttag tag;
+    /** @brief Owned Ext packed reference row used by 2D encoding. */
+    unsigned char *refline;
+    /**
+     * @brief Remaining two-dimensional rows before another one-dimensional row.
+     */
+    int k;
+    /** @brief Resolution-derived maximum dimensional schedule interval. */
+    int maxk;
 
+    /** @brief Current line count within the strile. */
     int line;
 } Fax3CodecState;
 #define DecoderState(tif) ((Fax3CodecState *)Fax3State(tif))
@@ -168,6 +235,23 @@ typedef struct
 /*
  * Setup state for decoding a strip.
  */
+/**
+ * @brief Reset fax bit state run pointers and recovery counters.
+ * @ingroup libtiff_private_fax
+ *
+ * Requires allocated runs and valid positive row geometry. Clears the bit
+ * accumulator, EOL count and recovery counters, selects a borrowed
+ * bit-reversal table from the current FillOrder and sets the line index to
+ * zero. Repoints curruns to the start of runs without clearing it; when a
+ * reference partition exists, re-anchors refruns at runs + nruns (undoing
+ * any earlier swap) and initialises it to one all-white run. No
+ * allocation, client I/O, diagnostics or caller ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live fax handle with matching geometry/state;
+ * serialise operations.
+ * @param[in] s Unused sample-plane compatibility argument.
+ * @return One unconditionally.
+ */
 static int Fax3PreDecode(TIFF *tif, uint16_t s)
 {
     Fax3CodecState *sp = DecoderState(tif);
@@ -206,6 +290,21 @@ static int Fax3PreDecode(TIFF *tif, uint16_t s)
  * overriding the definitions used by the decoder.
  */
 
+/**
+ * @brief Diagnose an invalid fax code word.
+ * @ingroup libtiff_private_fax
+ *
+ * Reports an error through the handle with the row and pixel position. Does
+ * not itself increment recovery counters (the wrapping macro does),
+ * allocate, access payload or return status; diagnostic handlers can have
+ * application effects.
+ *
+ * @param[in] module Borrowed diagnostic label.
+ * @param[in] tif Handle that receives the diagnostic and supplies the
+ * current strip or tile number.
+ * @param[in] line Row number within the strile for diagnostics.
+ * @param[in] a0 Pixel position of the bad code word.
+ */
 static void Fax3Unexpected(const char *module, TIFF *tif, uint32_t line,
                            uint32_t a0)
 {
@@ -223,6 +322,21 @@ static void Fax3Unexpected(const char *module, TIFF *tif, uint32_t line,
         ++sp->unexpectedReachedCount;                                          \
     } while (0)
 
+/**
+ * @brief Diagnose unsupported fax uncompressed extension data.
+ * @ingroup libtiff_private_fax
+ *
+ * Reports an error through the handle with the row and pixel position. Does
+ * not itself increment recovery counters (the wrapping macro does),
+ * allocate, access payload or return status; diagnostic handlers can have
+ * application effects.
+ *
+ * @param[in] module Borrowed diagnostic label.
+ * @param[in] tif Handle that receives the diagnostic and supplies the
+ * current strip or tile number.
+ * @param[in] line Row number within the strile for diagnostics.
+ * @param[in] a0 Pixel position of the extension code.
+ */
 static void Fax3Extension(const char *module, TIFF *tif, uint32_t line,
                           uint32_t a0)
 {
@@ -237,6 +351,22 @@ static void Fax3Extension(const char *module, TIFF *tif, uint32_t line,
 #define extension(a0)                                                          \
     Fax3Extension(module, tif, (uint32_t)sp->line, (uint32_t)(a0))
 
+/**
+ * @brief Warn about a fax row-length mismatch.
+ * @ingroup libtiff_private_fax
+ *
+ * Reports a warning through the handle with the row and pixel position. Does
+ * not itself increment recovery counters (the wrapping macro does),
+ * allocate, access payload or return status; diagnostic handlers can have
+ * application effects.
+ *
+ * @param[in] module Borrowed diagnostic label.
+ * @param[in] tif Handle that receives the diagnostic and supplies the
+ * current strip or tile number.
+ * @param[in] line Row number within the strile for diagnostics.
+ * @param[in] a0 Decoded row length in pixels.
+ * @param[in] lastx Expected row width in pixels.
+ */
 static void Fax3BadLength(const char *module, TIFF *tif, uint32_t line,
                           uint32_t a0, uint32_t lastx)
 {
@@ -257,6 +387,21 @@ static void Fax3BadLength(const char *module, TIFF *tif, uint32_t line,
         ++sp->eolReachedCount;                                                 \
     } while (0)
 
+/**
+ * @brief Warn about premature fax input exhaustion.
+ * @ingroup libtiff_private_fax
+ *
+ * Reports a warning through the handle with the row and pixel position. Does
+ * not itself increment recovery counters (the wrapping macro does),
+ * allocate, access payload or return status; diagnostic handlers can have
+ * application effects.
+ *
+ * @param[in] module Borrowed diagnostic label.
+ * @param[in] tif Handle that receives the diagnostic and supplies the
+ * current strip or tile number.
+ * @param[in] line Row number within the strile for diagnostics.
+ * @param[in] a0 Pixel position reached in the row.
+ */
 static void Fax3PrematureEOF(const char *module, TIFF *tif, uint32_t line,
                              uint32_t a0)
 {
@@ -274,6 +419,21 @@ static void Fax3PrematureEOF(const char *module, TIFF *tif, uint32_t line,
         ++sp->eofReachedCount;                                                 \
     } while (0)
 
+/**
+ * @brief Warn that Group3 recovery will retry without EOL.
+ * @ingroup libtiff_private_fax
+ *
+ * Reports a warning through the handle with the row and pixel position. Does
+ * not itself increment recovery counters (the wrapping macro does),
+ * allocate, access payload or return status; diagnostic handlers can have
+ * application effects.
+ *
+ * @param[in] module Borrowed diagnostic label.
+ * @param[in] tif Handle that receives the diagnostic and supplies the
+ * current strip or tile number.
+ * @param[in] line Row number within the strile for diagnostics.
+ * @param[in] a0 Pixel position reached in the row.
+ */
 static void Fax3TryG3WithoutEOL(const char *module, TIFF *tif, uint32_t line,
                                 uint32_t a0)
 {
@@ -291,6 +451,20 @@ static void Fax3TryG3WithoutEOL(const char *module, TIFF *tif, uint32_t line,
         Fax3TryG3WithoutEOL(module, tif, (uint32_t)sp->line, (uint32_t)(a0));  \
     } while (0)
 
+/**
+ * @brief Stop fax recovery after repeated EOF EOL or bad-code conditions.
+ * @ingroup libtiff_private_fax
+ *
+ * Compares three recovery counters with EOF_REACHED_COUNT_THRESHOLD and
+ * diagnoses the first exhausted threshold. Does not increment counters or
+ * allocate/read/write payload; no ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live fax handle with matching geometry/state;
+ * serialise operations.
+ * @param[in] module Borrowed diagnostic label.
+ * @param[in] sp Borrowed live fax decoder state with recovery counters.
+ * @return Minus one when a threshold is reached, zero otherwise.
+ */
 static int CheckReachedCounters(TIFF *tif, const char *module,
                                 Fax3CodecState *sp)
 {
@@ -323,11 +497,28 @@ static int CheckReachedCounters(TIFF *tif, const char *module,
 }
 
 /**
- * Decode the requested amount of G3 1D-encoded data.
- * @param buf destination buffer
- * @param occ available bytes in destination buffer
- * @param s number of planes (ignored)
- * @returns 1 for success, -1 in case of error
+ * @brief Decode complete Group3 one-dimensional fax rows.
+ * @ingroup libtiff_private_fax
+ *
+ * Requires setup/predecode, positive rowbytes, signed-representable pixel
+ * coordinates, nonnegative complete-row occ and valid run capacity. Expands
+ * cached codes through state macros and invokes the installed fill callback
+ * synchronously; NULL buf is valid only for a custom callback that
+ * explicitly supports it. Can recover bad row lengths or missing EOL with
+ * diagnostics and counter limits. Updates the current run array, line/bit
+ * state and raw cursors; failure can leave a partially filled current row
+ * and earlier output. No direct allocation/client I/O or ownership
+ * transfer; a custom filler has its own effects. Negative error status is
+ * not a Boolean success result.
+ *
+ * @param[in,out] tif Non-NULL live fax handle with matching geometry/state;
+ * serialise operations.
+ * @param[out] buf Borrowed decoded row storage of occ bytes, or NULL only
+ * with a compatible custom fill callback.
+ * @param[in] occ Nonnegative complete-row decoded extent.
+ * @param[in] s Unused sample-plane compatibility argument.
+ * @return One on normal completion, minus one on detected
+ * extent/counter/decoding failure.
  */
 static int Fax3Decode1D(TIFF *tif, uint8_t *buf, tmsize_t occ, uint16_t s)
 {
@@ -380,6 +571,30 @@ RETRY_WITHOUT_EOL_1D:
     }
 /*
  * Decode the requested amount of G3 2D-encoded data.
+ */
+/**
+ * @brief Decode complete Group3 mixed-dimensional fax rows.
+ * @ingroup libtiff_private_fax
+ *
+ * Requires setup/predecode, positive rowbytes, signed-representable pixel
+ * coordinates, nonnegative complete-row occ and valid run/reference
+ * capacities. Expands cached codes through state macros and invokes the
+ * installed fill callback synchronously; NULL buf is valid only for a
+ * custom callback that explicitly supports it. Can recover bad row lengths
+ * or missing EOL with diagnostics and counter limits. Updates run/reference
+ * arrays, line/bit state and raw cursors; failure can leave a partially
+ * filled current row and earlier output. No direct allocation/client I/O or
+ * ownership transfer; a custom filler has its own effects. Negative error
+ * status is not a Boolean success result.
+ *
+ * @param[in,out] tif Non-NULL live fax handle with matching geometry/state;
+ * serialise operations.
+ * @param[out] buf Borrowed decoded row storage of occ bytes, or NULL only
+ * with a compatible custom fill callback.
+ * @param[in] occ Nonnegative complete-row decoded extent.
+ * @param[in] s Unused sample-plane compatibility argument.
+ * @return One on normal completion, minus one on detected
+ * extent/counter/decoding failure.
  */
 static int Fax3Decode2D(TIFF *tif, uint8_t *buf, tmsize_t occ, uint16_t s)
 {
@@ -565,6 +780,16 @@ void _TIFFFax3fillruns(unsigned char *buf, uint32_t *runs, uint32_t *erun,
 #undef ZERO
 #undef FILL
 
+/**
+ * @brief Accept fax tag fixup without changes.
+ * @ingroup libtiff_private_fax
+ *
+ * Ignores the handle; no allocation, I/O, diagnostics, state or ownership
+ * effects.
+ *
+ * @param[in] tif Unused handle.
+ * @return One unconditionally.
+ */
 static int Fax3FixupTags(TIFF *tif)
 {
     (void)tif;
@@ -577,6 +802,24 @@ static int Fax3FixupTags(TIFF *tif)
  * per image -- it sets up different state based on whether
  * or not decoding or encoding is being done and whether
  * 1D- or 2D-encoded data is involved.
+ */
+/**
+ * @brief Validate bilevel geometry and allocate fax run/reference storage.
+ * @ingroup libtiff_private_fax
+ *
+ * Requires one-bit single-sample or separate-plane data and consistent row
+ * bytes/pixels. Caches row extent, replaces owned run arrays with checked
+ * rounded counts and optionally replaces the reference line. Changes
+ * decoder dispatch for Group3 2D options. Detected extent/allocation
+ * failures diagnose and can leave earlier buffers freed, cached geometry
+ * changed or partial new state retained for cleanup. Requires representable
+ * rowpixels+1 and signed decoder coordinates in addition to the explicit
+ * checks. No payload I/O or caller ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live fax handle with matching geometry/state;
+ * serialise operations.
+ * @return One after setup, zero on detected geometry/extent/allocation
+ * failure.
  */
 static int Fax3SetupState(TIFF *tif)
 {
@@ -726,6 +969,12 @@ static int Fax3SetupState(TIFF *tif)
         (tif)->tif_rawcc++;                                                    \
         data = 0, bit = 8;                                                     \
     }
+/**
+ * @brief Mask the requested low bit count for encoder code packing.
+ * @ingroup libtiff_private_fax
+ *
+ * Immutable library-lifetime storage; no ownership transfer.
+ */
 static const int _msbmask[9] = {0x00, 0x01, 0x03, 0x07, 0x0f,
                                 0x1f, 0x3f, 0x7f, 0xff};
 #define _PutBits(tif, bits, length)                                            \
@@ -749,6 +998,22 @@ static const int _msbmask[9] = {0x00, 0x01, 0x03, 0x07, 0x0f,
  * the output stream.  Values are
  * assumed to be at most 16 bits.
  */
+/**
+ * @brief Append up to sixteen significant fax code bits.
+ * @ingroup libtiff_private_fax
+ *
+ * Requires valid encoder bit accumulator and positive raw capacity. Flushes
+ * full bytes/buffers through helper macros, then commits local bit state.
+ * Early flush failure can leave local/cached progress inconsistent and file
+ * data changed; no ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live fax handle with matching geometry/state;
+ * serialise operations.
+ * @param[in] bits Code value whose low @p length bits are written, most
+ * significant first; at most 16 significant bits.
+ * @param[in] length Code width at most sixteen bits.
+ * @return One after append, zero on flush failure.
+ */
 static int Fax3PutBits(TIFF *tif, unsigned int bits, unsigned int length)
 {
     Fax3CodecState *sp = EncoderState(tif);
@@ -768,7 +1033,29 @@ static int Fax3PutBits(TIFF *tif, unsigned int bits, unsigned int length)
 #define putcode(tif, te) Fax3PutBits(tif, (te)->code, (te)->length)
 
 #ifdef FAX3_DEBUG
+/**
+ * @brief Select the trace label for a Huffman table.
+ * @ingroup libtiff_private_fax
+ *
+ * Defined only with FAX3_DEBUG. Concatenates the string literal @p w with
+ * "W" or "B", depending on whether the enclosing local @c tab is
+ * TIFFFaxWhiteCodes.
+ *
+ * @param[in] w String literal prefix.
+ */
+
 #define DEBUG_COLOR(w) (tab == TIFFFaxWhiteCodes ? w "W" : w "B")
+/**
+ * @brief Print code bits and run metadata to stdout.
+ * @ingroup libtiff_private_fax
+ *
+ * Defined only with FAX3_DEBUG and used by putspan(). Prints the enclosing
+ * locals data and bit, the label, @p len and the @c length bits of @c code.
+ *
+ * @param[in] what String literal label passed to DEBUG_COLOR().
+ * @param[in] len Run length to print.
+ */
+
 #define DEBUG_PRINT(what, len)                                                 \
     {                                                                          \
         int t;                                                                 \
@@ -785,6 +1072,24 @@ static int Fax3PutBits(TIFF *tif, unsigned int bits, unsigned int length)
  * the specified span of zero's or one's.  The
  * appropriate table that holds the make-up and
  * terminating codes is supplied.
+ */
+/**
+ * @brief Emit makeup and terminating Huffman codes for one fax run.
+ * @ingroup libtiff_private_fax
+ *
+ * Requires nonnegative representable span and the corresponding complete
+ * white/black table. Repeats long makeup codes, emits terminating code and
+ * updates bit state. Can flush client output and diagnose; early failure
+ * leaves partial state/file effects. No input modification or ownership
+ * transfer.
+ *
+ * @param[in,out] tif Non-NULL live fax handle with matching geometry/state;
+ * serialise operations.
+ * @param[in] span Nonnegative run length in pixels within signed arithmetic
+ * limits.
+ * @param[in] tab Borrowed immutable complete white/black Huffman code
+ * table.
+ * @return One after codes buffered, zero on flush failure.
  */
 static int putspan(TIFF *tif, int32_t span, const tableentry *tab)
 {
@@ -835,6 +1140,18 @@ static int putspan(TIFF *tif, int32_t span, const tableentry *tab)
  * here.  We also handle writing the tag bit for the next
  * scanline when doing 2d encoding.
  */
+/**
+ * @brief Append Group3 EOL padding and optional dimensional tag.
+ * @ingroup libtiff_private_fax
+ *
+ * Uses fill-bit options to align EOL and emits the next 1D/2D tag where
+ * applicable. Requires valid encoder/raw state; output helpers can flush
+ * and fail after partial changes. No allocation or ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live fax handle with matching geometry/state;
+ * serialise operations.
+ * @return One after append, zero on flush failure.
+ */
 static int Fax3PutEOL(TIFF *tif)
 {
     Fax3CodecState *sp = EncoderState(tif);
@@ -878,6 +1195,20 @@ static int Fax3PutEOL(TIFF *tif)
 /*
  * Reset encoding state at the start of a strip.
  */
+/**
+ * @brief Reset fax encoding bits reference line and dimensional schedule.
+ * @ingroup libtiff_private_fax
+ *
+ * Requires setup-owned buffers. Clears the reference row, selects initial
+ * 1D mode and derives the 2D K schedule from vertical resolution
+ * (centimetres converted to inches, threshold 150). No allocation, payload
+ * I/O, diagnostics or ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live fax handle with matching geometry/state;
+ * serialise operations.
+ * @param[in] s Unused sample-plane compatibility argument.
+ * @return One unconditionally.
+ */
 static int Fax3PreEncode(TIFF *tif, uint16_t s)
 {
     Fax3CodecState *sp = EncoderState(tif);
@@ -918,6 +1249,12 @@ static int Fax3PreEncode(TIFF *tif, uint16_t s)
     return (1);
 }
 
+/**
+ * @brief Count leading zero bits in each byte.
+ * @ingroup libtiff_private_fax
+ *
+ * Immutable library-lifetime storage; no ownership transfer.
+ */
 static const unsigned char zeroruns[256] = {
     8, 7, 6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, /* 0x00 - 0x0f */
     3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, /* 0x10 - 0x1f */
@@ -936,6 +1273,12 @@ static const unsigned char zeroruns[256] = {
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* 0xe0 - 0xef */
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* 0xf0 - 0xff */
 };
+/**
+ * @brief Count leading one bits in each byte.
+ * @ingroup libtiff_private_fax
+ *
+ * Immutable library-lifetime storage; no ownership transfer.
+ */
 static const unsigned char oneruns[256] = {
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* 0x00 - 0x0f */
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* 0x10 - 0x1f */
@@ -959,6 +1302,20 @@ static const unsigned char oneruns[256] = {
  * Find a span of ones or zeros using the supplied
  * table.  The ``base'' of the bit string is supplied
  * along with the start+end bit indices.
+ */
+/**
+ * @brief Measure the leading zero bit run in a bounded packed row.
+ * @ingroup libtiff_private_fax
+ *
+ * Requires 0<=bs<=be<=INT32_MAX and live bytes through the last inspected
+ * bit. Uses immutable run lookup tables, with no mutation, allocation, I/O,
+ * diagnostics, bounds validation or ownership transfer.
+ *
+ * @param[in] bp Borrowed readable packed MSB-first row/input bytes,
+ * unchanged.
+ * @param[in] bs Nonnegative starting bit offset.
+ * @param[in] be Exclusive ending bit offset, not less than bs.
+ * @return Run length in bits, limited by the exclusive end position be.
  */
 static inline int32_t find0span(unsigned char *bp, int32_t bs, int32_t be)
 {
@@ -1028,6 +1385,20 @@ static inline int32_t find0span(unsigned char *bp, int32_t bs, int32_t be)
     return (span);
 }
 
+/**
+ * @brief Measure the leading one bit run in a bounded packed row.
+ * @ingroup libtiff_private_fax
+ *
+ * Requires 0<=bs<=be<=INT32_MAX and live bytes through the last inspected
+ * bit. Uses immutable run lookup tables, with no mutation, allocation, I/O,
+ * diagnostics, bounds validation or ownership transfer.
+ *
+ * @param[in] bp Borrowed readable packed MSB-first row/input bytes,
+ * unchanged.
+ * @param[in] bs Nonnegative starting bit offset.
+ * @param[in] be Exclusive ending bit offset, not less than bs.
+ * @return Run length in bits, limited by the exclusive end position be.
+ */
 static inline int32_t find1span(unsigned char *bp, int32_t bs, int32_t be)
 {
     int32_t bits = be - bs;
@@ -1117,6 +1488,23 @@ static inline int32_t find1span(unsigned char *bp, int32_t bs, int32_t be)
  * a sequence of all-white or all-black spans
  * of pixels encoded with Huffman codes.
  */
+/**
+ * @brief Encode alternating white and black runs for one bilevel row.
+ * @ingroup libtiff_private_fax
+ *
+ * Requires positive bit count within INT32_MAX and a readable packed
+ * MSB-first row. Emits Huffman spans and applies requested byte/word
+ * alignment. Can flush client output; errors retain partial code/file
+ * progress. Does not modify input or transfer ownership.
+ *
+ * @param[in,out] tif Non-NULL live fax handle with matching geometry/state;
+ * serialise operations.
+ * @param[in] bp Borrowed readable packed MSB-first row/input bytes,
+ * unchanged.
+ * @param[in] bits Row width in pixels (number of bits in @p bp to encode);
+ * positive and at most INT32_MAX.
+ * @return One after row coding, zero on output failure.
+ */
 static int Fax3Encode1DRow(TIFF *tif, unsigned char *bp, uint32_t bits)
 {
     Fax3CodecState *sp = EncoderState(tif);
@@ -1149,8 +1537,26 @@ static int Fax3Encode1DRow(TIFF *tif, unsigned char *bp, uint32_t bits)
     return (1);
 }
 
+/**
+ * @brief Encode the Group4 horizontal mode prefix.
+ * @ingroup libtiff_private_fax
+ *
+ * Immutable library-lifetime storage; no ownership transfer.
+ */
 static const tableentry horizcode = {3, 0x1, 0}; /* 001 */
-static const tableentry passcode = {4, 0x1, 0};  /* 0001 */
+/**
+ * @brief Encode the Group4 pass mode prefix.
+ * @ingroup libtiff_private_fax
+ *
+ * Immutable library-lifetime storage; no ownership transfer.
+ */
+static const tableentry passcode = {4, 0x1, 0}; /* 0001 */
+/**
+ * @brief Encode Group4 vertical offsets minus three through three.
+ * @ingroup libtiff_private_fax
+ *
+ * Immutable library-lifetime storage; no ownership transfer.
+ */
 static const tableentry vcodes[7] = {
     {7, 0x03, 0}, /* 0000 011 */
     {6, 0x03, 0}, /* 0000 11 */
@@ -1164,6 +1570,26 @@ static const tableentry vcodes[7] = {
 /*
  * 2d-encode a row of pixels.  Consult the CCITT
  * documentation for the algorithm.
+ */
+/**
+ * @brief Encode one bilevel row relative to its reference row.
+ * @ingroup libtiff_private_fax
+ *
+ * Requires positive bit count within INT32_MAX and readable
+ * current/reference rows including safe boundary-byte accesses used by
+ * change detection. Emits horizontal, vertical or pass codes without
+ * updating the reference row itself. Can flush client output and leave
+ * partial state/file changes on failure. No allocation, input mutation or
+ * ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live fax handle with matching geometry/state;
+ * serialise operations.
+ * @param[in] bp Borrowed readable packed MSB-first row/input bytes,
+ * unchanged.
+ * @param[in] rp Borrowed readable packed reference row, unchanged.
+ * @param[in] bits Row width in pixels (number of bits in @p bp to encode);
+ * positive and at most INT32_MAX.
+ * @return One after row coding, zero on output failure.
  */
 static int Fax3Encode2DRow(TIFF *tif, unsigned char *bp, unsigned char *rp,
                            uint32_t bits)
@@ -1243,6 +1669,24 @@ static int Fax3Encode2DRow(TIFF *tif, unsigned char *bp, unsigned char *rp,
 /*
  * Encode a buffer of pixels.
  */
+/**
+ * @brief Encode complete Group3 or aligned RLE rows.
+ * @ingroup libtiff_private_fax
+ *
+ * Requires positive cached row size, nonnegative complete-row cc and valid
+ * raw/reference state. Emits EOL when enabled, chooses 1D/2D schedule,
+ * updates reference data and advances input. Does not change caller
+ * samples. Fractional requests diagnose; output failure can leave partial
+ * state/file data. No allocation or ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live fax handle with matching geometry/state;
+ * serialise operations.
+ * @param[in] bp Borrowed readable packed MSB-first row/input bytes,
+ * unchanged.
+ * @param[in] cc Nonnegative complete-row input extent.
+ * @param[in] s Unused sample-plane compatibility argument.
+ * @return One after requested rows, zero on extent or output failure.
+ */
 static int Fax3Encode(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
 {
     static const char module[] = "Fax3Encode";
@@ -1293,6 +1737,18 @@ static int Fax3Encode(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
     return (1);
 }
 
+/**
+ * @brief Pad and buffer the final partial fax code byte.
+ * @ingroup libtiff_private_fax
+ *
+ * Requires valid encoder/raw state. Flush macro can write a full raw buffer
+ * before appending its byte and return early on failure. Does not otherwise
+ * flush the final payload or persist metadata; no ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live fax handle with matching geometry/state;
+ * serialise operations.
+ * @return One after byte alignment, zero on required flush failure.
+ */
 static int Fax3PostEncode(TIFF *tif)
 {
     Fax3CodecState *sp = EncoderState(tif);
@@ -1302,6 +1758,19 @@ static int Fax3PostEncode(TIFF *tif)
     return (1);
 }
 
+/**
+ * @brief Append an optional six-EOL fax return-to-control sequence.
+ * @ingroup libtiff_private_fax
+ *
+ * Runs only when NORTC is clear and raw cursor exists. Ignores Fax3PutBits
+ * statuses while emitting EOLs; final flush macro can fail. Can modify
+ * buffered/file state without rollback, allocation or ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live fax handle with matching geometry/state;
+ * serialise operations.
+ * @return One on normal exit, zero from final flush failure; earlier
+ * ignored code-write failures need not be reflected.
+ */
 static int _Fax3Close(TIFF *tif)
 {
     if ((Fax3State(tif)->mode & FAXMODE_NORTC) == 0 && tif->tif_rawcp)
@@ -1323,8 +1792,31 @@ static int _Fax3Close(TIFF *tif)
     return 1;
 }
 
+/**
+ * @brief Invoke fax return-to-control completion without a status channel.
+ * @ingroup libtiff_private_fax
+ *
+ * Calls _Fax3Close and discards its result. Output diagnostics and partial
+ * file/cache effects can occur. Does not free codec state or close the
+ * client handle; no ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live fax handle with matching geometry/state;
+ * serialise operations.
+ */
 static void Fax3Close(TIFF *tif) { _Fax3Close(tif); }
 
+/**
+ * @brief Restore fax tag/print methods and release run/reference state.
+ * @ingroup libtiff_private_fax
+ *
+ * Requires live initialised state. Frees owned runs/reference row and outer
+ * Ext allocation, clears tif_data and restores default compression
+ * callbacks. Invalidates all codec-owned views. Does not emit RTC, finish
+ * or flush payload, close the handle or return status.
+ *
+ * @param[in,out] tif Non-NULL live fax handle with matching geometry/state;
+ * serialise operations.
+ */
 static void Fax3Cleanup(TIFF *tif)
 {
     Fax3CodecState *sp = DecoderState(tif);
@@ -1352,6 +1844,13 @@ static void Fax3Cleanup(TIFF *tif)
 
 #define FIELD_OPTIONS (FIELD_CODEC + 7)
 
+/**
+ * @brief Define common fax metadata and pseudo-tags.
+ * @ingroup libtiff_private_fax
+ *
+ * Immutable library-lifetime metadata merged into a handle; no caller
+ * ownership transfer.
+ */
 static const TIFFField faxFields[] = {
     {TIFFTAG_FAXMODE, 0, 0, TIFF_ANY, 0, TIFF_SETGET_INT, FIELD_PSEUDO, FALSE,
      FALSE, "FaxMode", NULL},
@@ -1363,15 +1862,52 @@ static const TIFFField faxFields[] = {
      FIELD_CLEANFAXDATA, TRUE, FALSE, "CleanFaxData", NULL},
     {TIFFTAG_CONSECUTIVEBADFAXLINES, 1, 1, TIFF_LONG, 0, TIFF_SETGET_UINT32,
      FIELD_BADFAXRUN, TRUE, FALSE, "ConsecutiveBadFaxLines", NULL}};
+/**
+ * @brief Define Group3 options metadata.
+ * @ingroup libtiff_private_fax
+ *
+ * Immutable library-lifetime metadata merged into a handle; no caller
+ * ownership transfer.
+ */
 static const TIFFField fax3Fields[] = {
     {TIFFTAG_GROUP3OPTIONS, 1, 1, TIFF_LONG, 0, TIFF_SETGET_UINT32,
      FIELD_OPTIONS, FALSE, FALSE, "Group3Options", NULL},
 };
+/**
+ * @brief Define Group4 options metadata.
+ * @ingroup libtiff_private_fax
+ *
+ * Immutable library-lifetime metadata merged into a handle; no caller
+ * ownership transfer.
+ */
 static const TIFFField fax4Fields[] = {
     {TIFFTAG_GROUP4OPTIONS, 1, 1, TIFF_LONG, 0, TIFF_SETGET_UINT32,
      FIELD_OPTIONS, FALSE, FALSE, "Group4Options", NULL},
 };
 
+/**
+ * @brief Assign fax pseudo-tags or persistent fax metadata.
+ * @ingroup libtiff_private_fax
+ *
+ * FAXMODE consumes int; FAXFILLFUNC consumes a non-NULL callable
+ * TIFFFaxFillFunc kept live while installed/in flight. GROUP3/4OPTIONS,
+ * BADFAXLINES and CONSECUTIVEBADFAXLINES consume uint32_t; options are
+ * consumed only for matching compression. CLEANFAXDATA consumes uint16_vap.
+ * Persistent tags mark field bits and directory dirty after assignment;
+ * lookup failure can leave changed cached values. If the compression does
+ * not match GROUP3OPTIONS/GROUP4OPTIONS, the value is not read and
+ * groupoptions is unchanged, but FIELD_OPTIONS and TIFF_DIRTYDIRECT are
+ * still set and 1 is returned. Other tags delegate to parent contracts. No
+ * ownership transfer; callbacks/diagnostics can run.
+ *
+ * @param[in,out] tif Non-NULL live fax handle with matching geometry/state;
+ * serialise operations.
+ * @param[in] tag Fax or delegated tag identifier.
+ * @param[in,out] ap Live tag-specific va_list, consumed synchronously
+ * without retention.
+ * @return One after accepted assignment, zero on field lookup failure,
+ * otherwise parent status.
+ */
 static int Fax3VSetField(TIFF *tif, uint32_t tag, va_list ap)
 {
     Fax3BaseState *sp = Fax3State(tif);
@@ -1420,6 +1956,22 @@ static int Fax3VSetField(TIFF *tif, uint32_t tag, va_list ap)
     return 1;
 }
 
+/**
+ * @brief Retrieve fax mode callback or persistent fax values.
+ * @ingroup libtiff_private_fax
+ *
+ * FAXMODE consumes int*; FAXFILLFUNC consumes TIFFFaxFillFunc* and returns
+ * a borrowed installed callback. Options/bad-line counters consume
+ * uint32_t*; CLEANFAXDATA consumes uint16_t*. All outputs must be non-NULL.
+ * Other tags follow parent contracts. No allocation or ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live fax handle with matching geometry/state;
+ * serialise operations.
+ * @param[in] tag Fax or delegated tag identifier.
+ * @param[in,out] ap Live tag-specific va_list, consumed synchronously
+ * without retention.
+ * @return One for fax retrieval, otherwise parent status.
+ */
 static int Fax3VGetField(TIFF *tif, uint32_t tag, va_list ap)
 {
     Fax3BaseState *sp = Fax3State(tif);
@@ -1453,6 +2005,19 @@ static int Fax3VGetField(TIFF *tif, uint32_t tag, va_list ap)
     return (1);
 }
 
+/**
+ * @brief Print present fax values then chain the saved directory printer.
+ * @ingroup libtiff_private_fax
+ *
+ * Writes to borrowed FILE without checking stdio errors, then invokes
+ * optional saved printer. Does not close the stream or transfer ownership;
+ * parent callback effects apply. No separate error status.
+ *
+ * @param[in] tif Non-NULL fax handle whose field bits and cached fax values
+ * are printed; not modified.
+ * @param[in,out] fd Borrowed writable FILE stream; remains caller-owned.
+ * @param[in] flags Print flags forwarded to the saved parent printer.
+ */
 static void Fax3PrintDir(TIFF *tif, FILE *fd, long flags)
 {
     Fax3BaseState *sp = Fax3State(tif);
@@ -1518,6 +2083,16 @@ static void Fax3PrintDir(TIFF *tif, FILE *fd, long flags)
         (*sp->printdir)(tif, fd, flags);
 }
 
+/**
+ * @brief Report the fax expansion allocation heuristic.
+ * @ingroup libtiff_private_fax
+ *
+ * No allocation, diagnostics, I/O, mutation or ownership transfer. The
+ * heuristic is not proof of payload validity or universal success.
+ *
+ * @param[in] tif Unused handle.
+ * @return 250.
+ */
 static uint64_t Fax3GetMaxCompressionRatio(TIFF *tif)
 {
     (void)tif;
@@ -1534,6 +2109,22 @@ static uint64_t Fax3GetMaxCompressionRatio(TIFF *tif)
     return 250;
 }
 
+/**
+ * @brief Allocate shared fax state and install tag and transfer methods.
+ * @ingroup libtiff_private_fax
+ *
+ * Requires prior codec cleanup/default methods. Merges common fields,
+ * allocates zeroed Ext state, saves tag/print chains, installs default fill
+ * callback and row/strile/setup/close methods. Read-only mode sets NOBITREV
+ * because decoder handles FillOrder. Default fill setter status is ignored.
+ * Merge/allocation errors diagnose without general rollback. Buffers are
+ * allocated at setup; no payload I/O.
+ *
+ * @param[in,out] tif Non-NULL live fax handle with matching geometry/state;
+ * serialise operations.
+ * @return One after shared installation, zero on field merge or outer
+ * allocation failure.
+ */
 static int InitCCITTFax3(TIFF *tif)
 {
     static const char module[] = "InitCCITTFax3";
@@ -1642,6 +2233,34 @@ int TIFFInitCCITTFax3(TIFF *tif, int scheme)
 /*
  * Decode the requested amount of G4-encoded data.
  */
+/**
+ * @brief Decode complete Group4 two-dimensional fax rows.
+ * @ingroup libtiff_private_fax
+ *
+ * Requires setup/predecode, positive rowbytes, signed-representable pixel
+ * coordinates, nonnegative complete-row occ and valid run/reference
+ * capacities. Expands cached codes through state macros and invokes the
+ * installed fill callback synchronously; NULL buf is valid only for a
+ * custom callback that explicitly supports it. Can recover bad row lengths
+ * with diagnostics and counter limits; an EOL/EOFB code ends decoding of the
+ * strile. Updates run/reference arrays, line/bit state and raw cursors;
+ * failure can leave a partially filled current row and earlier output. The
+ * "Buffer overrun detected" failure returns without committing the cached
+ * bit and raw cursor state. Group4 can return success at early
+ * termination after at least one completed row, tolerating badly terminated
+ * striles; not all requested rows are thereby proved filled. No direct
+ * allocation/client I/O or ownership transfer; a custom filler has its own
+ * effects. Negative error status is not a Boolean success result.
+ *
+ * @param[in,out] tif Non-NULL live fax handle with matching geometry/state;
+ * serialise operations.
+ * @param[out] buf Borrowed decoded row storage of occ bytes, or NULL only
+ * with a compatible custom fill callback.
+ * @param[in] occ Nonnegative complete-row decoded extent.
+ * @param[in] s Unused sample-plane compatibility argument.
+ * @return One on normal completion or accepted early Group4 termination,
+ * minus one on detected extent/counter/decoding failure.
+ */
 static int Fax4Decode(TIFF *tif, uint8_t *buf, tmsize_t occ, uint16_t s)
 {
     DECLARE_STATE_2D(tif, sp, "Fax4Decode");
@@ -1715,6 +2334,24 @@ static int Fax4Decode(TIFF *tif, uint8_t *buf, tmsize_t occ, uint16_t s)
 /*
  * Encode the requested amount of data.
  */
+/**
+ * @brief Encode complete Group4 rows relative to the preceding row.
+ * @ingroup libtiff_private_fax
+ *
+ * Requires positive row size, complete-row nonnegative cc and valid
+ * reference/raw storage. Calls the 2D encoder and copies each successful
+ * row into reference storage. Fractional requests diagnose; I/O failure
+ * leaves earlier reference/bit/file changes. Caller input remains
+ * unchanged; no allocation or ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live fax handle with matching geometry/state;
+ * serialise operations.
+ * @param[in] bp Borrowed readable packed MSB-first row/input bytes,
+ * unchanged.
+ * @param[in] cc Nonnegative complete-row input extent.
+ * @param[in] s Unused sample-plane compatibility argument.
+ * @return One after requested rows, zero on extent/output failure.
+ */
 static int Fax4Encode(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
 {
     static const char module[] = "Fax4Encode";
@@ -1736,6 +2373,20 @@ static int Fax4Encode(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
     return (1);
 }
 
+/**
+ * @brief Append Group4 EOFB and align the final byte.
+ * @ingroup libtiff_private_fax
+ *
+ * Emits two EOL codes but ignores their individual statuses, then aligns
+ * with the flush macro. Requires valid encoder/raw state. Can leave partial
+ * output/file state and does not persist IFD or promise durability; no
+ * ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live fax handle with matching geometry/state;
+ * serialise operations.
+ * @return One on normal exit, zero from final required flush; ignored EOL
+ * write failures need not be reflected.
+ */
 static int Fax4PostEncode(TIFF *tif)
 {
     Fax3CodecState *sp = EncoderState(tif);
@@ -1748,6 +2399,17 @@ static int Fax4PostEncode(TIFF *tif)
     return (1);
 }
 
+/**
+ * @brief Report the fax expansion allocation heuristic.
+ * @ingroup libtiff_private_fax
+ *
+ * No allocation, diagnostics, I/O, mutation or ownership transfer. The
+ * heuristic is not proof of payload validity or universal success.
+ *
+ * @param[in] tif Handle whose directory supplies the tile or image width;
+ * not modified.
+ * @return TileWidth for tiled data, otherwise ImageWidth.
+ */
 static uint64_t Fax4GetMaxCompressionRatio(TIFF *tif)
 {
     /* FAX4 can compress up to almost one byte per line, so the compression
@@ -1797,6 +2459,31 @@ int TIFFInitCCITTFax4(TIFF *tif, int scheme)
 
 /*
  * Decode the requested amount of RLE-encoded data.
+ */
+/**
+ * @brief Decode complete aligned modified-Huffman fax rows.
+ * @ingroup libtiff_private_fax
+ *
+ * Requires setup/predecode, positive rowbytes, signed-representable pixel
+ * coordinates, nonnegative complete-row occ and valid run capacity. Expands
+ * cached codes through state macros and invokes the installed fill callback
+ * synchronously; NULL buf is valid only for a custom callback that
+ * explicitly supports it. Can recover bad row lengths with diagnostics and
+ * counter limits. After each row, discards the remaining bits up to the next
+ * byte (FAXMODE_BYTEALIGN) or 16-bit word (FAXMODE_WORDALIGN) boundary.
+ * Updates the current run array, line/bit state and raw cursors; failure
+ * can leave a partially filled current row and earlier output. No direct
+ * allocation/client I/O or ownership transfer; a custom filler has its own
+ * effects. Negative error status is not a Boolean success result.
+ *
+ * @param[in,out] tif Non-NULL live fax handle with matching geometry/state;
+ * serialise operations.
+ * @param[out] buf Borrowed decoded row storage of occ bytes, or NULL only
+ * with a compatible custom fill callback.
+ * @param[in] occ Nonnegative complete-row decoded extent.
+ * @param[in] s Unused sample-plane compatibility argument.
+ * @return One on normal completion, minus one on detected
+ * extent/counter/decoding failure.
  */
 static int Fax3DecodeRLE(TIFF *tif, uint8_t *buf, tmsize_t occ, uint16_t s)
 {
@@ -1852,6 +2539,16 @@ static int Fax3DecodeRLE(TIFF *tif, uint8_t *buf, tmsize_t occ, uint16_t s)
     return (1);
 }
 
+/**
+ * @brief Report the fax expansion allocation heuristic.
+ * @ingroup libtiff_private_fax
+ *
+ * No allocation, diagnostics, I/O, mutation or ownership transfer. The
+ * heuristic is not proof of payload validity or universal success.
+ *
+ * @param[in] tif Unused handle.
+ * @return 250.
+ */
 static uint64_t Fax3RLEGetMaxCompressionRatio(TIFF *tif)
 {
     (void)tif;
@@ -1905,3 +2602,375 @@ int TIFFInitCCITTRLEW(TIFF *tif, int scheme)
         return (0);
 }
 #endif /* CCITT_SUPPORT */
+
+/**
+ * @def G3CODES
+ * @brief Instantiate the Huffman code tables from t4.h.
+ * @ingroup libtiff_private_fax
+ *
+ * Defined (empty) before including t4.h so that t4.h defines
+ * TIFFFaxWhiteCodes and TIFFFaxBlackCodes, rather than only declaring them.
+ * tif_fax3.c is the only file that defines it.
+ */
+
+/**
+ * @def EOF_REACHED_COUNT_THRESHOLD
+ * @brief Limit repeated fax recovery conditions per strile.
+ * @ingroup libtiff_private_fax
+ *
+ * Default 8192; it can be overridden at build time because the definition is
+ * guarded by @c \#ifndef. CheckReachedCounters() fails decoding once
+ * eofReachedCount, eolReachedCount or unexpectedReachedCount reaches it. The
+ * counters are reset by Fax3PreDecode() for each strile. The limit stops
+ * apparently endless looping on corrupt single-strip files with a very large
+ * ImageLength (issue 583).
+ */
+
+/**
+ * @def Fax3State(tif)
+ * @brief Borrow the shared fax state prefix.
+ * @ingroup libtiff_private_fax
+ *
+ * Casts tif->tif_data to Fax3BaseState *; it does not check that the handle
+ * uses a fax codec.
+ *
+ * @param[in] tif Handle whose tif_data holds fax codec state.
+ */
+
+/**
+ * @def DecoderState(tif)
+ * @brief Borrow the complete fax decoder state.
+ * @ingroup libtiff_private_fax
+ *
+ * Casts Fax3State(tif) to Fax3CodecState *. Decoding and encoding share this
+ * structure.
+ *
+ * @param[in] tif Handle whose tif_data holds fax codec state.
+ */
+
+/**
+ * @def EncoderState(tif)
+ * @brief Borrow the complete fax encoder state.
+ * @ingroup libtiff_private_fax
+ *
+ * Casts Fax3State(tif) to Fax3CodecState *. Decoding and encoding share this
+ * structure.
+ *
+ * @param[in] tif Handle whose tif_data holds fax codec state.
+ */
+
+/**
+ * @def is2DEncoding(sp)
+ * @brief Test Group3 two-dimensional mode.
+ * @ingroup libtiff_private_fax
+ *
+ * Nonzero when GROUP3OPT_2DENCODING is set in sp->b.groupoptions. @p sp is
+ * not parenthesised in the expansion, so pass a plain identifier.
+ *
+ * @param[in] sp Fax3CodecState pointer.
+ */
+
+/**
+ * @def isAligned(p, t)
+ * @brief Test a pointer against a type-sized alignment.
+ * @ingroup libtiff_private_fax
+ *
+ * Nonzero when the address @p p is a multiple of sizeof(@p t), which must be a
+ * power of two.
+ *
+ * @param[in] p Pointer to test.
+ * @param[in] t Type whose size gives the alignment.
+ */
+
+/**
+ * @def DECLARE_STATE(tif, sp, mod)
+ * @brief Declare cached local one-dimensional decode state.
+ * @ingroup libtiff_private_fax
+ *
+ * Declares, at the start of a decoder function, @c module (set to @p mod),
+ * @p sp (set to DecoderState(@p tif)), @c lastx (the row width), @c bitmap
+ * (the bit-reversal table) and the uninitialised locals used by the decoding
+ * macros: a0, BitAcc, BitsAvail, RunLength, cp, ep, pa, thisrun, EOLcnt and
+ * TabEnt. CACHE_STATE() then loads the bit and raw-data state.
+ *
+ * @param[in] tif Decoding handle.
+ * @param[in] sp Name of the Fax3CodecState pointer to declare.
+ * @param[in] mod String literal used as the diagnostic module name.
+ */
+
+/**
+ * @def DECLARE_STATE_2D(tif, sp, mod)
+ * @brief Declare local two-dimensional decode and reference state.
+ * @ingroup libtiff_private_fax
+ *
+ * Expands to DECLARE_STATE() plus the locals @c b1 (next change on the
+ * reference row) and @c pb (cursor into the reference runs) used by
+ * EXPAND2D().
+ *
+ * @param[in] tif Decoding handle.
+ * @param[in] sp Name of the Fax3CodecState pointer to declare.
+ * @param[in] mod String literal used as the diagnostic module name.
+ */
+
+/**
+ * @def CACHE_STATE(tif, sp)
+ * @brief Load codec and raw cursor state into decode locals.
+ * @ingroup libtiff_private_fax
+ *
+ * Copies sp->data, sp->bit and sp->EOLcnt into BitAcc, BitsAvail and EOLcnt,
+ * and sets cp and ep to the unread raw data tif_rawcp to
+ * tif_rawcp + tif_rawcc.
+ *
+ * @param[in] tif Decoding handle.
+ * @param[in] sp Decoder state.
+ */
+
+/**
+ * @def UNCACHE_STATE(tif, sp)
+ * @brief Commit local bit state and consumed raw bytes.
+ * @ingroup libtiff_private_fax
+ *
+ * Stores BitsAvail, BitAcc and EOLcnt back into @p sp, and advances
+ * tif_rawcp to cp, reducing tif_rawcc by the bytes consumed. Paths that
+ * return without it leave the state as of the last CACHE_STATE().
+ *
+ * @param[in,out] tif Decoding handle.
+ * @param[in,out] sp Decoder state.
+ */
+
+/**
+ * @def unexpected(table, a0)
+ * @brief Diagnose a bad code and increment its recovery counter.
+ * @ingroup libtiff_private_fax
+ *
+ * Calls Fax3Unexpected() with the enclosing @c module, @c tif and
+ * @c sp->line, then increments sp->unexpectedReachedCount. @p table is not
+ * used by the expansion.
+ *
+ * @param[in] table Name of the table that failed (unused).
+ * @param[in] a0 Pixel position of the bad code.
+ */
+
+/**
+ * @def extension(a0)
+ * @brief Diagnose an unsupported uncompressed extension.
+ * @ingroup libtiff_private_fax
+ *
+ * Calls Fax3Extension() with the enclosing @c module, @c tif and
+ * @c sp->line. No recovery counter is incremented.
+ *
+ * @param[in] a0 Pixel position of the extension code.
+ */
+
+/**
+ * @def badlength(a0, lastx)
+ * @brief Warn about row width and increment its recovery counter.
+ * @ingroup libtiff_private_fax
+ *
+ * Calls Fax3BadLength() with the enclosing @c module, @c tif and
+ * @c sp->line, then increments sp->eolReachedCount.
+ *
+ * @param[in] a0 Decoded row length.
+ * @param[in] lastx Expected row width in pixels.
+ */
+
+/**
+ * @def prematureEOF(a0)
+ * @brief Warn about input exhaustion and increment its recovery counter.
+ * @ingroup libtiff_private_fax
+ *
+ * Calls Fax3PrematureEOF() with the enclosing @c module, @c tif and
+ * @c sp->line, then increments sp->eofReachedCount.
+ *
+ * @param[in] a0 Pixel position reached in the row.
+ */
+
+/**
+ * @def tryG3WithoutEOL(a0)
+ * @brief Warn about retrying Group3 data without EOL.
+ * @ingroup libtiff_private_fax
+ *
+ * Calls Fax3TryG3WithoutEOL() with the enclosing @c module, @c tif and
+ * @c sp->line. No recovery counter is incremented.
+ *
+ * @param[in] a0 Pixel position reached in the row.
+ */
+
+/**
+ * @def SWAP(t, a, b)
+ * @brief Exchange current and reference run-array pointers.
+ * @ingroup libtiff_private_fax
+ *
+ * Exchanges the lvalues @p a and @p b through a temporary of type @p t.
+ * Expands to a braced block, not a do/while statement. Defined separately
+ * for Fax3Decode2D() and Fax4Decode() and undefined after each.
+ *
+ * @param[in] t Type of @p a and @p b.
+ * @param[in,out] a First lvalue.
+ * @param[in,out] b Second lvalue.
+ */
+
+/**
+ * @def FILL(n, cp)
+ * @brief Set complete black output bytes and advance the pointer.
+ * @ingroup libtiff_private_fax
+ *
+ * Writes @p n bytes of 0xff at @p cp, then advances @p cp by @p n. Expands
+ * to two statements without a do/while wrapper, so it must be braced when
+ * used as the body of a conditional.
+ *
+ * @param[in] n Number of bytes to set.
+ * @param[in,out] cp Output byte pointer.
+ */
+
+/**
+ * @def ZERO(n, cp)
+ * @brief Clear complete white output bytes and advance the pointer.
+ * @ingroup libtiff_private_fax
+ *
+ * Writes @p n zero bytes at @p cp, then advances @p cp by @p n. Expands to
+ * two statements without a do/while wrapper, so it must be braced when used
+ * as the body of a conditional.
+ *
+ * @param[in] n Number of bytes to clear.
+ * @param[in,out] cp Output byte pointer.
+ */
+
+/**
+ * @def Fax3FlushBits(tif, sp)
+ * @brief Append a partial code byte and flush raw output when full.
+ * @ingroup libtiff_private_fax
+ *
+ * If the raw buffer is full (tif_rawcc >= tif_rawdatasize), calls
+ * TIFFFlushData1() and executes return 0 from the enclosing function if it
+ * fails. Then appends the low byte of sp->data at tif_rawcp, advances
+ * tif_rawcp and tif_rawcc, and sets sp->data to 0 and sp->bit to 8.
+ * Expands to a braced block, not a do/while statement. Both operands are
+ * evaluated several times.
+ *
+ * @param[in,out] tif Encoding handle whose raw buffer is written.
+ * @param[in,out] sp Encoder state whose data and bit are flushed and reset.
+ */
+
+/**
+ * @def _FlushBits(tif)
+ * @brief Append local code bits and reset local byte state.
+ * @ingroup libtiff_private_fax
+ *
+ * Same as Fax3FlushBits() but uses the enclosing function's locals data and
+ * bit instead of sp->data and sp->bit: appends the low byte of data to the
+ * raw buffer and sets data to 0 and bit to 8. Executes return 0 from the
+ * enclosing function if TIFFFlushData1() fails. Expands to a braced block.
+ *
+ * @param[in,out] tif Encoding handle whose raw buffer is written.
+ */
+
+/**
+ * @def _PutBits(tif, bits, length)
+ * @brief Append local code bits across partial-byte boundaries.
+ * @ingroup libtiff_private_fax
+ *
+ * Appends the low @p length bits of @p bits, most significant first, to the
+ * enclosing function's locals data and bit, writing each completed byte
+ * with _FlushBits(). @p bits must have no set bits above @p length. Updates
+ * data and bit, and decrements @p length while splitting the code, so
+ * @p length must be a modifiable lvalue; the final partial byte asserts
+ * @p length < 9. If a flush fails, the enclosing function returns 0 before
+ * it copies data and bit back to sp->data and sp->bit, while bytes already
+ * flushed stay in the raw buffer. Expands to a braced block; @p bits and
+ * @p length are evaluated several times.
+ *
+ * @param[in,out] tif Encoding handle whose raw buffer is written.
+ * @param[in] bits Code value to write.
+ * @param[in,out] length Number of bits to write; modified by the expansion.
+ */
+
+/**
+ * @def putcode(tif, te)
+ * @brief Emit one Huffman table entry.
+ * @ingroup libtiff_private_fax
+ *
+ * Expands to Fax3PutBits(tif, te->code, te->length), so its value is 1 on
+ * success and 0 when flushing raw data fails.
+ *
+ * @param[in,out] tif Encoding handle.
+ * @param[in] te Code table entry to write.
+ */
+
+/**
+ * @def finddiff(_cp, _bs, _be, _color)
+ * @brief Find the next pixel differing from the selected colour.
+ * @ingroup libtiff_private_fax
+ *
+ * Returns the offset of the first bit in [@p _bs, @p _be) of @p _cp that
+ * differs from @p _color, or @p _be if there is none. @p _bs is evaluated
+ * twice.
+ *
+ * @param[in] _cp Packed MSB-first row.
+ * @param[in] _bs Starting bit offset.
+ * @param[in] _be End bit offset.
+ * @param[in] _color Colour of the run to skip (0 or 1).
+ */
+
+/**
+ * @def finddiff2(_cp, _bs, _be, _color)
+ * @brief Find a change while bounding an already exhausted start.
+ * @ingroup libtiff_private_fax
+ *
+ * Like finddiff(), but returns @p _be when @p _bs is not less than @p _be.
+ * @p _bs and @p _be are evaluated more than once.
+ *
+ * @param[in] _cp Packed MSB-first row.
+ * @param[in] _bs Starting bit offset.
+ * @param[in] _be End bit offset.
+ * @param[in] _color Colour of the run to skip (0 or 1).
+ */
+
+/**
+ * @def PIXEL(buf, ix)
+ * @brief Read one MSB-first packed pixel bit.
+ * @ingroup libtiff_private_fax
+ *
+ * Returns bit @p ix (0 or 1) of @p buf, counting from the most significant bit
+ * of byte 0. @p ix is evaluated twice.
+ *
+ * @param[in] buf Packed row bytes.
+ * @param[in] ix Pixel index.
+ */
+
+/**
+ * @def FIELD_BADFAXLINES
+ * @brief Reserve the BadFaxLines codec field bit.
+ * @ingroup libtiff_private_fax
+ *
+ * Codec-private field bit FIELD_CODEC + 0, set with TIFFTAG_BADFAXLINES and
+ * tested by Fax3PrintDir().
+ */
+
+/**
+ * @def FIELD_CLEANFAXDATA
+ * @brief Reserve the CleanFaxData codec field bit.
+ * @ingroup libtiff_private_fax
+ *
+ * Codec-private field bit FIELD_CODEC + 1, set with TIFFTAG_CLEANFAXDATA and
+ * tested by Fax3PrintDir().
+ */
+
+/**
+ * @def FIELD_BADFAXRUN
+ * @brief Reserve the consecutive-bad-lines codec field bit.
+ * @ingroup libtiff_private_fax
+ *
+ * Codec-private field bit FIELD_CODEC + 2, set with
+ * TIFFTAG_CONSECUTIVEBADFAXLINES and tested by Fax3PrintDir().
+ */
+
+/**
+ * @def FIELD_OPTIONS
+ * @brief Reserve the Group3/4 options codec field bit.
+ * @ingroup libtiff_private_fax
+ *
+ * Codec-private field bit FIELD_CODEC + 7, shared by TIFFTAG_GROUP3OPTIONS
+ * and TIFFTAG_GROUP4OPTIONS. Fax3VSetField() sets it, and Fax3PrintDir()
+ * tests it.
+ */

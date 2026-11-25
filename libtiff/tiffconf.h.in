@@ -1,8 +1,12 @@
-/*
-  Configuration defines for installed libtiff.
-  This file maintained for backward compatibility. Do not use definitions
-  from this file in your programs.
-*/
+/**
+ * @file tiffconf.h
+ * @brief Provide configured integer types and legacy compatibility features.
+ *
+ * Generated for the selected build. Prefer standard integer types in new
+ * application code. Feature macros are retained for compatibility and are not
+ * a portable runtime capability query; use TIFFIsCODECConfigured() for codecs.
+ * An undefined conditional macro indicates that its feature was not enabled.
+ */
 
 /* clang-format off */
 /* clang-format disabled because CMake scripts are very sensitive to the
@@ -19,112 +23,143 @@
 #include <inttypes.h>
 
 
-/* Signed 16-bit type */
+/** @addtogroup libtiff_public_configuration
+ * @{ */
+
+/** @brief Define the configured signed 16-bit integer type.
+ */
 #undef TIFF_INT16_T
 
-/* Signed 32-bit type */
+/** @brief Define the configured signed 32-bit integer type.
+ */
 #undef TIFF_INT32_T
 
-/* Signed 64-bit type */
+/** @brief Define the configured signed 64-bit integer type.
+ */
 #undef TIFF_INT64_T
 
-/* Signed 8-bit type */
+/** @brief Define the configured signed 8-bit integer type.
+ */
 #undef TIFF_INT8_T
 
-/* Unsigned 16-bit type */
+/** @brief Define the configured unsigned 16-bit integer type.
+ */
 #undef TIFF_UINT16_T
 
-/* Unsigned 32-bit type */
+/** @brief Define the configured unsigned 32-bit integer type.
+ */
 #undef TIFF_UINT32_T
 
-/* Unsigned 64-bit type */
+/** @brief Define the configured unsigned 64-bit integer type.
+ */
 #undef TIFF_UINT64_T
 
-/* Unsigned 8-bit type */
+/** @brief Define the configured unsigned 8-bit integer type.
+ */
 #undef TIFF_UINT8_T
 
-/* Signed size type */
+/** @brief Define the signed addressing-size type used for tmsize_t.
+ */
 #undef TIFF_SSIZE_T
 
 /* Compatibility stuff. */
 
-/* Define as 0 or 1 according to the floating point format supported by the
-   machine */
+/** @brief Indicate IEEE floating-point representation when defined to 1.
+ */
 #undef HAVE_IEEEFP
 
-/* The concept of HOST_FILLORDER is broken. Since libtiff 4.5.1
- * this macro will always be hardcoded to FILLORDER_LSB2MSB on all
- * architectures, to reflect past long behavior of doing so on x86 architecture.
- * Note however that the default FillOrder used by libtiff is FILLORDER_MSB2LSB,
- * as mandated per the TIFF specification.
- * The influence of HOST_FILLORDER is only when passing the 'H' mode in
- * TIFFOpen().
- * You should NOT rely on this macro to decide the CPU endianness!
- * This macro will be removed in libtiff 4.6
+/** @brief Retain the legacy least-significant-bit-first fill-order constant.
+ *
+ * Fixed at FILLORDER_LSB2MSB, independently of CPU byte order. The deprecated
+ * H open mode now selects FILLORDER_MSB2LSB and does not consult this macro.
+ * Do not use this constant to detect CPU byte order or the file's FillOrder.
  */
 #define HOST_FILLORDER FILLORDER_LSB2MSB
 
-/* Native cpu byte order: 1 if big-endian (Motorola) or 0 if little-endian
-   (Intel) */
+/** @brief Indicate native CPU byte order: 1 for big-endian, 0 for little-endian.
+ */
 #undef HOST_BIGENDIAN
 
-/* Support CCITT Group 3 & 4 algorithms */
+/** @brief Indicate inclusion of CCITT Group 3 and Group 4 codecs when defined.
+ */
 #undef CCITT_SUPPORT
 
-/* Support JPEG compression (requires IJG JPEG library) */
+/** @brief Indicate inclusion of the JPEG codec when defined.
+ */
 #undef JPEG_SUPPORT
 
-/* Support JBIG compression (requires JBIG-KIT library) */
+/** @brief Indicate inclusion of the JBIG codec when defined.
+ */
 #undef JBIG_SUPPORT
 
-/* Support LERC compression */
+/** @brief Indicate inclusion of the LERC codec when defined.
+ */
 #undef LERC_SUPPORT
 
-/* Support LogLuv high dynamic range encoding */
+/** @brief Indicate inclusion of the LogLuv codec when defined.
+ */
 #undef LOGLUV_SUPPORT
 
-/* Support LZW algorithm */
+/** @brief Indicate inclusion of the LZW codec when defined.
+ */
 #undef LZW_SUPPORT
 
-/* Support NeXT 2-bit RLE algorithm */
+/** @brief Indicate inclusion of the NeXT 2-bit RLE codec when defined.
+ */
 #undef NEXT_SUPPORT
 
-/* Support Old JPEG compression (read contrib/ojpeg/README first! Compilation
-   fails with unpatched IJG JPEG library) */
+/** @brief Indicate inclusion of the old-style JPEG reader when defined.
+ */
 #undef OJPEG_SUPPORT
 
-/* Support Macintosh PackBits algorithm */
+/** @brief Indicate inclusion of the PackBits codec when defined.
+ */
 #undef PACKBITS_SUPPORT
 
-/* Support Pixar log-format algorithm (requires Zlib) */
+/** @brief Indicate inclusion of the PixarLog codec when defined.
+ */
 #undef PIXARLOG_SUPPORT
 
-/* Support ThunderScan 4-bit RLE algorithm */
+/** @brief Indicate inclusion of the ThunderScan codec when defined.
+ */
 #undef THUNDER_SUPPORT
 
-/* Support Deflate compression */
+/** @brief Indicate inclusion of Deflate compression support when defined.
+ */
 #undef ZIP_SUPPORT
 
-/* Support libdeflate enhanced compression */
+/** @brief Indicate use of libdeflate for Deflate compression when defined.
+ */
 #undef LIBDEFLATE_SUPPORT
 
-/* Support strip chopping (whether or not to convert single-strip uncompressed
-   images to multiple strips of ~8Kb to reduce memory usage) */
+/** @brief Define the default strip-chopping flag when strip chopping is enabled.
+ *
+ * Enables treating a single uncompressed strip as smaller strips internally;
+ * the open-mode options can override the default.
+ */
 #undef STRIPCHOP_DEFAULT
 
-/* Enable SubIFD tag (330) support */
+/** @brief Indicate support for SubIFD tag handling when defined.
+ */
 #undef SUBIFD_SUPPORT
 
-/* Treat extra sample as alpha (default enabled). The RGBA interface will
-   treat a fourth sample with no EXTRASAMPLE_ value as being ASSOCALPHA. Many
-   packages produce RGBA files but don't mark the alpha properly. */
+/** @brief Enable the RGBA reader's fallback alpha interpretation when defined.
+ *
+ * For an RGB image with exactly four samples per pixel and no declared extra
+ * samples, the fourth sample is treated as associated alpha.
+ */
 #undef DEFAULT_EXTRASAMPLE_AS_ALPHA
 
-/* Pick up YCbCr subsampling info from the JPEG data stream to support files
-   lacking the tag (default enabled). */
+/** @brief Enable JPEG-stream subsampling checks when defined.
+ *
+ * When the YCbCrSubsampling tag is absent from a contiguous three-sample
+ * YCbCr JPEG image, the JPEG codec reads the sampling factors from the JPEG
+ * stream instead of assuming the TIFF default of 2,2.
+ */
 #undef CHECK_JPEG_YCBCR_SUBSAMPLING
 
-/* Support MS MDI magic number files as TIFF */
+/** @brief Indicate support for Microsoft Document Imaging signatures when defined.
+ */
 #undef MDI_SUPPORT
 
 /*
@@ -132,12 +167,38 @@
  * XXX: These macros are obsoleted. Don't use them in your apps!
  * Macros stays here for backward compatibility and should be always defined.
  */
+/** @brief Retain the obsolete colorimetry feature marker.
+ *
+ * Always defined for compatibility; do not use as a capability test.
+ */
 #define COLORIMETRY_SUPPORT
+/** @brief Retain the obsolete YCbCr feature marker.
+ *
+ * Always defined for compatibility; do not use as a capability test.
+ */
 #define YCBCR_SUPPORT
+/** @brief Retain the obsolete CMYK feature marker.
+ *
+ * Always defined for compatibility; do not use as a capability test.
+ */
 #define CMYK_SUPPORT
+/** @brief Retain the obsolete ICC profiles feature marker.
+ *
+ * Always defined for compatibility; do not use as a capability test.
+ */
 #define ICC_SUPPORT
+/** @brief Retain the obsolete Photoshop metadata feature marker.
+ *
+ * Always defined for compatibility; do not use as a capability test.
+ */
 #define PHOTOSHOP_SUPPORT
+/** @brief Retain the obsolete IPTC metadata feature marker.
+ *
+ * Always defined for compatibility; do not use as a capability test.
+ */
 #define IPTC_SUPPORT
+
+/** @} */
 
 #endif /* _TIFFCONF_ */
 

@@ -22,6 +22,11 @@
  * OF THIS SOFTWARE.
  */
 
+/**
+ * @file tif_packbits.c
+ * @brief Implement the PackBits byte-run codec.
+ */
+
 #include "tiffiop.h"
 #ifdef PACKBITS_SUPPORT
 /*
@@ -33,6 +38,21 @@
 
 #ifndef PACKBITS_READ_ONLY
 
+/**
+ * @brief Allocate and cache the PackBits row byte extent.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * Allocates a handle-owned tmsize_t slot and computes tile-row or scanline
+ * size. Requires no previous unreleased tif_data allocation. The calculated
+ * size is not checked here; chunk encoding requires it positive. No payload
+ * I/O.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching validated geometry
+ * and codec methods; serialise access.
+ * @param[in] s Sample plane (ignored).
+ * @return One after allocation even if row size is zero, zero on allocation
+ * failure.
+ */
 static int PackBitsPreEncode(TIFF *tif, uint16_t s)
 {
     (void)s;
@@ -50,6 +70,19 @@ static int PackBitsPreEncode(TIFF *tif, uint16_t s)
     return (1);
 }
 
+/**
+ * @brief Release the PackBits cached row-size allocation.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * Frees non-NULL tif_data using Ext allocation but does not clear its
+ * pointer. Must be paired exactly once with a successful preencode; do not
+ * repeat without resetting/reallocating state. No payload flush, I/O or
+ * separate diagnostic status.
+ *
+ * @param[in,out] tif Non-NULL live handle whose tif_data allocation is
+ * freed (the pointer is left unchanged); serialise access.
+ * @return One unconditionally.
+ */
 static int PackBitsPostEncode(TIFF *tif)
 {
     if (tif->tif_data)
@@ -59,6 +92,25 @@ static int PackBitsPostEncode(TIFF *tif)
 
 /*
  * Encode a run of pixels.
+ */
+/**
+ * @brief Encode one byte run region using PackBits packets.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * Requires nonnegative input length and an adequately sized usable raw
+ * output buffer. Combines literal and repeated runs, caps packet lengths at
+ * 128, and flushes preserving pending literals as needed. Does not modify
+ * caller input. Output/cursors and file bytes can change before a failed
+ * flush; diagnostics follow I/O helpers. No returned ownership.
+ *
+ * @param[in,out] tif Non-NULL live handle with an allocated raw buffer; the
+ * raw cursor and count advance and TIFFFlushData1() can be called; serialise
+ * access.
+ * @param[in] buf Borrowed readable input covering the requested byte
+ * extent.
+ * @param[in] cc Nonnegative number of input bytes to encode.
+ * @param[in] s Sample plane (ignored).
+ * @return One after encoding, zero on flush failure.
  */
 static int PackBitsEncode(TIFF *tif, uint8_t *buf, tmsize_t cc, uint16_t s)
 {
@@ -70,9 +122,13 @@ static int PackBitsEncode(TIFF *tif, uint8_t *buf, tmsize_t cc, uint16_t s)
     int b;
     enum
     {
+        /** @brief Begin a new packet. */
         BASE,
+        /** @brief Extend the current literal packet. */
         LITERAL,
+        /** @brief Continue after a repeated-byte packet. */
         RUN,
+        /** @brief Remember a literal followed by a run for possible merging. */
         LITERAL_RUN
     } state;
 
@@ -219,6 +275,25 @@ static int PackBitsEncode(TIFF *tif, uint8_t *buf, tmsize_t cc, uint16_t s)
  * the decoder if data is read, for example, by scanlines
  * when it was encoded by strips.
  */
+/**
+ * @brief Split PackBits input into row-bounded encoding requests.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * Requires positive cached rowsize and a nonnegative input extent. Breaks
+ * at row boundaries, permitting a final partial row. Currently checks the
+ * inner encoder for negative status even though its flush failure returns
+ * zero, so such failure is not propagated and later chunks can continue.
+ * Caller input remains borrowed; raw/file state can change.
+ *
+ * @param[in,out] tif Non-NULL live handle whose tif_data holds the cached
+ * row size from PackBitsPreEncode(); serialise access.
+ * @param[in] bp Borrowed readable input of cc bytes.
+ * @param[in] cc Nonnegative number of input bytes, split into row-sized
+ * chunks.
+ * @param[in] s Sample plane, forwarded unchanged to PackBitsEncode().
+ * @return One on normal loop completion; inner zero failures are not
+ * reflected by this wrapper, so the -1 path is unreachable.
+ */
 static int PackBitsEncodeChunk(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
 {
     tmsize_t rowsize = *(tmsize_t *)tif->tif_data;
@@ -240,6 +315,23 @@ static int PackBitsEncodeChunk(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
 
 #endif
 
+/**
+ * @brief Expand PackBits packets into a bounded byte destination.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * Consumes raw cached bytes, ignores -128 no-op packets and clips overlong
+ * output runs with warnings. Short input warns, clears the unfilled output
+ * tail, diagnoses and returns zero. Raw cursor/counts are updated even on
+ * incomplete output. No allocation/client I/O or ownership transfer;
+ * requires nonnegative output length and disjoint storage.
+ *
+ * @param[in,out] tif Non-NULL live handle whose raw cursor and count are
+ * consumed and updated; serialise access.
+ * @param[out] op Borrowed writable output of occ bytes.
+ * @param[in] occ Nonnegative decoded output byte extent.
+ * @param[in] s Sample plane (ignored).
+ * @return One when output extent is filled, zero when input cannot fill it.
+ */
 static int PackBitsDecode(TIFF *tif, uint8_t *op, tmsize_t occ, uint16_t s)
 {
     static const char module[] = "PackBitsDecode";
@@ -317,6 +409,16 @@ static int PackBitsDecode(TIFF *tif, uint8_t *op, tmsize_t occ, uint16_t s)
     return (1);
 }
 
+/**
+ * @brief Report the PackBits expansion heuristic.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * Returns an empirical ratio without inspecting the handle, allocating,
+ * mutating state or doing I/O; not a validity proof or universal bound.
+ *
+ * @param[in] tif Handle (ignored).
+ * @return Sixty-four.
+ */
 static uint64_t PackBitsGetMaxCompressionRatio(TIFF *tif)
 {
     (void)tif;

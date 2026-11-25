@@ -23,6 +23,11 @@
  * OF THIS SOFTWARE.
  */
 
+/**
+ * @file tif_lzw.c
+ * @brief Implement TIFF LZW encoding standard decoding and legacy decoding.
+ */
+
 #include "tiffiop.h"
 #ifdef LZW_SUPPORT
 /*
@@ -43,6 +48,10 @@
 
 /* Select the plausible largest natural integer type for the architecture */
 #define SIZEOF_WORDTYPE SIZEOF_SIZE_T
+/**
+ * @brief Select the native size_t word for buffered LZW bits.
+ * @ingroup libtiff_private_lzw
+ */
 typedef size_t WordType;
 
 /*
@@ -86,17 +95,31 @@ typedef size_t WordType;
  * compression/decompression.  Note that the predictor
  * state block must be first in this data structure.
  */
+/**
+ * @brief Prefix LZW state with Predictor hooks and shared bit-code state.
+ * @ingroup libtiff_private_lzw
+ *
+ * Lives at the start of the handle-owned LZWCodecState (tif_data), which
+ * LZWCleanup() frees.
+ */
 typedef struct
 {
-    TIFFPredictorState predict; /* predictor super class */
+    /** @brief Predictor prefix; must be the first member. */
+    TIFFPredictorState predict;
 
-    unsigned short nbits;    /* # of bits/code */
-    unsigned short maxcode;  /* maximum code for lzw_nbits */
-    unsigned short free_ent; /* next free entry in hash table */
-    WordType nextdata;       /* next bits of i/o */
-    long nextbits;           /* # of valid bits in lzw_nextdata */
+    /** @brief Current code width in bits. */
+    unsigned short nbits;
+    /** @brief Largest code under the current width convention. */
+    unsigned short maxcode;
+    /** @brief Next available dictionary code. */
+    unsigned short free_ent;
+    /** @brief Buffered input/output code bits. */
+    WordType nextdata;
+    /** @brief Number of valid buffered code bits. */
+    long nextbits;
 
-    int rw_mode; /* preserve rw_mode from init */
+    /** @brief Open mode saved at codec initialisation. */
+    int rw_mode;
 } LZWBaseState;
 
 #define lzw_nbits base.nbits
@@ -108,56 +131,130 @@ typedef struct
 /*
  * Encoding-specific state.
  */
+/**
+ * @brief Store an encoder dictionary code in sixteen bits.
+ * @ingroup libtiff_private_lzw
+ */
 typedef uint16_t hcode_t; /* codes fit in 16 bits */
+/**
+ * @brief Pair an encoder hash key with its dictionary code.
+ * @ingroup libtiff_private_lzw
+ *
+ * Element of the HSIZE-entry enc_hashtab array owned by LZWCodecState;
+ * cl_hash() marks every entry unused.
+ */
 typedef struct
 {
+    /** @brief Encoder lookup key; minus one means unused. */
     long hash;
+    /** @brief Encoder dictionary code for the key. */
     hcode_t code;
 } hash_t;
 
 /*
  * Decoding-specific state.
  */
+/**
+ * @brief Link one decoder string to its preceding dictionary string.
+ * @ingroup libtiff_private_lzw
+ *
+ * Element of the CSIZE-entry dec_codetab array owned by LZWCodecState;
+ * next links point into the same array.
+ */
 typedef struct code_ent
 {
+    /**
+     * @brief Borrowed link within the decoder table to the preceding string
+     * entry.
+     */
     struct code_ent *next;
-    unsigned short length; /* string len, including this token */
-    /* firstchar should be placed immediately before value in this structure */
-    unsigned char firstchar; /* first token of string */
-    unsigned char value;     /* data value */
+    /** @brief Decoded string length including this entry. */
+    unsigned short length;
+
+    /**
+     * @brief First byte of the decoded string; immediately precedes value for
+     * fast paths.
+     */
+    unsigned char firstchar;
+    /** @brief Final byte represented by this entry. */
+    unsigned char value;
+    /** @brief Whether the string consists of one repeated byte. */
     bool repeated;
 } code_t;
 
-typedef int (*decodeFunc)(TIFF *, uint8_t *, tmsize_t, uint16_t);
+/**
+ * @brief Signature shared by the LZW decode entry points (recorded in
+ * dec_decode).
+ * @ingroup libtiff_private_lzw
+ *
+ * Matches LZWDecode() and LZWDecodeCompat(). No pointer of this type is ever
+ * called: decoding is dispatched through tif_decoderow, tif_decodestrip and
+ * tif_decodetile.
+ *
+ * @param[in,out] tif LZW handle being decoded.
+ * @param[out] buf Decoded output of size bytes.
+ * @param[in] size Requested decoded byte count.
+ * @param[in] sample Sample plane, ignored by LZW.
+ * @return One on filling output, zero on decoding failure.
+ */
+typedef int (*decodeFunc)(TIFF *tif, uint8_t *buf, tmsize_t size,
+                          uint16_t sample);
 
+/**
+ * @brief Own LZW dictionaries hash storage and transfer restart state.
+ * @ingroup libtiff_private_lzw
+ *
+ * Allocated as tif_data by TIFFInitLZW() (or LZWSetupDecode() if missing).
+ * dec_codetab and enc_hashtab are allocated by decode/encode setup, and
+ * LZWCleanup() frees them together with the state.
+ */
 typedef struct
 {
+    /** @brief Shared LZW/Predictor prefix, first in the codec allocation. */
     LZWBaseState base;
 
-    /* Decoding specific data */
-    long dec_nbitsmask;     /* lzw_nbits 1 bits, right adjusted */
-    tmsize_t dec_restart;   /* restart count */
-    uint64_t dec_bitsleft;  /* available bits in raw data */
-    tmsize_t old_tif_rawcc; /* value of tif_rawcc at the end of the previous
-                               TIFLZWDecode() call */
-    decodeFunc dec_decode;  /* regular or backwards compatible */
-    code_t *dec_codep;      /* current recognized code */
-    code_t *dec_oldcodep;   /* previously recognized code */
-    code_t *dec_free_entp;  /* next free entry */
-    code_t *dec_maxcodep;   /* max available entry */
-    code_t *dec_codetab;    /* kept separate for small machines */
-    int read_error; /* whether a read error has occurred, and which should cause
-                       further reads in the same strip/tile to be aborted */
+    /** @brief Right-adjusted mask for current decode width. */
+    long dec_nbitsmask;
+    /** @brief Bytes already returned from an interrupted decoded string. */
+    tmsize_t dec_restart;
+    /** @brief Number of cached raw-input bits remaining. */
+    uint64_t dec_bitsleft;
+    /** @brief Raw byte count saved after the preceding decoder call. */
+    tmsize_t old_tif_rawcc;
+    /**
+     * @brief Decoder last recorded by predecode; NULL until the first
+     * predecode. Used only as a first-strile detection flag, never called, and
+     * may differ from the installed tif_decode* methods.
+     */
+    decodeFunc dec_decode;
+    /** @brief Borrowed current/restart entry within dec_codetab. */
+    code_t *dec_codep;
+    /** @brief Borrowed preceding recognised entry. */
+    code_t *dec_oldcodep;
+    /** @brief Next available decoder table entry cursor. */
+    code_t *dec_free_entp;
+    /** @brief Current width-dependent dictionary limit cursor. */
+    code_t *dec_maxcodep;
+    /** @brief Owned decoder entry allocation, released by cleanup. */
+    code_t *dec_codetab;
+    /** @brief Latched same-strile failure cleared by predecode. */
+    int read_error;
 
-    /* Encoding specific data */
-    int enc_oldcode;         /* last code encountered */
-    tmsize_t enc_checkpoint; /* point at which to clear table */
-#define CHECK_GAP 10000      /* enc_ratio check interval */
-    tmsize_t enc_ratio;      /* current compression ratio */
-    tmsize_t enc_incount;    /* (input) data bytes encoded */
-    tmsize_t enc_outcount;   /* encoded (output) bytes */
-    uint8_t *enc_rawlimit;   /* bound on tif_rawdata buffer */
-    hash_t *enc_hashtab;     /* kept separate for small machines */
+    /** @brief Pending previous encoder string code. */
+    int enc_oldcode;
+    /** @brief Input-byte threshold for the next ratio test. */
+    tmsize_t enc_checkpoint;
+#define CHECK_GAP 10000
+    /** @brief Cached compression ratio in fixed-point form. */
+    tmsize_t enc_ratio;
+    /** @brief Input bytes counted for ratio estimation. */
+    tmsize_t enc_incount;
+    /** @brief Output code bits counted for ratio estimation. */
+    tmsize_t enc_outcount;
+    /** @brief Borrowed raw-buffer limit leaving room for final codes. */
+    uint8_t *enc_rawlimit;
+    /** @brief Owned HSIZE-entry encoding table, released by cleanup. */
+    hash_t *enc_hashtab;
 } LZWCodecState;
 
 #define LZWState(tif) ((LZWBaseState *)(tif)->tif_data)
@@ -173,12 +270,35 @@ static int LZWDecodeCompat(TIFF *tif, uint8_t *op0, tmsize_t occ0, uint16_t s);
  * LZW Decoder.
  */
 
+/**
+ * @brief Accept LZW tag fixup without changes.
+ * @ingroup libtiff_private_lzw
+ *
+ * No allocation, I/O, diagnostics, mutation or ownership effects.
+ *
+ * @param[in] tif Unused handle.
+ * @return One unconditionally.
+ */
 static int LZWFixupTags(TIFF *tif)
 {
     (void)tif;
     return (1);
 }
 
+/**
+ * @brief Allocate and initialise the LZW decode dictionary.
+ * @ingroup libtiff_private_lzw
+ *
+ * Allocates handle-owned codec state when absent, installs predictor hooks
+ * on that path, and lazily allocates CSIZE entries. Preloads literal
+ * entries and clears reserved entries. Allocation failure diagnoses and can
+ * retain outer state for cleanup; no pixel I/O. Predictor initialisation
+ * status is not propagated.
+ *
+ * @param[in,out] tif Non-NULL live LZW handle; tif_data may still be NULL,
+ * in which case the state is allocated here. Serialise access.
+ * @return One when dictionary storage is ready, zero on allocation failure.
+ */
 static int LZWSetupDecode(TIFF *tif)
 {
     static const char module[] = "LZWSetupDecode";
@@ -240,6 +360,31 @@ static int LZWSetupDecode(TIFF *tif)
 
 /*
  * Setup state for decoding a strip.
+ */
+/**
+ * @brief Reset LZW bit and dictionary state for a strile.
+ * @ingroup libtiff_private_lzw
+ *
+ * Requires live outer state; lazily attempts setup if needed and rejects a
+ * missing dictionary. Tests the first two raw bytes for historical reversed
+ * code order on every call and, with LZW_COMPAT (always defined), sets the
+ * matching lzw_maxcode convention. Only on the first predecode after codec
+ * initialisation (dec_decode still NULL) does it act on the result: for
+ * old-style data it warns, installs LZWDecodeCompat() as the row/strip/tile
+ * decoder and re-runs setup so that predictor wrappers rebind. The decoder
+ * choice is not revisited for later striles: a later strile with the other code
+ * order keeps the decoder chosen first (and the warning is not repeated).
+ * Without LZW_COMPAT, old-style data fails on every strile but is diagnosed
+ * only the first time. The setup statuses are ignored. Clears restart/error
+ * state and resets code pointers/bit cache. Does not allocate output or read
+ * client bytes directly; setup can allocate/diagnose.
+ *
+ * @param[in,out] tif Non-NULL live LZW handle with valid state, raw-buffer
+ * cursors and matching geometry; serialise access.
+ * @param[in] s Unused sample plane; predictor wrappers manage channel
+ * stride.
+ * @return One after reset, zero for missing dictionary or unavailable
+ * compatibility support.
  */
 static int LZWPreDecode(TIFF *tif, uint16_t s)
 {
@@ -399,6 +544,30 @@ static int LZWPreDecode(TIFF *tif, uint16_t s)
         code = (WordType)((nextdata >> nextbits) & (WordType)nbitsmask);       \
     } while (0)
 
+/**
+ * @brief Expand standard TIFF LZW codes into caller output.
+ * @ingroup libtiff_private_lzw
+ *
+ * Requires a nonnegative writable output extent and coherent predecode
+ * dictionary/bit state. Supports interrupted-string restart across calls,
+ * clear/end codes and TIFF early code-width changes. Updates dictionary,
+ * bit cache and raw cursors on normal exits. Detected corrupt/truncated
+ * input clears the unfilled tail, latches read_error, diagnoses and returns
+ * zero; some error exits do not commit local cursor state. Further calls in
+ * the same strile clear requested output and fail until predecode resets
+ * the latch. No allocation/client I/O or ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live LZW handle with valid state, raw-buffer
+ * cursors and matching geometry; serialise access.
+ * @param[out] op0 Borrowed writable output of occ0 bytes, disjoint from raw
+ * input and codec tables.
+ * @param[in] occ0 Nonnegative requested decoded bytes; use a positive
+ * extent during an interrupted-string restart.
+ * @param[in] s Unused sample plane; predictor wrappers manage channel
+ * stride.
+ * @return One when requested output is filled, zero on detected decoding
+ * error.
+ */
 static int LZWDecode(TIFF *tif, uint8_t *op0, tmsize_t occ0, uint16_t s)
 {
     static const char module[] = "LZWDecode";
@@ -521,7 +690,8 @@ code_below_256:
         maxcodep = dec_codetab + nbitsmask - 1;
         if (free_entp >= &dec_codetab[CSIZE])
         {
-            /* At that point, the next valid states are either EOI or a */
+            /* At that point, the next valid states are either EOI or a
+             */
             /* CODE_CLEAR. If a regular code is read, at the next */
             /* attempt at registering a new entry, we will error out */
             /* due to setting free_entp before any valid code */
@@ -566,7 +736,8 @@ code_above_or_equal_to_258:
         maxcodep = dec_codetab + nbitsmask - 1;
         if (free_entp >= &dec_codetab[CSIZE])
         {
-            /* At that point, the next valid states are either EOI or a */
+            /* At that point, the next valid states are either EOI or a
+             */
             /* CODE_CLEAR. If a regular code is read, at the next */
             /* attempt at registering a new entry, we will error out */
             /* due to setting free_entp before any valid code */
@@ -796,6 +967,32 @@ error_code:
         nextbits -= nbits;                                                     \
     }
 
+/**
+ * @brief Expand historical reversed-order LZW codes into caller output.
+ * @ingroup libtiff_private_lzw
+ *
+ * Requires compatibility predecode selection, nonnegative output extent and
+ * valid dictionary/raw state. Maintains restart, bit and dictionary
+ * progress across calls. Corrupt dictionary codes and zero-length strings
+ * clear the entire requested output (including bytes already decoded),
+ * latch read_error, diagnose and return zero without committing local
+ * cursor state. Running out of input bits is treated as an end code with
+ * only a warning; if output is then short, the unfilled tail is cleared,
+ * read_error latched and zero returned. While read_error is latched,
+ * further calls clear the requested output and fail until predecode resets
+ * it. No allocation/client I/O or ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live LZW handle with valid state, raw-buffer
+ * cursors and matching geometry; serialise access.
+ * @param[out] op0 Borrowed writable output of occ0 bytes, disjoint from raw
+ * input and codec tables.
+ * @param[in] occ0 Nonnegative requested decoded bytes; use a positive
+ * extent during an interrupted-string restart.
+ * @param[in] s Unused sample plane; predictor wrappers manage channel
+ * stride.
+ * @return One when requested output is filled, zero on detected decoding
+ * error.
+ */
 static int LZWDecodeCompat(TIFF *tif, uint8_t *op0, tmsize_t occ0, uint16_t s)
 {
     static const char module[] = "LZWDecodeCompat";
@@ -1047,6 +1244,18 @@ static void cl_hash(LZWCodecState *);
  * LZW Encoding.
  */
 
+/**
+ * @brief Allocate the LZW encoder hash table.
+ * @ingroup libtiff_private_lzw
+ *
+ * Requires existing codec state and no previous unreleased encoder table;
+ * assigns a new handle-owned HSIZE allocation. Diagnoses allocation
+ * failure; no pixel I/O. Cleanup releases the table.
+ *
+ * @param[in,out] tif Non-NULL live LZW handle with valid state, raw-buffer
+ * cursors and matching geometry; serialise access.
+ * @return One after allocation, zero on failure.
+ */
 static int LZWSetupEncode(TIFF *tif)
 {
     static const char module[] = "LZWSetupEncode";
@@ -1064,6 +1273,24 @@ static int LZWSetupEncode(TIFF *tif)
 
 /*
  * Reset encoding state at the start of a strip.
+ */
+/**
+ * @brief Reset the LZW encoder dictionary bit cache and counters.
+ * @ingroup libtiff_private_lzw
+ *
+ * Requires valid outer state, allocated hash table and raw output capacity
+ * of at least five bytes plus usable payload room. If table is NULL it
+ * invokes setup but does not check its return before clearing the table;
+ * caller must ensure setup succeeds. Resets code widths, checkpoint,
+ * pending code and output limit. Does not emit payload directly; setup can
+ * allocate/diagnose.
+ *
+ * @param[in,out] tif Non-NULL live LZW handle with valid state, raw-buffer
+ * cursors and matching geometry; serialise access.
+ * @param[in] s Unused sample plane; predictor wrappers manage channel
+ * stride.
+ * @return One unconditionally after reset; not independent validation of
+ * setup success.
  */
 static int LZWPreEncode(TIFF *tif, uint16_t s)
 {
@@ -1135,6 +1362,25 @@ static int LZWPreEncode(TIFF *tif, uint16_t s)
  * but after the table fills.  The variable-length output codes
  * are re-sized at this point, and a CODE_CLEAR is generated
  * for the decoder.
+ */
+/**
+ * @brief Compress borrowed bytes into buffered TIFF LZW codes.
+ * @ingroup libtiff_private_lzw
+ *
+ * Requires successful encoder setup/preencode, nonnegative input length and
+ * usable raw capacity/limit. Updates code/hash state, emits clear codes and
+ * adjusts code width; ratio checkpoints can reset the dictionary. Flushes
+ * when needed, invoking client I/O and diagnostics. Input is not changed.
+ * Early flush failure can leave output bytes, dictionary and local/cached
+ * progress inconsistent for retry; no rollback or ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live LZW handle with valid state, raw-buffer
+ * cursors and matching geometry; serialise access.
+ * @param[in] bp Borrowed readable cc-byte input, not retained.
+ * @param[in] cc Nonnegative input byte count.
+ * @param[in] s Unused sample plane; predictor wrappers manage channel
+ * stride.
+ * @return One after encoding, zero for missing state or flush failure.
  */
 static int LZWEncode(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
 {
@@ -1314,6 +1560,20 @@ static int LZWEncode(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
  * Finish off an encoded strip by flushing the last
  * string and tacking on an End Of Information code.
  */
+/**
+ * @brief Emit the final LZW string end code and padding bits.
+ * @ingroup libtiff_private_lzw
+ *
+ * Requires valid encoder state and reserved raw capacity. Can flush first,
+ * emit clear/width changes, append EOI and pad the last byte, then set
+ * rawcc. Does not persist the IFD or guarantee final buffered bytes were
+ * written. Raw/file state can change before failed flush; no ownership
+ * transfer.
+ *
+ * @param[in,out] tif Non-NULL live LZW handle with valid state, raw-buffer
+ * cursors and matching geometry; serialise access.
+ * @return One after final codes buffered, zero on flush failure.
+ */
 static int LZWPostEncode(TIFF *tif)
 {
     LZWCodecState *sp = LZWEncoderState(tif);
@@ -1370,6 +1630,17 @@ static int LZWPostEncode(TIFF *tif)
 /*
  * Reset encoding hash table.
  */
+/**
+ * @brief Mark every LZW encoder hash slot unused.
+ * @ingroup libtiff_private_lzw
+ *
+ * Requires a live HSIZE-entry table. Sets hash fields to minus one; code
+ * fields need not be cleared. No allocation, I/O, diagnostics, ownership
+ * changes or error status.
+ *
+ * @param[in,out] sp Non-NULL codec state owning an allocated HSIZE-entry
+ * encoder table.
+ */
 static void cl_hash(LZWCodecState *sp)
 {
     hash_t *hp = &sp->enc_hashtab[HSIZE - 1];
@@ -1394,6 +1665,19 @@ static void cl_hash(LZWCodecState *sp)
 
 #endif
 
+/**
+ * @brief Release LZW tables and codec state and reset methods.
+ * @ingroup libtiff_private_lzw
+ *
+ * Requires live initialised LZW state. Restores predictor chains, frees
+ * dictionary and hash table if present, frees outer state and sets tif_data
+ * NULL, then installs default compression methods. Invalidates all
+ * state/table views. Does not flush payload or close the borrowed handle;
+ * no separate status result.
+ *
+ * @param[in,out] tif Non-NULL live LZW handle with valid state, raw-buffer
+ * cursors and matching geometry; serialise access.
+ */
 static void LZWCleanup(TIFF *tif)
 {
     (void)TIFFPredictorCleanup(tif);
@@ -1412,6 +1696,16 @@ static void LZWCleanup(TIFF *tif)
     _TIFFSetDefaultCompressionState(tif);
 }
 
+/**
+ * @brief Report the empirical LZW expansion heuristic.
+ * @ingroup libtiff_private_lzw
+ *
+ * Ignores the handle; no allocation, I/O, diagnostics, state or ownership
+ * effects. Not a universal compression bound or data-validation guarantee.
+ *
+ * @param[in] tif Unused handle.
+ * @return One thousand four hundred.
+ */
 static uint64_t LZWGetMaxCompressionRatio(TIFF *tif)
 {
     (void)tif;
@@ -1493,3 +1787,274 @@ bad:
  * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
  */
 #endif /* LZW_SUPPORT */
+
+/**
+ * @def SIZEOF_WORDTYPE
+ * @brief Size in bytes of WordType, the decoder bit-buffer word.
+ * @ingroup libtiff_private_lzw
+ *
+ * Equals SIZEOF_SIZE_T; selects the GetNextData() variant and how many
+ * bytes GetNextCodeLZW() loads at once (4 or 8).
+ */
+
+/**
+ * @def LZW_COMPAT
+ * @brief Include decoding of historical reversed-bit-order LZW data.
+ * @ingroup libtiff_private_lzw
+ *
+ * Defined unconditionally. Enables LZWDecodeCompat(), its detection in
+ * LZWPreDecode() and 1024 extra decode-table entries in CSIZE.
+ */
+
+/**
+ * @def MAXCODE(n)
+ * @brief Compute the inclusive maximum code for a valid bit width.
+ * @ingroup libtiff_private_lzw
+ *
+ * Expands to ((1 << n) - 1); pure, with n evaluated once.
+ *
+ * @param[in] n Code width in bits.
+ */
+
+/**
+ * @def BITS_MIN
+ * @brief Initial and post-clear code width: 9 bits.
+ * @ingroup libtiff_private_lzw
+ */
+
+/**
+ * @def BITS_MAX
+ * @brief Maximum code width allowed by TIFF LZW: 12 bits.
+ * @ingroup libtiff_private_lzw
+ */
+
+/**
+ * @def CODE_CLEAR
+ * @brief Reserved code 256 that resets the string table.
+ * @ingroup libtiff_private_lzw
+ */
+
+/**
+ * @def CODE_EOI
+ * @brief Reserved code 257 that ends the strip or tile.
+ * @ingroup libtiff_private_lzw
+ */
+
+/**
+ * @def CODE_FIRST
+ * @brief First dictionary code assigned to a new string: 258.
+ * @ingroup libtiff_private_lzw
+ */
+
+/**
+ * @def CODE_MAX
+ * @brief Largest 12-bit code: MAXCODE(BITS_MAX), i.e. 4095.
+ * @ingroup libtiff_private_lzw
+ */
+
+/**
+ * @def HSIZE
+ * @brief Number of entries in the encoder hash table: 9001.
+ * @ingroup libtiff_private_lzw
+ *
+ * Upstream notes this as 91% occupancy. Indexed with HSHIFT-mixed keys
+ * and probed with a secondary displacement.
+ */
+
+/**
+ * @def HSHIFT
+ * @brief Left shift applied to the input byte when hashing encoder strings.
+ * @ingroup libtiff_private_lzw
+ *
+ * Value 5 (13 - 8), so (byte << HSHIFT) ^ code stays within 13 bits.
+ */
+
+/**
+ * @def CSIZE
+ * @brief Number of entries allocated for the decoder string table.
+ * @ingroup libtiff_private_lzw
+ *
+ * MAXCODE(BITS_MAX) + 1024 with LZW_COMPAT (headroom for old files),
+ * otherwise MAXCODE(BITS_MAX) + 1.
+ */
+
+/**
+ * @def lzw_nbits
+ * @brief Member alias for base.nbits, the current code width.
+ * @ingroup libtiff_private_lzw
+ */
+
+/**
+ * @def lzw_maxcode
+ * @brief Member alias for base.maxcode, the largest code at this width.
+ * @ingroup libtiff_private_lzw
+ */
+
+/**
+ * @def lzw_free_ent
+ * @brief Member alias for base.free_ent, the next free dictionary code.
+ * @ingroup libtiff_private_lzw
+ */
+
+/**
+ * @def lzw_nextdata
+ * @brief Member alias for base.nextdata, the buffered code bits.
+ * @ingroup libtiff_private_lzw
+ */
+
+/**
+ * @def lzw_nextbits
+ * @brief Member alias for base.nextbits, the number of buffered bits.
+ * @ingroup libtiff_private_lzw
+ */
+
+/**
+ * @def CHECK_GAP
+ * @brief Encoder input bytes between compression-ratio checks: 10000.
+ * @ingroup libtiff_private_lzw
+ *
+ * If the ratio has not improved since the previous check, the encoder emits
+ * CODE_CLEAR and resets the table.
+ */
+
+/**
+ * @def LZWState(tif)
+ * @brief Cast tif->tif_data to the shared LZWBaseState prefix.
+ * @ingroup libtiff_private_lzw
+ *
+ * Pure cast; tif is evaluated once. Requires the LZW codec to be
+ * initialised (tif_data non-NULL).
+ *
+ * @param[in] tif Handle whose codec state is returned.
+ */
+
+/**
+ * @def LZWDecoderState(tif)
+ * @brief Cast tif->tif_data to the full LZWCodecState for decoding.
+ * @ingroup libtiff_private_lzw
+ *
+ * Pure cast via LZWState(); tif is evaluated once. Requires the LZW codec to
+ * be initialised.
+ *
+ * @param[in] tif Handle whose codec state is returned.
+ */
+
+/**
+ * @def LZWEncoderState(tif)
+ * @brief Cast tif->tif_data to the full LZWCodecState for encoding.
+ * @ingroup libtiff_private_lzw
+ *
+ * Pure cast via LZWState(); tif is evaluated once. Requires the LZW codec to
+ * be initialised.
+ *
+ * @param[in] tif Handle whose codec state is returned.
+ */
+
+/**
+ * @def GetNextData(nextdata, bp)
+ * @brief Load SIZEOF_WORDTYPE bytes at bp into nextdata, first byte most
+ * significant.
+ * @ingroup libtiff_private_lzw
+ *
+ * Statement macro used by GetNextCodeLZW() to refill the bit cache with a
+ * whole word. Assigns nextdata and reads SIZEOF_WORDTYPE bytes from bp
+ * without a bounds check; does not advance bp. The portable variants
+ * evaluate bp once per byte, and the memcpy/bswap variants expand to two
+ * statements, so bp must be free of side effects and the macro must be used
+ * inside braces. The _M_X64/_M_X86 variants dereference bp through a
+ * wider pointer type, i.e. an unaligned load.
+ *
+ * @param[in,out] nextdata Unsigned WordType lvalue that receives the word.
+ * @param[in] bp Byte pointer to at least SIZEOF_WORDTYPE readable bytes.
+ */
+
+/**
+ * @def GetNextCodeLZW()
+ * @brief Extract the next nbits-wide MSB-first code from the decoder bit
+ * cache into code, refilling from bp as needed.
+ * @ingroup libtiff_private_lzw
+ *
+ * Operates entirely on locals of LZWDecode(): reads nbits and nbitsmask,
+ * reads and updates nextbits, nextdata, bp and dec_bitsleft, and assigns
+ * code. When the cache runs short it loads a whole word with GetNextData()
+ * if dec_bitsleft holds at least one word, otherwise one or two single bytes.
+ * dec_bitsleft is reduced by the bits loaded, not by nbits.
+ *
+ * Hidden control flow: if fewer than 8 bits remain in dec_bitsleft when a
+ * byte is needed, it executes `goto no_eoi`, so the enclosing function must
+ * define a no_eoi label (LZWDecode() zeroes the output, sets read_error,
+ * reports a missing EOI with TIFFErrorExtR() and returns 0 there). Its
+ * internal `break` only leaves the macro's own do/while.
+ */
+
+/**
+ * @def NextCode(_tif, _sp, _bp, _code, _get, dec_bitsleft)
+ * @brief Fetch the next compatibility-mode code with _get, or yield CODE_EOI
+ * with a warning when fewer than nbits input bits remain.
+ * @ingroup libtiff_private_lzw
+ *
+ * Defined only with LZW_COMPAT and used by LZWDecodeCompat(). Also reads the
+ * caller locals nbits and module. If dec_bitsleft < nbits it emits
+ * TIFFWarningExtR() ("not terminated with EOI code") naming
+ * _tif->tif_dir.td_curstrip, sets _code to CODE_EOI and consumes no input;
+ * this is not treated as an error. Otherwise it expands _get(_sp, _bp, _code)
+ * and subtracts nbits from dec_bitsleft. _tif is evaluated twice on the
+ * warning path. No hidden return or goto.
+ *
+ * @param[in] _tif TIFF handle used for the warning.
+ * @param[in] _sp Codec state passed through to _get.
+ * @param[in,out] _bp Input byte-pointer lvalue, advanced by _get.
+ * @param[in,out] _code Lvalue that receives the code.
+ * @param[in] _get Code-fetch macro name, e.g. GetNextCodeCompat.
+ * @param[in,out] dec_bitsleft Lvalue holding the remaining input bit count.
+ */
+
+/**
+ * @def GetNextCodeCompat(sp, bp, code)
+ * @brief Extract the next nbits-wide LSB-first code for old reversed-order
+ * LZW data.
+ * @ingroup libtiff_private_lzw
+ *
+ * ORs one byte, or two if nextbits is still below nbits, from *bp into the
+ * caller locals nextdata/nextbits, advancing bp each time; then assigns
+ * code = nextdata & nbitsmask and shifts nbits out of nextdata. Reads the
+ * caller locals nbits and nbitsmask. Performs no bounds check: NextCode()
+ * ensures dec_bitsleft >= nbits first. The sp operand is not used.
+ *
+ * @param[in] sp Unused; present for the NextCode() _get signature.
+ * @param[in,out] bp Input byte-pointer lvalue, advanced by 1 or 2.
+ * @param[in,out] code Lvalue that receives the code.
+ */
+
+/**
+ * @def CALCRATIO(sp, rat)
+ * @brief Compute the encoder compression ratio incount/outcount as a 24.8
+ * fixed-point value into rat.
+ * @ingroup libtiff_private_lzw
+ *
+ * Reads the LZWEncode() locals incount (input bytes) and outcount (output
+ * bits); the sp operand is not used. If incount > 0x007fffff it divides
+ * incount by outcount >> 8 to avoid overflowing the shift, giving 0x7fffffff
+ * when that is 0; otherwise it computes (incount << 8) / outcount, which
+ * requires outcount != 0. rat is assigned up to twice. No hidden control
+ * flow or diagnostics.
+ *
+ * @param[in] sp Unused.
+ * @param[in,out] rat Lvalue that receives the ratio.
+ */
+
+/**
+ * @def PutNextCode(op, c)
+ * @brief Append the nbits-wide code c MSB-first to the encoder output at op.
+ * @ingroup libtiff_private_lzw
+ *
+ * Shifts c into the LZWEncode()/LZWPostEncode() locals nextdata and nextbits,
+ * stores one or two complete bytes at op (advancing it each time) and adds
+ * nbits to outcount. Writes without a bounds check: callers compare op with
+ * enc_rawlimit (which reserves 4 bytes, room for two codes) and flush first.
+ * c is evaluated once; op is read and incremented up to twice. No hidden
+ * control flow or diagnostics.
+ *
+ * @param[in,out] op Output byte-pointer lvalue, advanced by 1 or 2.
+ * @param[in] c Code value, below 1 << nbits.
+ */

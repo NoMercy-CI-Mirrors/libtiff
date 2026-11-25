@@ -22,6 +22,11 @@
  * OF THIS SOFTWARE.
  */
 
+/**
+ * @file tif_lerc.c
+ * @brief Stage LERC scalar planes masks and optional secondary compression.
+ */
+
 #include "tiffiop.h"
 #ifdef LERC_SUPPORT
 /*
@@ -55,39 +60,86 @@
 /*
  * State block for each open TIFF file using LERC compression/decompression.
  */
+/**
+ * @brief Own LERC full-strile staging masks and secondary-compression state.
+ * @ingroup libtiff_private_lerc
+ *
+ * Codec-owned state must remain live until cleanup. Internal buffers and
+ * dependency objects have the individual ownership described below;
+ * borrowed parent methods must remain callable.
+ */
 typedef struct
 {
-    double maxzerror; /* max z error */
+    /**
+     * @brief Cached maximum encoding error, zero for default lossless
+     * operation.
+     */
+    double maxzerror;
+    /** @brief Cached encoded LERC version. */
     int lerc_version;
+    /** @brief Secondary none/Deflate/ZSTD selection. */
     int additional_compression;
-    int zstd_compress_level; /* zstd */
-    int zipquality;          /* deflate */
-    int state;               /* state flags */
+    /** @brief Cached ZSTD level, including warned values. */
+    int zstd_compress_level;
+    /**
+     * @brief Cached Deflate quality, including rejected attempted assignments.
+     */
+    int zipquality;
+    /** @brief Encode/decode mode flags. */
+    int state;
 
+    /** @brief Current strile width in pixels. */
     uint32_t segment_width;
+    /** @brief Current tile or truncated-strip height in rows. */
     uint32_t segment_height;
 
+    /** @brief Logical current-strile decoded extent in bytes. */
     unsigned int uncompressed_size;
+    /**
+     * @brief Allocated main staging capacity in bytes, including compression
+     * margin.
+     */
     unsigned int uncompressed_alloc;
+    /**
+     * @brief Owned Ext row-interleaved staging reused as secondary-compression
+     * output.
+     */
     uint8_t *uncompressed_buffer;
+    /** @brief Next staged input/output byte offset. */
     unsigned int uncompressed_offset;
 
+    /** @brief Owned Ext planar multiband staging for per-band masks. */
     uint8_t *uncompressed_buffer_multiband;
+    /** @brief Multiband staging capacity in bytes. */
     unsigned int uncompressed_buffer_multiband_alloc;
 
+    /** @brief Validity-mask allocation capacity in bytes. */
     unsigned int mask_size;
+    /** @brief Owned Ext pixel or per-band validity masks. */
     uint8_t *mask_buffer;
 
+    /** @brief Compressed/intermediate allocation capacity in bytes. */
     unsigned int compressed_size;
+    /** @brief Owned Ext LERC blob or secondary-decompressed staging. */
     void *compressed_buffer;
 
 #if LIBDEFLATE_SUPPORT
+    /**
+     * @brief Owned optional libdeflate decompressor released by its matching
+     * free function.
+     */
     struct libdeflate_decompressor *libdeflate_dec;
+    /**
+     * @brief Owned optional libdeflate compressor released on quality
+     * change/cleanup.
+     */
     struct libdeflate_compressor *libdeflate_enc;
 #endif
 
-    TIFFVGetMethod vgetparent; /* super-class method */
-    TIFFVSetMethod vsetparent; /* super-class method */
+    /** @brief Borrowed parent tag getter restored during cleanup. */
+    TIFFVGetMethod vgetparent;
+    /** @brief Borrowed parent tag setter restored during cleanup. */
+    TIFFVSetMethod vsetparent;
 } LERCState;
 
 #define GetLERCState(tif) ((LERCState *)(tif)->tif_data)
@@ -96,12 +148,33 @@ typedef struct
 
 static int LERCDecode(TIFF *tif, uint8_t *op, tmsize_t occ, uint16_t s);
 
+/**
+ * @brief Accept LERC tag fixup without changes.
+ * @ingroup libtiff_private_lerc
+ *
+ * No allocation, I/O, diagnostics, state or ownership effects.
+ *
+ * @param[in] tif Unused handle.
+ * @return One unconditionally.
+ */
 static int LERCFixupTags(TIFF *tif)
 {
     (void)tif;
     return 1;
 }
 
+/**
+ * @brief Select LERC decode mode.
+ * @ingroup libtiff_private_lerc
+ *
+ * Clears previous encode mode bits and marks decode initialisation without
+ * freeing reusable staging/dependency objects. No allocation, pixel I/O,
+ * diagnostics or ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live LERC handle with valid current
+ * geometry/state; serialise access.
+ * @return One unconditionally.
+ */
 static int LERCSetupDecode(TIFF *tif)
 {
     LERCState *sp = LERCDecoderState(tif);
@@ -118,6 +191,19 @@ static int LERCSetupDecode(TIFF *tif)
     return 1;
 }
 
+/**
+ * @brief Map TIFF sample format and depth to a LERC scalar code.
+ * @ingroup libtiff_private_lerc
+ *
+ * Recognises signed/unsigned 8/16/32-bit integers and IEEE 32/64-bit
+ * floats. Diagnoses unsupported combinations; no allocation, I/O, state
+ * mutation or ownership transfer.
+ *
+ * @param[in] tif Non-NULL live LERC handle; only its SampleFormat and
+ * BitsPerSample are read (and it is passed to the error handler).
+ * @return LERC data type code zero through seven, or minus one on
+ * unsupported input.
+ */
 static int GetLercDataType(TIFF *tif)
 {
     TIFFDirectory *td = &tif->tif_dir;
@@ -171,6 +257,28 @@ static int GetLercDataType(TIFF *tif)
     return -1;
 }
 
+/**
+ * @brief Size and reserve full-strile sample and validity-mask storage.
+ * @ingroup libtiff_private_lerc
+ *
+ * Computes tile/truncated-strip dimensions and row-interleaved sample
+ * bytes, resets staging offset and reserves margin for secondary
+ * compression. Requires all intermediate uint64_t products/sums, mask
+ * uint32_t products and dependency size casts to be representable; the
+ * final unsigned allocation check is not comprehensive overflow validation.
+ * Replaces owned uncompressed storage when growing and optionally grows
+ * masks for alpha/NaN/per-band validity. Failure can release prior sample
+ * storage and leave capacities/state changed, with the old mask allocation
+ * retained after failed realloc. Diagnostics report detected
+ * extent/allocation errors; no payload I/O or ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live LERC handle with valid current
+ * geometry/state; serialise access.
+ * @param[in,out] sp Borrowed live LERC state owned by tif.
+ * @param[in] module Borrowed diagnostic context string, used synchronously.
+ * @return One after applicable reservations, zero on detected
+ * allocation/extent failure.
+ */
 static int SetupBuffers(TIFF *tif, LERCState *sp, const char *module)
 {
     TIFFDirectory *td = &tif->tif_dir;
@@ -281,6 +389,30 @@ static int SetupBuffers(TIFF *tif, LERCState *sp, const char *module)
 
 /*
  * Setup state for decoding a strip.
+ */
+/**
+ * @brief Decode and validate an entire LERC strile into owned staging.
+ * @ingroup libtiff_private_lerc
+ *
+ * Selects data type, reserves buffers and optionally decompresses
+ * Deflate/ZSTD into reusable compressed storage. Inspects blob type,
+ * dimensions, bands, size and masks, warning on unexpected version. Decodes
+ * samples, expands binary alpha masks or restores invalid floating samples
+ * as NaNs; supported multi-band mask layouts depend on LERC version.
+ * Requires valid representable geometry/counts and raw extents within
+ * dependency unsigned sizes. Buffers/dependency state can change on failure
+ * and staged data must not be used after failure. Allocations remain
+ * codec-owned until replacement/cleanup. Does not copy caller output,
+ * consume it, or transfer ownership; dependency/validation errors diagnose.
+ * Failure to allocate the compressed or multiband staging buffer returns
+ * zero without a codec diagnostic (only _TIFFmallocExt()'s memory-limit
+ * error, if a configured limit was exceeded).
+ *
+ * @param[in,out] tif Non-NULL live LERC handle with valid current
+ * geometry/state; serialise access.
+ * @param[in] s Unused sample-plane compatibility argument.
+ * @return One after complete staged decode, zero on detected
+ * format/geometry/allocation/dependency failure.
  */
 static int LERCPreDecode(TIFF *tif, uint16_t s)
 {
@@ -748,6 +880,25 @@ static int LERCPreDecode(TIFF *tif, uint16_t s)
 /*
  * Decode a strip, tile or scanline.
  */
+/**
+ * @brief Copy the next decoded byte extent from LERC staging.
+ * @ingroup libtiff_private_lerc
+ *
+ * Requires successful predecode and a nonnegative request. Checks staging
+ * presence and remaining bounds, copies bytes and advances
+ * uncompressed_offset. Rejection clears requested output and diagnoses. No
+ * allocation, dependency decoding, client I/O or ownership transfer;
+ * source/destination must not overlap.
+ *
+ * @param[in,out] tif Non-NULL live LERC handle with valid current
+ * geometry/state; serialise access.
+ * @param[out] op Borrowed writable occ-byte destination, disjoint from
+ * codec staging.
+ * @param[in] occ Nonnegative decoded byte extent within remaining staging
+ * data.
+ * @param[in] s Unused sample-plane compatibility argument.
+ * @return One after copy, zero on missing staging or overread request.
+ */
 static int LERCDecode(TIFF *tif, uint8_t *op, tmsize_t occ, uint16_t s)
 {
     static const char module[] = "LERCDecode";
@@ -780,6 +931,18 @@ static int LERCDecode(TIFF *tif, uint8_t *op, tmsize_t occ, uint16_t s)
 
 #ifndef LERC_READ_ONLY
 
+/**
+ * @brief Select LERC encode mode.
+ * @ingroup libtiff_private_lerc
+ *
+ * Clears previous decode mode bits and marks encoding without freeing
+ * reusable buffers. No allocation, diagnostics, payload I/O or ownership
+ * transfer.
+ *
+ * @param[in,out] tif Non-NULL live LERC handle with valid current
+ * geometry/state; serialise access.
+ * @return One unconditionally.
+ */
 static int LERCSetupEncode(TIFF *tif)
 {
     LERCState *sp = LERCEncoderState(tif);
@@ -797,6 +960,21 @@ static int LERCSetupEncode(TIFF *tif)
 
 /*
  * Reset encoding state at the start of a strip.
+ */
+/**
+ * @brief Validate LERC sample type and prepare full-strile input storage.
+ * @ingroup libtiff_private_lerc
+ *
+ * Ensures encode mode, maps sample type and reserves buffers/masks through
+ * SetupBuffers. Requires valid representable geometry and successful setup;
+ * helper failures can invalidate old staging. No pixel I/O or caller
+ * ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live LERC handle with valid current
+ * geometry/state; serialise access.
+ * @param[in] s Unused sample-plane compatibility argument.
+ * @return One after preparation, zero on sample-type or buffer setup
+ * failure.
  */
 static int LERCPreEncode(TIFF *tif, uint16_t s)
 {
@@ -822,6 +1000,24 @@ static int LERCPreEncode(TIFF *tif, uint16_t s)
 /*
  * Encode a chunk of pixels.
  */
+/**
+ * @brief Stage the next LERC input bytes for later frame encoding.
+ * @ingroup libtiff_private_lerc
+ *
+ * Requires successful preencode and nonnegative cc. Checks offset+cc
+ * against decoded strile size, copies borrowed input and advances offset.
+ * Does not compress until postencode; input remains unchanged. Rejection
+ * diagnoses without copying. No client I/O or ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live LERC handle with valid current
+ * geometry/state; serialise access.
+ * @param[in] bp Borrowed readable cc-byte input copied synchronously; not
+ * retained or modified.
+ * @param[in] cc Nonnegative input byte extent within remaining staging
+ * capacity.
+ * @param[in] s Unused sample-plane compatibility argument.
+ * @return One after staging, zero for excess input extent.
+ */
 static int LERCEncode(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
 {
     static const char module[] = "LERCEncode";
@@ -846,6 +1042,31 @@ static int LERCEncode(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
 
 /*
  * Finish off an encoded strip by flushing it.
+ */
+/**
+ * @brief Encode a fully staged LERC strile and flush optional secondary
+ * compression.
+ * @ingroup libtiff_private_lerc
+ *
+ * Requires exact staged byte count, valid scalar/geometry arithmetic and
+ * suitable masks. Compacts binary unassociated alpha into validity masks or
+ * detects floating NaNs; per-band NaN masks require supported LERC
+ * versions. Can allocate multiband/compressed storage, mutate staging,
+ * encode the selected version/error tolerance, then optionally compress
+ * with Deflate/ZSTD. Temporarily replaces tif_rawdata during flush and
+ * restores only that pointer afterward; rawcp can still refer into codec
+ * staging until reset. Dependency/validation/I/O errors diagnose where
+ * handled and can leave changed buffers, metadata or file bytes; no
+ * rollback, IFD persistence or durability guarantee. Failure to allocate the
+ * compressed or multiband staging buffer returns zero without a codec
+ * diagnostic (only _TIFFmallocExt()'s memory-limit error, if a configured
+ * limit was exceeded). Caller input had already been copied; no ownership
+ * transfer.
+ *
+ * @param[in,out] tif Non-NULL live LERC handle with valid current
+ * geometry/state; serialise access.
+ * @return One after encoding and payload flush, zero on detected
+ * extent/mask/allocation/dependency/I/O failure.
  */
 static int LERCPostEncode(TIFF *tif)
 {
@@ -1114,7 +1335,8 @@ static int LERCPostEncode(TIFF *tif)
     {
         uint64_t mask_overhead =
             ((uint64_t)sp->segment_width * sp->segment_height *
-             (unsigned)mask_count + 7) /
+                 (unsigned)mask_count +
+             7) /
             8;
         if (mask_overhead > UINT_MAX - estimated_compressed_size)
         {
@@ -1307,6 +1529,19 @@ static int LERCPostEncode(TIFF *tif)
 
 #endif /* LERC_READ_ONLY */
 
+/**
+ * @brief Release LERC staging masks secondary compressors and outer state.
+ * @ingroup libtiff_private_lerc
+ *
+ * Restores saved tag hooks, frees sample/multiband/compressed/mask Ext
+ * allocations and optional libdeflate objects, frees outer state, clears
+ * tif_data and resets compression methods. Invalidates all codec-owned
+ * views. Does not encode or flush pending staging, close the borrowed
+ * handle or return status.
+ *
+ * @param[in,out] tif Non-NULL live LERC handle with valid current
+ * geometry/state; serialise access.
+ */
 static void LERCCleanup(TIFF *tif)
 {
     LERCState *sp = GetLERCState(tif);
@@ -1334,6 +1569,14 @@ static void LERCCleanup(TIFF *tif)
     _TIFFSetDefaultCompressionState(tif);
 }
 
+/**
+ * @brief Define LERC parameters error tolerance version and
+ * secondary-compression tags.
+ * @ingroup libtiff_private_lerc
+ *
+ * Immutable library-lifetime metadata merged into a handle; no caller
+ * ownership transfer.
+ */
 static const TIFFField LERCFields[] = {
     {TIFFTAG_LERC_PARAMETERS, TIFF_VARIABLE2, TIFF_VARIABLE2, TIFF_LONG, 0,
      TIFF_SETGET_C32_UINT32, FIELD_CUSTOM, FALSE, TRUE,
@@ -1350,6 +1593,22 @@ static const TIFFField LERCFields[] = {
      FALSE, (char *)"", NULL},
 };
 
+/**
+ * @brief Forward a variadic assignment directly to the saved parent setter.
+ * @ingroup libtiff_private_lerc
+ *
+ * Constructs a va_list and synchronously calls vsetparent, then ends the
+ * list. Used to store LERC_PARAMETERS without recursive codec dispatch.
+ * Tag-specific promotion, ownership and side effects follow the parent
+ * setter; see @ref tag_arguments. No independent payload I/O.
+ *
+ * @param[in,out] tif Non-NULL live LERC handle with valid current
+ * geometry/state; serialise access.
+ * @param[in] tag Codec pseudo-tag/custom tag or delegated identifier.
+ * @param[in] ... Promoted tag-specific values/pointers required by the
+ * saved parent setter; consumed synchronously.
+ * @return Saved parent setter status.
+ */
 static int LERCVSetFieldBase(TIFF *tif, uint32_t tag, ...)
 {
     LERCState *sp = GetLERCState(tif);
@@ -1361,6 +1620,31 @@ static int LERCVSetFieldBase(TIFF *tif, uint32_t tag, ...)
     return ret;
 }
 
+/**
+ * @brief Set LERC version error tolerance or secondary-compression controls.
+ * @ingroup libtiff_private_lerc
+ *
+ * LERC_PARAMETERS consumes int count then int*; a count below two is
+ * rejected, otherwise it caches version/backend and delegates custom-array
+ * storage; no validation of those array values is done here. MAXZERROR
+ * consumes double without range validation. VERSION and ADD_COMPRESSION
+ * consume int, validate supported values, cache and update the two-entry
+ * custom tag through the parent. ZSTD_LEVEL (ZSTD_SUPPORT builds only;
+ * otherwise delegated to the parent setter) consumes int and stores
+ * out-of-range values with a warning. ZIPQUALITY consumes int and stores it
+ * before range rejection; on every accepted assignment it frees any cached
+ * libdeflate compressor. Other tags delegate. State/custom-tag allocation
+ * changes can survive failure; borrowed input arrays are consumed/copied
+ * through the parent contract.
+ *
+ * @param[in,out] tif Non-NULL live LERC handle with valid current
+ * geometry/state; serialise access.
+ * @param[in] tag Codec pseudo-tag/custom tag or delegated identifier.
+ * @param[in,out] ap Live tag-specific va_list consumed synchronously; not
+ * retained.
+ * @return One on accepted pseudo-tag assignment, zero on explicit
+ * validation or parent storage failure, otherwise delegated status.
+ */
 static int LERCVSetField(TIFF *tif, uint32_t tag, va_list ap)
 {
     static const char module[] = "LERCVSetField";
@@ -1470,6 +1754,24 @@ static int LERCVSetField(TIFF *tif, uint32_t tag, va_list ap)
     /*NOTREACHED*/
 }
 
+/**
+ * @brief Retrieve cached LERC controls or delegate another tag query.
+ * @ingroup libtiff_private_lerc
+ *
+ * MAXZERROR consumes non-NULL double*; VERSION, ADD_COMPRESSION, ZSTD_LEVEL
+ * and ZIPQUALITY consume non-NULL int*. ZSTD_LEVEL returns the cached level
+ * even in builds without ZSTD_SUPPORT, where the setter delegates it.
+ * LERC_PARAMETERS and other tags follow parent variadic contracts, including
+ * borrowed custom-array lifetime. No output allocation or ownership transfer
+ * for scalar pseudo-tags.
+ *
+ * @param[in,out] tif Non-NULL live LERC handle with valid current
+ * geometry/state; serialise access.
+ * @param[in] tag Codec pseudo-tag/custom tag or delegated identifier.
+ * @param[in,out] ap Live tag-specific va_list consumed synchronously; not
+ * retained.
+ * @return One for scalar retrieval, otherwise parent getter status.
+ */
 static int LERCVGetField(TIFF *tif, uint32_t tag, va_list ap)
 {
     LERCState *sp = GetLERCState(tif);
@@ -1570,3 +1872,74 @@ bad:
     return 0;
 }
 #endif /* LERC_SUPPORT */
+
+/**
+ * @def LIBDEFLATE_MAX_COMPRESSION_LEVEL
+ * @brief Highest accepted TIFFTAG_ZIPQUALITY value: 12.
+ * @ingroup libtiff_private_lerc
+ *
+ * Matches the libdeflate maximum level; the zlib path caps the level at
+ * Z_BEST_COMPRESSION (9). The tag setter rejects values outside [-1, 12].
+ */
+
+/**
+ * @def LSTATE_INIT_DECODE
+ * @brief Bit 0x01 of the codec state field: decoding has been set up.
+ * @ingroup libtiff_private_lerc
+ *
+ * Set by LERCSetupDecode(). Each setup first tears down the other mode, if
+ * active, and clears the field.
+ */
+
+/**
+ * @def LSTATE_INIT_ENCODE
+ * @brief Bit 0x02 of the codec state field: encoding has been set up.
+ * @ingroup libtiff_private_lerc
+ *
+ * Set by LERCSetupEncode(). Each setup first tears down the other mode, if
+ * active, and clears the field.
+ */
+
+/**
+ * @def LERC_AT_LEAST_VERSION(maj, min, patch)
+ * @brief Fallback used when the LERC header lacks LERC_AT_LEAST_VERSION.
+ * @ingroup libtiff_private_lerc
+ *
+ * Always expands to 0, so code guarded by it treats the dependency as
+ * older than any tested version. The operands are not evaluated.
+ *
+ * @param[in] maj Major version (unused).
+ * @param[in] min Minor version (unused).
+ * @param[in] patch Patch version (unused).
+ */
+
+/**
+ * @def GetLERCState(tif)
+ * @brief Cast tif->tif_data to the LERCState.
+ * @ingroup libtiff_private_lerc
+ *
+ * tif is evaluated once. Requires the codec to be initialised (tif_data
+ * non-NULL).
+ *
+ * @param[in] tif Handle whose codec state is returned.
+ */
+
+/**
+ * @def LERCDecoderState(tif)
+ * @brief Alias of GetLERCState(), returning the LERCState for decoding.
+ * @ingroup libtiff_private_lerc
+ *
+ * tif is evaluated once. Requires the codec to be initialised.
+ *
+ * @param[in] tif Handle whose codec state is returned.
+ */
+
+/**
+ * @def LERCEncoderState(tif)
+ * @brief Alias of GetLERCState(), returning the LERCState for encoding.
+ * @ingroup libtiff_private_lerc
+ *
+ * tif is evaluated once. Requires the codec to be initialised.
+ *
+ * @param[in] tif Handle whose codec state is returned.
+ */

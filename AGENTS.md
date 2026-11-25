@@ -6,7 +6,7 @@ the libtiff source tree.
 ## AI policy
 
 The libtiff project permits the responsible use of AI tools. Read and follow
-the [AI policy](doc/project/ai-policy.rst). In particular:
+the [AI policy](doc/sphinx/project/ai-policy.rst). In particular:
 
 - A human submitter is fully responsible for every merge request, commit,
   issue, security report and comment. Do not open merge requests or issues,
@@ -36,13 +36,14 @@ the [AI policy](doc/project/ai-policy.rst). In particular:
 - `libtiff/` - the TIFF library (C).
 - `tools/` - supported command-line tools; `archive/` - unsupported tools.
 - `test/` - test programs and scripts, with test images in `test/images/`.
-- `doc/` - Sphinx (reStructuredText) documentation and manual pages.
+- `doc/sphinx/` - Sphinx (reStructuredText) documentation and manual pages.
+- `doc/doxygen/` - Doxygen library reference pages and configuration.
 - `build/` - CI scripts (not a build directory).
 
 Both CMake and Autotools builds are supported, and changes to the build or
 test suite must be made to both (for example, a new test program must be
 added to `test/CMakeLists.txt` and `test/Makefile.am`, and a new
-documentation file to `doc/Makefile.am`).
+Sphinx documentation file to `doc/sphinx/Makefile.am`).
 
 ## Building and testing
 

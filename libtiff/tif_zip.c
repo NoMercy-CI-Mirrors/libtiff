@@ -22,6 +22,11 @@
  * OF THIS SOFTWARE.
  */
 
+/**
+ * @file tif_zip.c
+ * @brief Implement zlib and optional libdeflate compression.
+ */
+
 #include "tiffiop.h"
 #ifdef ZIP_SUPPORT
 /*
@@ -63,26 +68,61 @@
  * State block for each open TIFF
  * file using ZIP compression/decompression.
  */
+/**
+ * @brief Own Deflate dependency streams predictor prefix and backend selection.
+ * @ingroup libtiff_private_deflate
+ *
+ * Codec-owned state must remain live until cleanup. Internal buffers and
+ * dependency objects have the individual ownership described below;
+ * borrowed parent methods must remain callable.
+ */
 typedef struct
 {
+    /** @brief Predictor prefix, first in the codec state. */
     TIFFPredictorState predict;
+    /**
+     * @brief Zlib stream with internal allocations owned until
+     * inflateEnd/deflateEnd.
+     */
     z_stream stream;
-    int read_error; /* whether a read error has occurred, and which should cause
-                       further reads in the same strip/tile to be aborted */
-    int zipquality; /* compression level */
-    int state;      /* state flags */
-    int subcodec;   /* DEFLATE_SUBCODEC_ZLIB or DEFLATE_SUBCODEC_LIBDEFLATE */
+    /** @brief Same-strile decode error latch reset by successful predecode. */
+    int read_error;
+    /**
+     * @brief Stored quality, including rejected attempted assignments; zlib
+     * uses a cap of nine.
+     */
+    int zipquality;
+    /** @brief Active zlib mode flags. */
+    int state;
+    /**
+     * @brief Requested zlib or libdeflate backend, validated by the setter
+     * after assignment.
+     */
+    int subcodec;
 #if LIBDEFLATE_SUPPORT
-    int libdeflate_state; /* -1 = until first time ZIPEncode() / ZIPDecode() is
-                             called, 0 = use zlib, 1 = use libdeflate */
+    /**
+     * @brief Per-strile selection: minus one undecided, zero zlib, one
+     * whole-strile libdeflate.
+     */
+    int libdeflate_state;
+    /**
+     * @brief Owned optional decompressor released by
+     * libdeflate_free_decompressor.
+     */
     struct libdeflate_decompressor *libdeflate_dec;
+    /**
+     * @brief Owned optional compressor released by libdeflate_free_compressor
+     * or quality change.
+     */
     struct libdeflate_compressor *libdeflate_enc;
 #endif
 #define ZSTATE_INIT_DECODE 0x01
 #define ZSTATE_INIT_ENCODE 0x02
 
-    TIFFVGetMethod vgetparent; /* super-class method */
-    TIFFVSetMethod vsetparent; /* super-class method */
+    /** @brief Borrowed parent getter restored on cleanup. */
+    TIFFVGetMethod vgetparent;
+    /** @brief Borrowed parent setter restored on cleanup. */
+    TIFFVSetMethod vsetparent;
 } ZIPState;
 
 #define GetZIPState(tif) ((ZIPState *)(tif)->tif_data)
@@ -92,12 +132,34 @@ typedef struct
 static int ZIPEncode(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s);
 static int ZIPDecode(TIFF *tif, uint8_t *op, tmsize_t occ, uint16_t s);
 
+/**
+ * @brief Accept Deflate tag fixup without changes.
+ * @ingroup libtiff_private_deflate
+ *
+ * No allocation, I/O, diagnostics, state or ownership effects.
+ *
+ * @param[in] tif Unused handle.
+ * @return One unconditionally.
+ */
 static int ZIPFixupTags(TIFF *tif)
 {
     (void)tif;
     return (1);
 }
 
+/**
+ * @brief Initialise zlib decode mode and end an active encoder.
+ * @ingroup libtiff_private_deflate
+ *
+ * Ends previous encode state and lazily calls inflateInit only when needed,
+ * supporting repeated successful setup calls. Dependency memory uses the
+ * handle Ext allocator hooks. Diagnostics report setup failure;
+ * mode/dependency changes are not rolled back. No pixel I/O.
+ *
+ * @param[in,out] tif Non-NULL live Deflate handle with predictor-prefixed
+ * state and coherent raw buffers; serialise operations.
+ * @return One after setup, zero on inflate initialisation failure.
+ */
 static int ZIPSetupDecode(TIFF *tif)
 {
     static const char module[] = "ZIPSetupDecode";
@@ -128,11 +190,32 @@ static int ZIPSetupDecode(TIFF *tif)
     }
 }
 
+/**
+ * @brief Select the smaller of two unsigned values.
+ * @ingroup libtiff_private_deflate
+ *
+ * Pure comparison without allocation, I/O, diagnostics, state or ownership
+ * effects.
+ *
+ * @param[in] a First unsigned value.
+ * @param[in] b Second unsigned value.
+ * @return Minimum value.
+ */
 static inline uint64_t TIFF_MIN_UINT64(uint64_t a, uint64_t b)
 {
     return a < b ? a : b;
 }
 
+/**
+ * @brief Bound a zlib chunk to the signed 32-bit maximum.
+ * @ingroup libtiff_private_deflate
+ *
+ * Pure size conversion without allocation, I/O, diagnostics or ownership
+ * effects.
+ *
+ * @param[in] v Unsigned size to bound for zlib.
+ * @return Minimum of v and INT32_MAX as uInt.
+ */
 static inline uInt TIFF_CLAMP_UINT64_TO_INT32_MAX(uint64_t v)
 {
     return (uInt)TIFF_MIN_UINT64(v, INT32_MAX);
@@ -140,6 +223,22 @@ static inline uInt TIFF_CLAMP_UINT64_TO_INT32_MAX(uint64_t v)
 
 /*
  * Setup state for decoding a strip.
+ */
+/**
+ * @brief Reset zlib decoding and per-strile backend selection.
+ * @ingroup libtiff_private_deflate
+ *
+ * Attempts setup when needed without checking that return directly,
+ * attaches raw input, caps its initial dependency extent and resets
+ * inflate. Resets libdeflate selection to undecided when compiled and
+ * clears read_error only on reset success. Requires successful setup and
+ * coherent nonnegative raw counts. No pixel I/O or output ownership
+ * transfer.
+ *
+ * @param[in,out] tif Non-NULL live Deflate handle with predictor-prefixed
+ * state and coherent raw buffers; serialise operations.
+ * @param[in] s Unused sample-plane argument.
+ * @return One after successful inflateReset, zero otherwise.
  */
 static int ZIPPreDecode(TIFF *tif, uint16_t s)
 {
@@ -169,6 +268,33 @@ static int ZIPPreDecode(TIFF *tif, uint16_t s)
     return 0;
 }
 
+/**
+ * @brief Expand zlib or eligible whole-strile libdeflate input.
+ * @ingroup libtiff_private_deflate
+ *
+ * Requires successful predecode and nonnegative output extent. Eligible
+ * complete striles can lazily allocate libdeflate state (allocation failure
+ * falls back to zlib silently); it consumes all raw bytes and accepts
+ * insufficient-output-space status for oversized final-strip recovery. A
+ * repeated same-strile call after the libdeflate path returns zero
+ * silently, leaving output untouched and not latching read_error. Other
+ * requests use bounded zlib chunks. Decode errors clear unfilled output
+ * (whole output for libdeflate error), latch same-strile failure and
+ * diagnose. Zlib can decrement rawcc before an error without
+ * committing rawcp, so retry state is not transactional. Latched errors
+ * clear requested output until predecode. No caller ownership transfer or
+ * direct client I/O.
+ *
+ * @param[in,out] tif Non-NULL live Deflate handle with predictor-prefixed
+ * state and coherent raw buffers; serialise operations.
+ * @param[out] op Borrowed writable occ-byte output, disjoint from raw input
+ * and state.
+ * @param[in] occ Nonnegative requested decoded bytes.
+ * @param[in] s Unused sample-plane argument.
+ * @return One when output is accepted/filled, zero on detected decode error
+ * or repeated whole-strile backend use; not proof of complete frame
+ * validation.
+ */
 static int ZIPDecode(TIFF *tif, uint8_t *op, tmsize_t occ, uint16_t s)
 {
     static const char module[] = "ZIPDecode";
@@ -318,6 +444,19 @@ static int ZIPDecode(TIFF *tif, uint8_t *op, tmsize_t occ, uint16_t s)
     return (1);
 }
 
+/**
+ * @brief Initialise zlib encoding at a capped compression quality.
+ * @ingroup libtiff_private_deflate
+ *
+ * Ends previous decode state, caps quality above Z_BEST_COMPRESSION and
+ * calls deflateInit using handle allocators. Requires no unreleased active
+ * encoder initialisation. Diagnoses dependency errors; state changes are
+ * not rolled back. No payload I/O.
+ *
+ * @param[in,out] tif Non-NULL live Deflate handle with predictor-prefixed
+ * state and coherent raw buffers; serialise operations.
+ * @return One after setup, zero on dependency failure.
+ */
 static int ZIPSetupEncode(TIFF *tif)
 {
     static const char module[] = "ZIPSetupEncode";
@@ -350,6 +489,20 @@ static int ZIPSetupEncode(TIFF *tif)
 /*
  * Reset encoding state at the start of a strip.
  */
+/**
+ * @brief Reset zlib encoding and per-strile backend selection.
+ * @ingroup libtiff_private_deflate
+ *
+ * Attempts setup when mode differs without checking its status directly,
+ * attaches raw output with a 32-bit bounded extent and calls deflateReset.
+ * Marks optional backend selection undecided. Requires successful setup and
+ * positive usable raw capacity. No payload flush or ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live Deflate handle with predictor-prefixed
+ * state and coherent raw buffers; serialise operations.
+ * @param[in] s Unused sample-plane argument.
+ * @return One on deflateReset success, zero otherwise.
+ */
 static int ZIPPreEncode(TIFF *tif, uint16_t s)
 {
     ZIPState *sp = ZIPEncoderState(tif);
@@ -375,6 +528,31 @@ static int ZIPPreEncode(TIFF *tif, uint16_t s)
 
 /*
  * Encode a chunk of pixels.
+ */
+/**
+ * @brief Compress input with streaming zlib or eligible whole-strile
+ * libdeflate.
+ * @ingroup libtiff_private_deflate
+ *
+ * Requires successful preencode and representable nonnegative
+ * extents/capacity. Optional libdeflate is used only for full-strile input,
+ * nonzero quality and a sufficient worst-case output bound; otherwise zlib
+ * is used. Failure to allocate the libdeflate compressor is reported with
+ * TIFFErrorExtR() but still falls back to zlib, so the call may succeed
+ * after emitting that error. The libdeflate path compresses and flushes a
+ * whole frame immediately; a repeated same-strile call afterwards returns
+ * zero silently without consuming input. Zlib uses bounded input chunks and
+ * flushes full raw storage. Caller bytes remain unchanged. Dependency/flush
+ * failures can leave partial state and file bytes; no rollback or ownership
+ * transfer.
+ *
+ * @param[in,out] tif Non-NULL live Deflate handle with predictor-prefixed
+ * state and coherent raw buffers; serialise operations.
+ * @param[in] bp Borrowed readable cc-byte input; not modified or retained.
+ * @param[in] cc Nonnegative input bytes.
+ * @param[in] s Unused sample-plane argument.
+ * @return One when input accepted, zero on dependency/flush failure or
+ * repeated whole-strile backend use.
  */
 static int ZIPEncode(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
 {
@@ -512,6 +690,20 @@ static int ZIPEncode(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
  * Finish off an encoded strip by flushing the last
  * string and tacking on an End Of Information code.
  */
+/**
+ * @brief Finish zlib output or accept an already written libdeflate frame.
+ * @ingroup libtiff_private_deflate
+ *
+ * Returns immediately for completed libdeflate mode. Otherwise runs
+ * Z_FINISH until STREAM_END and flushes produced bytes. Requires successful
+ * preencode and valid raw capacity. Failures can leave incomplete
+ * frames/changed file state; no IFD persistence, durability guarantee or
+ * ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live Deflate handle with predictor-prefixed
+ * state and coherent raw buffers; serialise operations.
+ * @return One after completion, zero on dependency or flush failure.
+ */
 static int ZIPPostEncode(TIFF *tif)
 {
     static const char module[] = "ZIPPostEncode";
@@ -552,6 +744,19 @@ static int ZIPPostEncode(TIFF *tif)
     return (1);
 }
 
+/**
+ * @brief End Deflate dependency objects and release codec state.
+ * @ingroup libtiff_private_deflate
+ *
+ * Restores predictor and saved tag hooks, ends the active zlib mode, frees
+ * optional libdeflate objects using dependency free functions, frees outer
+ * Ext state, clears tif_data and resets callbacks. Invalidates all
+ * codec-owned views. Does not finish/flush pending payload or close the
+ * handle; no status result.
+ *
+ * @param[in,out] tif Non-NULL live Deflate handle with predictor-prefixed
+ * state and coherent raw buffers; serialise operations.
+ */
 static void ZIPCleanup(TIFF *tif)
 {
     ZIPState *sp = GetZIPState(tif);
@@ -587,6 +792,26 @@ static void ZIPCleanup(TIFF *tif)
     _TIFFSetDefaultCompressionState(tif);
 }
 
+/**
+ * @brief Set Deflate quality or backend or delegate another tag.
+ * @ingroup libtiff_private_deflate
+ *
+ * ZIPQUALITY and DEFLATE_SUBCODEC each consume int and store before
+ * validation, so rejection retains the attempted value. Quality accepts
+ * -1..12, caps zlib at nine, can call deflateParams on an active encoder,
+ * and frees cached libdeflate compressor after success. Backend accepts
+ * zlib/libdeflate constants but rejects unavailable libdeflate support.
+ * Parent tags follow their variadic contracts. Diagnostics/state/dependency
+ * changes are not rolled back; no caller ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live Deflate handle with predictor-prefixed
+ * state and coherent raw buffers; serialise operations.
+ * @param[in] tag Pseudo-tag or delegated tag identifier.
+ * @param[in,out] ap Live tag-specific va_list cursor consumed
+ * synchronously; not retained.
+ * @return One on accepted codec assignment, zero on validation/dependency
+ * failure, or parent setter status.
+ */
 static int ZIPVSetField(TIFF *tif, uint32_t tag, va_list ap)
 {
     static const char module[] = "ZIPVSetField";
@@ -654,6 +879,21 @@ static int ZIPVSetField(TIFF *tif, uint32_t tag, va_list ap)
     /*NOTREACHED*/
 }
 
+/**
+ * @brief Retrieve Deflate quality or backend or delegate a tag query.
+ * @ingroup libtiff_private_deflate
+ *
+ * ZIPQUALITY and DEFLATE_SUBCODEC consume non-NULL int* outputs. Other tags
+ * follow the parent getter contract. No allocation or ownership transfer
+ * for codec values.
+ *
+ * @param[in,out] tif Non-NULL live Deflate handle with predictor-prefixed
+ * state and coherent raw buffers; serialise operations.
+ * @param[in] tag Pseudo-tag or delegated tag identifier.
+ * @param[in,out] ap Live tag-specific va_list cursor consumed
+ * synchronously; not retained.
+ * @return One for codec retrieval, otherwise parent getter status.
+ */
 static int ZIPVGetField(TIFF *tif, uint32_t tag, va_list ap)
 {
     ZIPState *sp = GetZIPState(tif);
@@ -674,6 +914,13 @@ static int ZIPVGetField(TIFF *tif, uint32_t tag, va_list ap)
     return (1);
 }
 
+/**
+ * @brief Define compression quality and backend pseudo-tags.
+ * @ingroup libtiff_private_deflate
+ *
+ * Immutable library-lifetime metadata merged into a handle; no caller
+ * ownership transfer.
+ */
 static const TIFFField zipFields[] = {
     {TIFFTAG_ZIPQUALITY, 0, 0, TIFF_ANY, 0, TIFF_SETGET_INT, FIELD_PSEUDO, TRUE,
      FALSE, "", NULL},
@@ -681,6 +928,26 @@ static const TIFFField zipFields[] = {
      TRUE, FALSE, "", NULL},
 };
 
+/**
+ * @brief Allocate zlib internal storage through handle Ext allocation.
+ * @ingroup libtiff_private_deflate
+ *
+ * Requires positive size and a product representable in unsigned int and
+ * tmsize_t. Checks items against SIZE_MAX/size, then multiplies
+ * unsigned-int operands; that guard alone does not prevent narrower
+ * multiplication wrap. Memory is not zeroed by this wrapper. Dependency
+ * owns the result until TIFF_zfree. Overflow diagnoses through the handle;
+ * allocation limits follow Ext semantics. No pixel I/O.
+ *
+ * @param[in,out] opaque Borrowed live TIFF handle supplied as zlib
+ * allocator context.
+ * @param[in] items Requested object count; product must fit both unsigned
+ * int arithmetic and tmsize_t.
+ * @param[in] size Positive bytes per object; zero would divide by zero in
+ * the overflow guard.
+ * @return Owned dependency allocation, or NULL for rejected
+ * extent/allocation failure.
+ */
 static void *TIFF_zalloc(void *opaque, unsigned int items, unsigned int size)
 {
     static const char module[] = "TIFF_zalloc";
@@ -695,11 +962,33 @@ static void *TIFF_zalloc(void *opaque, unsigned int items, unsigned int size)
     return _TIFFmallocExt(tif, items * size);
 }
 
+/**
+ * @brief Release zlib storage through the matching handle Ext allocator.
+ * @ingroup libtiff_private_deflate
+ *
+ * Consumes ptr and invalidates all views of it. Does not free the borrowed
+ * handle, perform payload I/O or return status; NULL storage is allowed.
+ *
+ * @param[in,out] opaque Borrowed live TIFF handle supplied as zlib
+ * allocator context.
+ * @param[in] ptr Allocation from the matching Ext family, or NULL; consumed
+ * by free.
+ */
 static void TIFF_zfree(void *opaque, void *ptr)
 {
     _TIFFfreeExt((TIFF *)opaque, ptr);
 }
 
+/**
+ * @brief Report the Deflate expansion allocation heuristic.
+ * @ingroup libtiff_private_deflate
+ *
+ * Ignores the handle; no allocation, I/O, diagnostics, state or ownership
+ * effects. Not a validation guarantee.
+ *
+ * @param[in] tif Unused handle.
+ * @return One thousand thirty-two.
+ */
 static uint64_t ZIPGetMaxCompressionRatio(TIFF *tif)
 {
     (void)tif;
@@ -784,3 +1073,71 @@ bad:
     return (0);
 }
 #endif /* ZIP_SUPPORT */
+
+/**
+ * @def LIBDEFLATE_MAX_COMPRESSION_LEVEL
+ * @brief Highest accepted TIFFTAG_ZIPQUALITY value: 12.
+ * @ingroup libtiff_private_deflate
+ *
+ * Matches the libdeflate maximum level; the zlib path caps the level at
+ * Z_BEST_COMPRESSION (9). The tag setter rejects values outside [-1, 12].
+ */
+
+/**
+ * @def SAFE_MSG(sp)
+ * @brief Borrow the zlib stream error text, or an empty string if none.
+ * @ingroup libtiff_private_deflate
+ *
+ * Evaluates sp twice, so the operand must have no side effects.
+ *
+ * @param[in] sp ZIPState whose stream.msg is read.
+ */
+
+/**
+ * @def ZSTATE_INIT_DECODE
+ * @brief Bit 0x01 of the codec state field: decoding has been set up.
+ * @ingroup libtiff_private_deflate
+ *
+ * Set by ZIPSetupDecode(). Each setup first tears down the other mode, if
+ * active, and clears the field.
+ */
+
+/**
+ * @def ZSTATE_INIT_ENCODE
+ * @brief Bit 0x02 of the codec state field: encoding has been set up.
+ * @ingroup libtiff_private_deflate
+ *
+ * Set by ZIPSetupEncode(). Each setup first tears down the other mode, if
+ * active, and clears the field.
+ */
+
+/**
+ * @def GetZIPState(tif)
+ * @brief Cast tif->tif_data to the ZIPState.
+ * @ingroup libtiff_private_deflate
+ *
+ * tif is evaluated once. Requires the codec to be initialised (tif_data
+ * non-NULL).
+ *
+ * @param[in] tif Handle whose codec state is returned.
+ */
+
+/**
+ * @def ZIPDecoderState(tif)
+ * @brief Alias of GetZIPState(), returning the ZIPState for decoding.
+ * @ingroup libtiff_private_deflate
+ *
+ * tif is evaluated once. Requires the codec to be initialised.
+ *
+ * @param[in] tif Handle whose codec state is returned.
+ */
+
+/**
+ * @def ZIPEncoderState(tif)
+ * @brief Alias of GetZIPState(), returning the ZIPState for encoding.
+ * @ingroup libtiff_private_deflate
+ *
+ * tif is evaluated once. Requires the codec to be initialised.
+ *
+ * @param[in] tif Handle whose codec state is returned.
+ */

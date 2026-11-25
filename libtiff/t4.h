@@ -22,6 +22,11 @@
  * OF THIS SOFTWARE.
  */
 
+/**
+ * @file t4.h
+ * @brief Define CCITT Huffman code entries tables and run sentinels.
+ */
+
 #ifndef _T4_
 #define _T4_
 /*
@@ -30,11 +35,18 @@
  * of these tables it does not seem
  * worthwhile to make code & length 8 bits.
  */
+/**
+ * @brief Describe one CCITT Huffman run-length code.
+ * @ingroup libtiff_private_fax
+ */
 typedef struct tableentry
 {
-    unsigned short length; /* bit length of g3 code */
-    unsigned short code;   /* g3 code */
-    short runlen;          /* run length in bits */
+    /** @brief Code width in bits. */
+    unsigned short length;
+    /** @brief Right-adjusted code bits. */
+    unsigned short code;
+    /** @brief Run length in pixels or negative G3CODE sentinel. */
+    short runlen;
 } tableentry;
 
 #define EOL 0x001 /* EOL code value - 0000 0000 0000 1 */
@@ -53,6 +65,26 @@ typedef struct tableentry
  * NB: The G3CODE_INVALID entries are only used
  *     during state generation (see mkg3states.c).
  */
+/**
+ * @var const tableentry TIFFFaxWhiteCodes[]
+ * @brief Describe white CCITT terminating and makeup run codes.
+ * @ingroup libtiff_private_fax
+ *
+ * Immutable library-lifetime storage; index by terminating run or
+ * sixty-four-pixel makeup offset as used by putspan. Negative sentinels
+ * also support state-table generation. Do not modify or free it.
+ */
+
+/**
+ * @var const tableentry TIFFFaxBlackCodes[]
+ * @brief Describe black CCITT terminating and makeup run codes.
+ * @ingroup libtiff_private_fax
+ *
+ * Immutable library-lifetime storage; index by terminating run or
+ * sixty-four-pixel makeup offset as used by putspan. Negative sentinels
+ * also support state-table generation. Do not modify or free it.
+ */
+
 #ifdef G3CODES
 const tableentry TIFFFaxWhiteCodes[] = {
     {8, 0x35, 0},              /* 0011 0101 */
@@ -282,3 +314,47 @@ extern const tableentry TIFFFaxWhiteCodes[];
 extern const tableentry TIFFFaxBlackCodes[];
 #endif
 #endif /* _T4_ */
+
+/**
+ * @def EOL
+ * @brief Represent the twelve-bit EOL code value.
+ * @ingroup libtiff_private_fax
+ *
+ * Right-adjusted value of the end-of-line code 0000 0000 0001. The Group3
+ * encoder writes it with a length of 12 bits (13 with the 1D/2D tag bit in
+ * two-dimensional mode) before rows and in the RTC sequence written at close.
+ */
+
+/**
+ * @def G3CODE_EOL
+ * @brief Mark the EOL entry of a Huffman code table.
+ * @ingroup libtiff_private_fax
+ *
+ * Value -1, stored in tableentry.runlen of the EOL entries of
+ * TIFFFaxWhiteCodes and TIFFFaxBlackCodes in place of a run length.
+ */
+
+/**
+ * @def G3CODE_INVALID
+ * @brief Mark an invalid-code entry of a Huffman code table.
+ * @ingroup libtiff_private_fax
+ *
+ * Value -2, stored in tableentry.runlen of the trailing invalid-code entries
+ * of TIFFFaxWhiteCodes and TIFFFaxBlackCodes.
+ */
+
+/**
+ * @def G3CODE_EOF
+ * @brief Legacy end-of-input run-length status value.
+ * @ingroup libtiff_private_fax
+ *
+ * Value -3. Currently unused: no libtiff code or table refers to it.
+ */
+
+/**
+ * @def G3CODE_INCOMP
+ * @brief Legacy incomplete-code run-length status value.
+ * @ingroup libtiff_private_fax
+ *
+ * Value -4. Currently unused: no libtiff code or table refers to it.
+ */

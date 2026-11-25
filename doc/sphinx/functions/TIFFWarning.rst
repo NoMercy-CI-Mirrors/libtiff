@@ -17,18 +17,16 @@ Synopsis
 
 .. c:function:: void TIFFWarningExtR(TIFF *tif, const char* module, const char* fmt, ...)
 
-.. c:type:: void (*TIFFWarningHandler)(const char * module, const char* fmt, va_list ap)
+.. c:function:: TIFFErrorHandler TIFFSetWarningHandler(TIFFErrorHandler handler)
 
-.. c:type:: void (*TIFFWarningHandlerExt)(thandle_t fd, const char* module, const char* fmt, va_list ap)
-
-.. c:type:: int (*TIFFWarningHandlerExtR)(TIFF* tif, void* user_data, const char* module, const char* fmt, va_list ap)
-
-.. c:function:: TIFFWarningHandler TIFFSetWarningHandler(TIFFWarningHandler handler)
-
-.. c:function:: TIFFWarningHandlerExt TIFFSetWarningHandlerExt(TIFFWarningHandlerExt handler)
+.. c:function:: TIFFErrorHandlerExt TIFFSetWarningHandlerExt(TIFFErrorHandlerExt handler)
 
 Description
 -----------
+
+Warning callbacks use the TIFFErrorHandler, TIFFErrorHandlerExt, and
+TIFFErrorHandlerExtR typedefs declared in tiffio.h; there are no separate
+warning-handler typedefs.
 
 :c:func:`TIFFWarning` invokes the library-wide warning handler function
 to (normally) write a warning message to the ``stderr``.
@@ -41,7 +39,10 @@ detected.
 Applications that desire to capture control in the event of a warning
 should use :c:func:`TIFFSetWarningHandler` to override the default
 warning handler. A :c:macro:`NULL` (0) warning handler function may be
-installed to suppress warning messages.
+installed to suppress that global handler slot. Other global or per-handle
+handlers can still run. Replacement is unsynchronised and does not manage
+callback lifetime; coordinate concurrent registration and in-flight calls
+externally.
 
 Two more application-specific warning handler callbacks are available,
 each with different call parameters and passing parameters to the handler.
@@ -73,15 +74,19 @@ Note
 
 Both functions :c:func:`TIFFWarning` and :c:func:`TIFFWarningExt`
 each attempt to call both handler functions if they are defined.
-First :c:func:`TIFFWarningHandler` is called and then :c:func:`TIFFWarningHandlerExt`.
+First :c:type:`TIFFErrorHandler` is called and then :c:type:`TIFFErrorHandlerExt`.
 However, :c:func:`TIFFWarning` passes a "0" as a file handle to
-:c:func:`TIFFWarningHandlerExt`.
+:c:type:`TIFFErrorHandlerExt`.
 
 :c:func:`TIFFWarningExtR` tries first to call the per-TIFF handle defined
-warning handler. If :c:func:`TIFFWarningHandlerExtR` is not defined or
-returns 0, :c:func:`TIFFWarningHandler` and then :c:func:`TIFFWarningHandlerExt`
+warning handler. If :c:type:`TIFFErrorHandlerExtR` is not defined or
+returns 0, :c:type:`TIFFErrorHandler` and then :c:type:`TIFFErrorHandlerExt`
 are called. From libtiff 4.5 onwards :c:func:`TIFFWarningExtR` is used
 within the ``libtiff`` library.
+
+Dispatch is synchronous and does not itself abort an operation or change its
+status. Callback strings and argument lists are borrowed for the call; callbacks
+may change external state or errno, and exceptions are not caught.
 
 Return values
 -------------
@@ -89,10 +94,10 @@ Return values
 :c:func:`TIFFSetWarningHandler` and :c:func:`TIFFSetWarningHandlerExt`
 returns a reference to the previous warning handler function.
 
-:c:func:`TIFFWarningHandlerExtR` returns an integer as "stop" to control the call
+:c:type:`TIFFErrorHandlerExtR` returns an integer as "stop" to control the call
 of further warning handler functions within :c:func:`TIFFWarningExtR`:
 
-  - 0: both functions :c:func:`TIFFWarningHandler` and :c:func:`TIFFWarningHandlerExt` are called.
+  - 0: both functions :c:type:`TIFFErrorHandler` and :c:type:`TIFFErrorHandlerExt` are called.
   - non-zero: no further warning message function is called.
 
 See also

@@ -28,6 +28,11 @@
  * Directory Tag Get & Set Routines.
  * (and also some miscellaneous stuff)
  */
+/**
+ * @file tif_dir.c
+ * @brief Implement directory operations and shared owned-array copy helpers.
+ */
+
 #include "tiffiop.h"
 #include <float.h> /*--: for Rational2Double */
 #include <limits.h>
@@ -36,11 +41,46 @@
 /*
  * These are used in the backwards compatibility code...
  */
-#define DATATYPE_VOID 0   /* !untyped data */
-#define DATATYPE_INT 1    /* !signed integer data */
-#define DATATYPE_UINT 2   /* !unsigned integer data */
+/**
+ * @brief Identify legacy DataType untyped samples.
+ * @ingroup libtiff_private_tag_access
+ */
+#define DATATYPE_VOID 0 /* !untyped data */
+/**
+ * @brief Identify legacy DataType signed integer samples.
+ * @ingroup libtiff_private_tag_access
+ */
+#define DATATYPE_INT 1 /* !signed integer data */
+/**
+ * @brief Identify legacy DataType unsigned integer samples.
+ * @ingroup libtiff_private_tag_access
+ */
+#define DATATYPE_UINT 2 /* !unsigned integer data */
+/**
+ * @brief Identify legacy DataType IEEE floating-point samples.
+ * @ingroup libtiff_private_tag_access
+ */
 #define DATATYPE_IEEEFP 3 /* !IEEE floating point data */
 
+/**
+ * @brief Discard an old allocation and copy a replacement byte product.
+ * @ingroup libtiff_private_memory
+ *
+ * Frees and clears *vpp before checking/copying. With a non-NULL source,
+ * checks the product silently through _TIFFMultiplySSize(NULL, ..., NULL)
+ * and allocates only a positive valid result. Failure leaves *vpp NULL and
+ * does not preserve old contents. An allocator limit may report a
+ * diagnostic, but other size/allocation failures have no direct diagnostic.
+ * The replacement uses the matching _TIFFfreeExt() context.
+ *
+ * @param[in,out] tif Matching live accounting handle, or NULL.
+ * @param[in,out] vpp Non-NULL owner slot for a compatible allocation, or a
+ * NULL allocation.
+ * @param[in] vp Readable source, or NULL to clear; must not alias the old
+ * allocation.
+ * @param[in] nmemb Count representable by tmsize_t for the checked product.
+ * @param[in] elem_size Element byte size representable by tmsize_t.
+ */
 static void setByteArray(TIFF *tif, void **vpp, const void *vp, size_t nmemb,
                          size_t elem_size)
 {
@@ -68,6 +108,20 @@ void _TIFFsetByteArrayExt(TIFF *tif, void **vpp, const void *vp, uint32_t n)
     setByteArray(tif, vpp, vp, n, 1);
 }
 
+/**
+ * @brief Replace an owned string byte sequence with a copy.
+ * @ingroup libtiff_private_memory
+ *
+ * Delegates to setByteArray() with its destructive replacement, checked-
+ * product, ownership, and diagnostic rules. Allocation failure loses the old
+ * allocation and leaves a NULL result slot. Returns no status.
+ *
+ * @param[in,out] tif Matching live accounting handle, or NULL.
+ * @param[in,out] cpp Non-NULL owned-allocation slot; cleared before copying.
+ * @param[in] cp Readable source, or NULL to clear; must not alias the old
+ * allocation.
+ * @param[in] n Number of bytes; no terminator is added.
+ */
 static void _TIFFsetNString(TIFF *tif, char **cpp, const char *cp, uint32_t n)
 {
     setByteArray(tif, (void **)cpp, cp, n, 1);
@@ -93,6 +147,20 @@ void _TIFFsetLongArrayExt(TIFF *tif, uint32_t **lpp, const uint32_t *lp,
     setByteArray(tif, (void **)lpp, lp, n, sizeof(uint32_t));
 }
 
+/**
+ * @brief Replace an owned 64-bit integer array with a copy.
+ * @ingroup libtiff_private_memory
+ *
+ * Delegates to setByteArray() with its destructive replacement, checked-
+ * product, ownership, and diagnostic rules. Allocation failure loses the old
+ * allocation and leaves a NULL result slot. Returns no status.
+ *
+ * @param[in,out] tif Matching live accounting handle, or NULL.
+ * @param[in,out] lpp Non-NULL owned-allocation slot; cleared before copying.
+ * @param[in] lp Readable source, or NULL to clear; must not alias the old
+ * allocation.
+ * @param[in] n Number of uint64_t elements.
+ */
 static void _TIFFsetLong8Array(TIFF *tif, uint64_t **lpp, const uint64_t *lp,
                                uint32_t n)
 {
@@ -118,6 +186,24 @@ void _TIFFsetDoubleArrayExt(TIFF *tif, double **dpp, const double *dp,
     setByteArray(tif, (void **)dpp, dp, n, sizeof(double));
 }
 
+/**
+ * @brief Replace an owned double array with one repeated value.
+ * @ingroup libtiff_private_memory
+ *
+ * Frees the previous allocation before attempting the new one. The size
+ * multiplication is not overflow-checked here: callers must satisfy the
+ * representability precondition. Zero count or allocation failure leaves
+ * *vpp NULL and discards old data. Returns no status; only allocator policy
+ * diagnostics may be emitted. Release the replacement with the matching
+ * _TIFFfreeExt() context.
+ *
+ * @param[in,out] tif Matching live accounting handle, or NULL.
+ * @param[in,out] vpp Non-NULL owner slot for a matching double array or
+ * NULL.
+ * @param[in] value Value to assign to every new element.
+ * @param[in] nmemb Element count; its conversion and byte product must fit
+ * tmsize_t.
+ */
 static void setDoubleArrayOneValue(TIFF *tif, double **vpp, double value,
                                    size_t nmemb)
 {
@@ -134,6 +220,37 @@ static void setDoubleArrayOneValue(TIFF *tif, double **vpp, double value,
 
 /*
  * Install extra samples information.
+ */
+/**
+ * @def EXTRASAMPLE_COREL_UNASSALPHA
+ * @brief Recognise Corel's nonstandard unassociated-alpha code.
+ * @ingroup libtiff_private_tag_access
+ *
+ * setExtraSamples() repairs this value in the caller's array before copying
+ * it.
+ */
+
+/**
+ * @brief Validate and install extra-sample interpretations.
+ * @ingroup libtiff_private_tag_access
+ *
+ * Reads promoted count and a mutable uint16_t array. Converts Corel value
+ * 999 to unassociated alpha in caller storage, even before a later element
+ * might fail. If the change makes a previously single-channel
+ * TransferFunction require three channels, warns, clears
+ * FIELD_TRANSFERFUNCTION and frees td_transferfunction[0]. Replaces the owned
+ * sample-info copy destructively; copy allocation failure is not reflected in
+ * the return value.
+ *
+ * @param[in,out] tif Non-NULL live TIFF handle; accessed without internal
+ * locking.
+ * @param[in,out] ap Borrowed list containing promoted count and mutable
+ * array pointer.
+ * @param[out] v Non-NULL slot receiving the truncated uint16_t count for
+ * the caller diagnostic.
+ * @return One after accepted values/copy attempt; zero for excessive count,
+ * missing nonempty array, or invalid interpretation. Earlier repairs are
+ * retained.
  */
 static int setExtraSamples(TIFF *tif, va_list ap, uint32_t *v)
 {
@@ -192,6 +309,22 @@ static int setExtraSamples(TIFF *tif, va_list ap, uint32_t *v)
  * Count ink names separated by \0.  Returns
  * zero if the ink names are not as expected.
  */
+/**
+ * @brief Count terminated ink names within a byte extent.
+ * @ingroup libtiff_private_tag_access
+ *
+ * Scans without copying or taking ownership. Every component must end
+ * within the extent. Uses a uint16_t counter, so callers must keep the
+ * number of names representable.
+ *
+ * @param[in] tif Non-NULL handle; used only for its name and to dispatch
+ * the diagnostic.
+ * @param[in] slen Byte extent of s; zero is reported as invalid.
+ * @param[in] s Readable borrowed sequence of null-terminated names spanning
+ * slen bytes.
+ * @return Number of names, or zero with a diagnostic for zero length or an
+ * unterminated final name.
+ */
 static uint16_t countInkNamesString(TIFF *tif, uint32_t slen, const char *s)
 {
     uint16_t i = 0;
@@ -220,6 +353,35 @@ bad:
     return (0);
 }
 
+/**
+ * @brief Implement core and generic custom-tag storage.
+ * @ingroup libtiff_private_tag_access
+ *
+ * See @ref tag_arguments for exact promoted values, counts, array lengths,
+ * and exceptions. Changes update memory and dirty/field bits; file-
+ * directory persistence requires a later write/flush. An unregistered tag
+ * returns zero silently (and without va_end); registration and mutability
+ * are diagnosed by OkToChangeTag() in TIFFVSetField(), not here. Codec
+ * selection may clean up and
+ * reinitialise codec state. Core setters copy arrays/strings without taking
+ * ownership, but ExtraSamples may repair a caller element in place. Input
+ * storage must not alias replaced owned storage. Failure can discard old
+ * values, alter codec/related tags, or leave a partial custom entry; there
+ * is no rollback. Some void array-copy helpers lose data on allocation
+ * failure without changing the setter's success result. Diagnostics and
+ * errno alone do not establish success. The caller must already have passed
+ * OkToChangeTag(); codec overrides normally delegate here.
+ *
+ * @param[in,out] tif Non-NULL live TIFF handle; accessed without internal
+ * locking.
+ * @param[in] tag Registered core/custom tag number.
+ * @param[in,out] ap Borrowed promoted value list; see @ref tag_arguments.
+ * The helper traverses the supplied list and calls va_end(ap) on its
+ * normal and value-error exit paths, but not on the early unregistered-tag
+ * return; pass a dedicated copy when retaining another traversal.
+ * @return One when accepted, zero on detected failure; unchecked copy
+ * failures may still return one.
+ */
 static int _TIFFVSetField(TIFF *tif, uint32_t tag, va_list ap)
 {
     static const char module[] = "_TIFFVSetField";
@@ -1131,6 +1293,20 @@ badvalueifd8long8:
  * has commenced, unless its value has no effect
  * on the format of the data that is written.
  */
+/**
+ * @brief Check registration and tag mutability during writing.
+ * @ingroup libtiff_private_tag_access
+ *
+ * Looks up the descriptor and its ok-to-change flag, allowing ImageLength
+ * after writing begins. Unknown or immutable tags dispatch an error. No
+ * values are consumed, no ownership changes, and only the lookup cache
+ * changes.
+ *
+ * @param[in,out] tif Non-NULL live TIFF handle; accessed without internal
+ * locking.
+ * @param[in] tag Requested tag number.
+ * @return One if permitted, zero if unknown or immutable.
+ */
 static int OkToChangeTag(TIFF *tif, uint32_t tag)
 {
     const TIFFField *fip = TIFFFindField(tif, tag, TIFF_ANY);
@@ -1230,6 +1406,32 @@ int TIFFVSetField(TIFF *tif, uint32_t tag, va_list ap)
                : 0;
 }
 
+/**
+ * @brief Implement core and generic custom-tag queries.
+ * @ingroup libtiff_private_tag_access
+ *
+ * See @ref tag_arguments for exact pointer types, counts, exceptions, and
+ * lifetimes. Values are read from the current in-memory directory, not
+ * reread wholesale from disk. Registered pseudo-tags bypass the presence-
+ * bit test and may have codec effects. Array/string results are borrowed
+ * and must not be freed or modified; replacement, unsetting, directory
+ * change, codec cleanup, or handle cleanup can invalidate them. Deferred
+ * strip/tile arrays may allocate and perform I/O. Missing fields normally
+ * return zero silently; codec, I/O, and allocation failures can dispatch
+ * diagnostics. Outputs are usable only on success, and failure need not
+ * preserve them. No errno contract is provided. The dispatcher normally
+ * checks registration and presence first. The ordinary TransferFunction
+ * case consumes three output pointers even for one channel, unlike the one-
+ * pointer default fallback.
+ *
+ * @param[in,out] tif Non-NULL live TIFF handle; accessed without internal
+ * locking.
+ * @param[in] tag Registered core/custom tag number.
+ * @param[in,out] ap Borrowed output argument list; traversal and pointed-to
+ * outputs may change.
+ * @return One if supplied, zero if unsupported or failed; use outputs only
+ * on success.
+ */
 static int _TIFFVGetField(TIFF *tif, uint32_t tag, va_list ap)
 {
     TIFFDirectory *td = &tif->tif_dir;
@@ -1629,6 +1831,20 @@ int TIFFVGetField(TIFF *tif, uint32_t tag, va_list ap)
                 : 0);
 }
 
+/**
+ * @brief Release and clear one directory-owned allocation.
+ * @ingroup libtiff_private_directory_navigation
+ *
+ * Source-local block macro capturing live tif and td variables. A NULL
+ * member is ignored; otherwise uses _TIFFfreeExt() with tif and clears the
+ * slot. The member selector is substituted three times; supply no side
+ * effects and only a compatible owned pointer. Does not alter scalar
+ * counts/flags or report a status. Borrowed views into released storage
+ * become invalid.
+ *
+ * @param[in,out] member Pointer-member selector relative to td, e.g.
+ * td_colormap[0].
+ */
 #define CleanupField(member)                                                   \
     {                                                                          \
         if (td->member)                                                        \
@@ -1710,6 +1926,13 @@ void TIFFFreeDirectory(TIFF *tif)
 
 /*
  * Client Tag extension support (from Niles Ritter).
+ */
+/**
+ * @brief Store the process-wide borrowed directory-extension callback.
+ * @ingroup libtiff_private_fields
+ *
+ * Replaced by TIFFSetTagExtender(); initialisation invokes it synchronously
+ * without locking. NULL disables extension.
  */
 static TIFFExtendProc _TIFFextender = (TIFFExtendProc)NULL;
 
@@ -1871,6 +2094,31 @@ int TIFFDefaultDirectory(TIFF *tif)
     return (1);
 }
 
+/**
+ * @brief Read one chain link and update traversal/map bookkeeping.
+ * @ingroup libtiff_private_directory_navigation
+ *
+ * Reads a mapped IFD or uses client seek/read callbacks without loading tag
+ * values. Validates/registers the starting pair and, for a nonzero next
+ * link, the following pair. A loop at the next link warns, clears that
+ * link, backs up its index, and still succeeds; a rejected starting pair
+ * errors, clears offset/index, and fails. Count/range/read failures
+ * dispatch diagnostics but leave outputs and map/I/O state partially
+ * changed; off may already be assigned. BigTIFF counts are limited to
+ * 65535. Some seek results and map-allocation errors are not propagated. No
+ * rollback, ownership transfer, or dirty-value flushing occurs.
+ *
+ * @param[in,out] tif Non-NULL live handle; caller must serialise access.
+ * @param[in,out] nextdiroff Non-NULL current nonzero IFD offset on entry;
+ * following offset (zero at chain end) on success. Not generally preserved
+ * on failure.
+ * @param[out] off Optional byte-offset output locating the current IFD's
+ * next-link field; valid only after success.
+ * @param[in,out] nextdirnum Non-NULL chain index associated with the input
+ * offset; incremented only for an accepted nonzero next link.
+ * @return One after reading a link, including next-link loop truncation;
+ * zero on rejected starting pair or detected count/link read failure.
+ */
 static int TIFFAdvanceDirectory(TIFF *tif, uint64_t *nextdiroff, uint64_t *off,
                                 tdir_t *nextdirnum)
 {

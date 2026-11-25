@@ -27,8 +27,22 @@
  *
  * "Null" Compression Algorithm Support.
  */
+/**
+ * @file tif_dumpmode.c
+ * @brief Implement the uncompressed (COMPRESSION_NONE) codec.
+ */
+
 #include "tiffiop.h"
 
+/**
+ * @brief Accept uncompressed tag fixup without changes.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * Ignores tif; no allocation, I/O, diagnostics, ownership or state effects.
+ *
+ * @param[in] tif Handle (ignored).
+ * @return One unconditionally.
+ */
 static int DumpFixupTags(TIFF *tif)
 {
     (void)tif;
@@ -37,6 +51,24 @@ static int DumpFixupTags(TIFF *tif)
 
 /*
  * Encode a hunk of pixels.
+ */
+/**
+ * @brief Copy uncompressed bytes into the raw output buffer.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * Requires positive usable raw capacity and coherent cursor/counts. Copies
+ * input unless it already equals rawcp, advances cursors and flushes when
+ * full. Flush can write/seek and diagnose; partial file/cache changes
+ * survive failure. Nonidentical overlapping regions are not supported. No
+ * input ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live handle with an allocated raw buffer; the
+ * raw cursor and count advance and TIFFFlushData1() can be called; serialise
+ * access.
+ * @param[in] pp Borrowed readable input of cc bytes.
+ * @param[in] cc Nonnegative number of input bytes to buffer.
+ * @param[in] s Sample plane (ignored).
+ * @return One after all requested bytes buffered, zero on flush failure.
  */
 static int DumpModeEncode(TIFF *tif, uint8_t *pp, tmsize_t cc, uint16_t s)
 {
@@ -70,6 +102,24 @@ static int DumpModeEncode(TIFF *tif, uint8_t *pp, tmsize_t cc, uint16_t s)
 /*
  * Decode a hunk of pixels.
  */
+/**
+ * @brief Copy uncompressed raw input into decoded output.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * Checks available rawcc before copying, skips exact-pointer self-copy,
+ * then advances rawcp and reduces rawcc. Requires nonnegative cc and
+ * sufficient destination; nonidentical overlap is unsupported. Diagnoses
+ * insufficient data without copying. No allocation, file I/O or ownership
+ * transfer.
+ *
+ * @param[in,out] tif Non-NULL live handle whose raw cursor and count are
+ * consumed; serialise access.
+ * @param[out] buf Borrowed writable decoded output covering the requested
+ * byte extent.
+ * @param[in] cc Nonnegative number of bytes to copy out of the raw buffer.
+ * @param[in] s Sample plane (ignored).
+ * @return One after complete copy, zero for insufficient raw bytes.
+ */
 static int DumpModeDecode(TIFF *tif, uint8_t *buf, tmsize_t cc, uint16_t s)
 {
     static const char module[] = "DumpModeDecode";
@@ -96,6 +146,20 @@ static int DumpModeDecode(TIFF *tif, uint8_t *buf, tmsize_t cc, uint16_t s)
 
 /*
  * Seek forwards nrows in the current strip.
+ */
+/**
+ * @brief Advance uncompressed raw input by complete scanlines.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * Uses cached nonnegative scanline byte size, checks multiplication and
+ * available rawcc, then advances rawcp and reduces rawcc. Diagnoses
+ * rejection; no client seek, allocation or ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live handle whose cached scanline size is read
+ * and raw cursor and count are advanced; serialise access.
+ * @param[in] nrows Nonnegative number of complete cached scanlines to skip.
+ * @return One after cursor adjustment, zero on overflow or insufficient
+ * data.
  */
 static int DumpModeSeek(TIFF *tif, uint32_t nrows)
 {

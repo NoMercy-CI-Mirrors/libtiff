@@ -27,6 +27,11 @@
  *
  * Tiled Image Support Routines.
  */
+/**
+ * @file tif_tile.c
+ * @brief Compute tile geometry, coordinate checks, and default dimensions.
+ */
+
 #include "tiffiop.h"
 
 /*

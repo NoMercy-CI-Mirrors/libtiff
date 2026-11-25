@@ -30,6 +30,11 @@
  *
  */
 
+/**
+ * @file tif_jbig.c
+ * @brief Encode and decode complete single-strip JBIG image planes.
+ */
+
 #include "tiffiop.h"
 
 #ifdef JBIG_SUPPORT
@@ -42,6 +47,17 @@ extern "C"
 }
 #endif
 
+/**
+ * @brief Require one strip for JBIG decoding.
+ * @ingroup libtiff_private_jbig
+ *
+ * Checks the current logical strip count and diagnoses rejection. Does not
+ * validate every sample/geometry constraint, allocate, access payload or
+ * transfer ownership.
+ *
+ * @param[in] tif Non-NULL live JBIG handle whose strip count is checked.
+ * @return One for exactly one strip, zero otherwise.
+ */
 static int JBIGSetupDecode(TIFF *tif)
 {
     if (TIFFNumberOfStrips(tif) != 1)
@@ -54,6 +70,30 @@ static int JBIGSetupDecode(TIFF *tif)
     return 1;
 }
 
+/**
+ * @brief Decode one complete JBIG plane into caller storage.
+ * @ingroup libtiff_private_jbig
+ *
+ * May reverse raw input bits in place and optionally update BIE length
+ * without checking that helper status. Creates a temporary dependency
+ * decoder, decodes all raw input and frees it on every ordinary exit.
+ * Dependency error clears requested output and diagnoses; a decoded image
+ * smaller than the request warns and zero-pads, while a larger image is
+ * rejected before copying. Requires decoded size casts to be representable.
+ * Success copies plane zero then consumes all raw bytes; failure can leave
+ * raw bytes reversed or output changed. No caller ownership transfer or
+ * direct client I/O.
+ *
+ * @param[in,out] tif Non-NULL live JBIG handle with coherent writable raw
+ * storage and validated single-strip geometry; serialise access.
+ * @param[out] buffer Borrowed writable size-byte output, disjoint from raw
+ * input.
+ * @param[in] size Nonnegative output byte extent; bytes beyond a shorter
+ * decoded plane are zeroed.
+ * @param[in] s Unused sample-plane argument.
+ * @return One after accepted plane copy including short-image padding, zero
+ * on dependency error or oversized decoded plane.
+ */
 static int JBIGDecode(TIFF *tif, uint8_t *buffer, tmsize_t size, uint16_t s)
 {
     struct jbg_dec_state decoder;
@@ -132,6 +172,16 @@ static int JBIGDecode(TIFF *tif, uint8_t *buffer, tmsize_t size, uint16_t s)
     return 1;
 }
 
+/**
+ * @brief Require one strip for JBIG encoding.
+ * @ingroup libtiff_private_jbig
+ *
+ * Checks the strip count and diagnoses rejection. Does not itself validate
+ * sample depth, allocate or perform payload I/O. No ownership transfer.
+ *
+ * @param[in] tif Non-NULL live JBIG handle whose strip count is checked.
+ * @return One for exactly one strip, zero otherwise.
+ */
 static int JBIGSetupEncode(TIFF *tif)
 {
     if (TIFFNumberOfStrips(tif) != 1)
@@ -144,6 +194,24 @@ static int JBIGSetupEncode(TIFF *tif)
     return 1;
 }
 
+/**
+ * @brief Copy JBIG output fragments into the buffered raw stream.
+ * @ingroup libtiff_private_jbig
+ *
+ * Requires positive usable raw capacity, coherent cursor/counts and a cc
+ * extent representable by tmsize_t. Copies borrowed bytes, advances cursors
+ * and flushes full buffers. I/O/diagnostic side effects can leave partial
+ * file data on failure. Does not retain input or transfer ownership.
+ *
+ * @param[in,out] tif Non-NULL live JBIG handle with coherent writable raw
+ * storage and validated single-strip geometry; serialise access.
+ * @param[in] pp Borrowed readable dependency output of cc bytes, valid only
+ * during the call.
+ * @param[in] cc Byte extent representable by tmsize_t with valid cursor
+ * additions.
+ * @param[in] s Unused sample-plane argument.
+ * @return One after all bytes buffered/flushed, minus one on flush failure.
+ */
 static int JBIGCopyEncodedData(TIFF *tif, unsigned char *pp, size_t cc,
                                uint16_t s)
 {
@@ -172,6 +240,23 @@ static int JBIGCopyEncodedData(TIFF *tif, unsigned char *pp, size_t cc,
     return (1);
 }
 
+/**
+ * @brief Reverse and forward a dependency-produced JBIG output fragment.
+ * @ingroup libtiff_private_jbig
+ *
+ * Borrows writable dependency output and the handle context. Reverses bits
+ * when required then calls JBIGCopyEncodedData, ignoring its status because
+ * this void callback has no error channel. Flush failures can diagnose and
+ * mutate file/cache state without propagating to the outer encoder. No
+ * retained output pointer or ownership transfer.
+ *
+ * @param[in,out] buffer Borrowed mutable dependency-produced output of len
+ * bytes; not retained.
+ * @param[in] len Mutable dependency output extent representable by
+ * tmsize_t.
+ * @param[in,out] userData Borrowed live TIFF handle supplied to the
+ * dependency output callback.
+ */
 static void JBIGOutputBie(unsigned char *buffer, size_t len, void *userData)
 {
     TIFF *tif = (TIFF *)userData;
@@ -184,6 +269,30 @@ static void JBIGOutputBie(unsigned char *buffer, size_t len, void *userData)
     JBIGCopyEncodedData(tif, buffer, len, 0);
 }
 
+/**
+ * @brief Encode a complete single-sample one-bit JBIG image plane.
+ * @ingroup libtiff_private_jbig
+ *
+ * Validates bit depth, sample count and single-strip organisation, computes
+ * a checked complete-plane extent and rejects short input. Creates a
+ * temporary dependency encoder referencing caller bytes synchronously,
+ * emits data through JBIGOutputBie and frees encoder state. Caller input is
+ * not modified by this function. Output callback flush status is ignored,
+ * so encoder success does not prove successful payload writes. No caller
+ * ownership transfer; output/file changes are not transactional.
+ *
+ * @param[in,out] tif Non-NULL live JBIG handle with coherent writable raw
+ * storage; geometry is checked here. Serialise access.
+ * @param[in] buffer Borrowed readable complete image plane of at least size
+ * bytes.
+ * @param[in] size Byte count available in buffer; must be at least the
+ * complete plane size.
+ * @param[in] s Unused sample-plane argument.
+ * @return One after dependency encoding returns, zero on explicit
+ * input/extent validation failure; callback I/O errors are not reflected.
+ * An empty (zero-width or zero-length) plane returns zero without a
+ * diagnostic.
+ */
 static int JBIGEncode(TIFF *tif, uint8_t *buffer, tmsize_t size, uint16_t s)
 {
     static const char module[] = "JBIG";
@@ -246,6 +355,10 @@ int TIFFInitJBIG(TIFF *tif, int scheme)
      * These flags are set so the JBIG Codec can control when to reverse
      * bits and when not to and to allow the jbig decoder and bit reverser
      * to write to memory when necessary.
+     *
+     * Clearing TIFF_MAPPED does not unmap tif_base. TIFFCleanup() calls
+     * tif_unmapproc only while TIFF_MAPPED is set, so a view mapped when the
+     * file was opened is never released (known defect; behaviour unchanged).
      */
     tif->tif_flags |= TIFF_NOBITREV;
     tif->tif_flags &= ~TIFF_MAPPED;

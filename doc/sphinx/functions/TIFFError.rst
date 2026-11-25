@@ -41,7 +41,10 @@ detected.
 Applications that desire to capture control in the event of an error
 should use :c:func:`TIFFSetErrorHandler` to override the default
 error handler. A :c:macro:`NULL` (0) error handler function may be
-installed to suppress error messages.
+installed to suppress that global handler slot. Other global or per-handle
+handlers can still run. Replacement is unsynchronised and does not manage
+callback lifetime; coordinate concurrent registration and in-flight calls
+externally.
 
 Two more application-specific error handler callbacks are available,
 each with different call parameters and passing parameters to the handler.
@@ -73,16 +76,20 @@ Note
 
 Both functions :c:func:`TIFFError` and :c:func:`TIFFErrorExt`
 each attempt to call both handler functions if they are defined.
-First :c:func:`TIFFErrorHandler` is called and then :c:func:`TIFFErrorHandlerExt`.
+First :c:type:`TIFFErrorHandler` is called and then :c:type:`TIFFErrorHandlerExt`.
 However, :c:func:`TIFFError` passes a "0" as a file handle to
-:c:func:`TIFFErrorHandlerExt`.
+:c:type:`TIFFErrorHandlerExt`.
 
 :c:func:`TIFFErrorExtR` tries first to call the per-TIFF handle defined
-error handler. If :c:func:`TIFFErrorHandlerExtR` is not defined or
-returns 0, :c:func:`TIFFErrorHandler` and then :c:func:`TIFFErrorHandlerExt`
+error handler. If :c:type:`TIFFErrorHandlerExtR` is not defined or
+returns 0, :c:type:`TIFFErrorHandler` and then :c:type:`TIFFErrorHandlerExt`
 are called. From libtiff 4.5 onwards :c:func:`TIFFErrorExtR` is used
 within the ``libtiff`` library where the TIFF handle is available.
 Otherwise, :c:func:`TIFFErrorExt` is used!
+
+Dispatch is synchronous and does not itself abort an operation or change its
+status. Callback strings and argument lists are borrowed for the call; callbacks
+may change external state or errno, and exceptions are not caught.
 
 Return values
 -------------
@@ -90,10 +97,10 @@ Return values
 :c:func:`TIFFSetErrorHandler` and :c:func:`TIFFSetErrorHandlerExt`
 returns a reference to the previous error handler function.
 
-:c:func:`TIFFErrorHandlerExtR` returns an integer as "stop" to control the call
+:c:type:`TIFFErrorHandlerExtR` returns an integer as "stop" to control the call
 of further error handler functions within :c:func:`TIFFErrorExtR`:
 
-  - 0: both functions :c:func:`TIFFErrorHandler` and :c:func:`TIFFErrorHandlerExt` are called.
+  - 0: both functions :c:type:`TIFFErrorHandler` and :c:type:`TIFFErrorHandlerExt` are called.
   - non-zero: no further error message function is called.
 
 See also

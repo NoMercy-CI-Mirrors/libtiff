@@ -1,5 +1,13 @@
-/* tiffvers.h version information is updated according to version information
- * in configure.ac */
+/**
+ * @file tiffvers.h
+ * @brief Identify the LibTIFF headers used when compiling an application.
+ *
+ * Generated from version information in configure.ac. These macros describe
+ * the build-time headers; use TIFFGetVersion() to identify the loaded library.
+ */
+
+/** @addtogroup libtiff_public_version
+ * @{ */
 
 /* clang-format off */
 
@@ -8,29 +16,60 @@
  * Furthermore, configure_file variables of type "@VAR@" are
  * modified by clang-format and won't be substituted by CMake.
  */
+/**
+ * @brief Define the library version and copyright banner as a string literal.
+ *
+ * Includes embedded newlines. TIFFGetVersion() returns the corresponding
+ * banner compiled into the loaded library.
+ */
 #define TIFFLIB_VERSION_STR "LIBTIFF, Version @LIBTIFF_VERSION@\nCopyright (c) 1988-1996 Sam Leffler\nCopyright (c) 1991-1996 Silicon Graphics, Inc."
-/*
- * This define can be used in code that requires
- * compilation-related definitions specific to a
- * version or versions of the library.  Runtime
- * version checking should be done based on the
- * string returned by TIFFGetVersion.
+/**
+ * @brief Define the release date as a decimal YYYYMMDD integer.
+ *
+ * This historical version marker supports date-based compile-time checks.
+ * Prefer TIFFLIB_AT_LEAST() for comparisons of release version numbers.
  */
 #define TIFFLIB_VERSION @LIBTIFF_RELEASE_DATE@
 
-/* The following defines have been added in 4.5.0 */
+/** @brief Define the major release version number.
+ * @since 4.5.0
+ */
 #define TIFFLIB_MAJOR_VERSION @LIBTIFF_MAJOR_VERSION@
+/** @brief Define the minor release version number.
+ * @since 4.5.0
+ */
 #define TIFFLIB_MINOR_VERSION @LIBTIFF_MINOR_VERSION@
+/** @brief Define the micro release version number.
+ * @since 4.5.0
+ */
 #define TIFFLIB_MICRO_VERSION @LIBTIFF_MICRO_VERSION@
+/** @brief Define the release version string without the copyright banner.
+ * @since 4.5.0
+ */
 #define TIFFLIB_VERSION_STR_MAJ_MIN_MIC "@LIBTIFF_VERSION@"
 
-/* Macro added in 4.5.0. Returns TRUE if the current libtiff version is
- * greater or equal to major.minor.micro
+/**
+ * @brief Test whether the compile-time version is at least a given release.
+ *
+ * Compares the major, minor, and micro components lexicographically; it does
+ * not inspect the loaded library or distinguish prerelease suffixes. Usable
+ * in preprocessor conditionals. Arguments can be evaluated more than once;
+ * pass integer version components without side effects.
+ *
+ * @param[in] major Major version component to compare against.
+ * @param[in] minor Minor version component to compare against.
+ * @param[in] micro Micro version component to compare against.
+ * @return Nonzero if these headers are for the requested release or a later
+ * release; zero otherwise. The macro performs no allocation or I/O and has no
+ * failure result.
+ * @since 4.5.0
  */
 #define TIFFLIB_AT_LEAST(major, minor, micro) \
     (TIFFLIB_MAJOR_VERSION > (major) || \
      (TIFFLIB_MAJOR_VERSION == (major) && TIFFLIB_MINOR_VERSION > (minor)) || \
      (TIFFLIB_MAJOR_VERSION == (major) && TIFFLIB_MINOR_VERSION == (minor) && \
       TIFFLIB_MICRO_VERSION >= (micro)))
+
+/** @} */
 
 /* clang-format on */

@@ -34,6 +34,12 @@
  * Color space conversion routines.
  */
 
+/**
+ * @file tif_color.c
+ * @brief Convert Lab, XYZ, and YCbCr colour components.
+ * @ingroup libtiff_private_conversion
+ */
+
 #include "tiffiop.h"
 #include <math.h>
 
@@ -89,6 +95,16 @@ void TIFFCIELab16ToXYZ(TIFFCIELabToRGB *cielab, uint32_t l, int32_t a,
         *Z = cielab->Z0 * tmp * tmp * tmp;
 }
 
+/**
+ * @brief Round a nonnegative table value to an unsigned channel.
+ * @ingroup libtiff_private_conversion
+ *
+ * Requires representable nonnegative input; argument may be evaluated more
+ * than once. No allocation, I/O, diagnostics, or ownership transfer.
+ *
+ * @param[in] R Floating-point table value, normally 0..255 after lookup.
+ * @return R rounded half away from zero and converted to uint32_t.
+ */
 #define RINT(R) ((uint32_t)((R) > 0 ? ((R) + 0.5f) : ((R) - 0.5f)))
 /*
  * Convert color value from the XYZ space to RGB.
@@ -138,6 +154,10 @@ void TIFFXYZToRGB(TIFFCIELabToRGB *cielab, float X, float Y, float Z,
 /*
  * Allocate conversion state structures and make look_up tables for
  * the Yr,Yb,Yg <=> r,g,b conversions.
+ *
+ * Note: gstep and bstep are currently computed from the red display values
+ * (d_YCR - d_Y0R), the same as rstep, rather than from the green and blue
+ * values. This is a known discrepancy, recorded for a separate code fix.
  */
 int TIFFCIELabToRGBInit(TIFFCIELabToRGB *cielab, const TIFFDisplay *display,
                         float *refWhite)
@@ -192,15 +212,78 @@ int TIFFCIELabToRGBInit(TIFFCIELabToRGB *cielab, const TIFFDisplay *display,
  * The colorspace conversion algorithm comes from the IJG v5a code;
  * see below for more information on how it works.
  */
+/**
+ * @brief Select sixteen fractional bits for YCbCr contributions.
+ * @ingroup libtiff_private_conversion
+ *
+ * Number of fractional bits in the fixed-point coefficients built by
+ * TIFFYCbCrToRGBInit(); table sums are shifted right by this amount.
+ */
 #define SHIFT 16
+/**
+ * @brief Convert a bounded coefficient to fixed-point form.
+ * @ingroup libtiff_private_conversion
+ *
+ * Requires a representable finite result; argument is evaluated once. No
+ * allocation, I/O, diagnostics, or ownership transfer.
+ *
+ * @param[in] x Coefficient to convert; callers clamp it to 0..2.
+ * @return x scaled by 2^SHIFT and rounded, as int32_t.
+ */
 #define FIX(x) ((int32_t)((double)(x) * (1L << SHIFT) + 0.5))
+/**
+ * @brief Represent a half-unit rounding bias in fixed-point form.
+ * @ingroup libtiff_private_conversion
+ *
+ * Value 1 << (SHIFT - 1), added before shifting right by SHIFT so the
+ * fixed-point products round to nearest.
+ */
 #define ONE_HALF ((int32_t)(1 << (SHIFT - 1)))
+/**
+ * @brief Scale a code between reference black and white endpoints.
+ * @ingroup libtiff_private_conversion
+ *
+ * Uses denominator one when the endpoints compare exactly equal (or their
+ * difference is NaN); nearly equal endpoints still divide by the small
+ * difference. Macro arguments can be evaluated repeatedly and must be
+ * side-effect free. No allocation, I/O, diagnostics, or ownership transfer.
+ *
+ * @param[in] c Integer code value.
+ * @param[in] RB Reference black endpoint; truncated to int32_t when
+ * subtracted from c, but used unconverted in the denominator.
+ * @param[in] RW Reference white endpoint.
+ * @param[in] CR Output code range (127 for chroma, 255 for luma).
+ * @return (c - RB) * CR / (RW - RB) as float.
+ */
 #define Code2V(c, RB, RW, CR)                                                  \
     (((float)((c) - (int32_t)(RB)) * (float)(CR)) /                            \
      ((!TIFF_FLOAT_EQ((RW), (RB))) ? ((RW) - (RB)) : 1.0f))
 /* !((f)>=(min)) written that way to deal with NaN */
+/**
+ * @brief Clamp a value and map NaN to the lower bound.
+ * @ingroup libtiff_private_conversion
+ *
+ * Arguments can be evaluated repeatedly and must be side-effect free. No
+ * allocation, I/O, diagnostics, or ownership transfer.
+ *
+ * @param[in] f Value to clamp.
+ * @param[in] min Lower bound, also returned when f is NaN.
+ * @param[in] max Upper bound.
+ * @return min if f is below min or NaN, max if f exceeds max, otherwise f.
+ */
 #define CLAMP(f, min, max)                                                     \
     ((!((f) >= (min))) ? (min) : (f) > (max) ? (max) : (f))
+/**
+ * @brief Apply only an upper bound.
+ * @ingroup libtiff_private_conversion
+ *
+ * Arguments can be evaluated repeatedly and must be side-effect free. No
+ * allocation, I/O, diagnostics, or ownership transfer.
+ *
+ * @param[in] f Value to bound.
+ * @param[in] max Upper bound.
+ * @return max if f exceeds max, otherwise f.
+ */
 #define HICLAMP(f, max) ((f) > (max) ? (max) : (f))
 
 void TIFFYCbCrtoRGB(TIFFYCbCrToRGB *ycbcr, uint32_t Y, int32_t Cb, int32_t Cr,
@@ -224,6 +307,19 @@ void TIFFYCbCrtoRGB(TIFFYCbCrToRGB *ycbcr, uint32_t Y, int32_t Cb, int32_t Cr,
 
 /* Clamp function for sanitization purposes. Normally clamping should not */
 /* occur for well behaved chroma and refBlackWhite coefficients */
+/**
+ * @brief Clamp a finite coefficient to an inclusive interval.
+ * @ingroup libtiff_private_conversion
+ *
+ * Comparisons leave NaN unchanged. Pure arithmetic with no allocation, I/O,
+ * diagnostics, or ownership effects; caller establishes ordered finite
+ * limits.
+ *
+ * @param[in] v Value to clamp.
+ * @param[in] vmin Lower bound.
+ * @param[in] vmax Upper bound.
+ * @return Clamped value, or the original NaN.
+ */
 static float CLAMPw(float v, float vmin, float vmax)
 {
     if (v < vmin)
@@ -326,3 +422,28 @@ int TIFFYCbCrToRGBInit(TIFFYCbCrToRGB *ycbcr, float *luma, float *refBlackWhite)
 #undef SHIFT
 #undef ONE_HALF
 #undef FIX
+
+/**
+ * @def LumaRed
+ * @brief Read the red coefficient from the local luma array.
+ * @ingroup libtiff_private_conversion
+ *
+ * Expands to luma[0], the red YCbCrCoefficients entry passed to
+ * TIFFYCbCrToRGBInit(); defined only inside that function.
+ */
+/**
+ * @def LumaGreen
+ * @brief Read the green coefficient from the local luma array.
+ * @ingroup libtiff_private_conversion
+ *
+ * Expands to luma[1], the green YCbCrCoefficients entry passed to
+ * TIFFYCbCrToRGBInit(); defined only inside that function.
+ */
+/**
+ * @def LumaBlue
+ * @brief Read the blue coefficient from the local luma array.
+ * @ingroup libtiff_private_conversion
+ *
+ * Expands to luma[2], the blue YCbCrCoefficients entry passed to
+ * TIFFYCbCrToRGBInit(); defined only inside that function.
+ */

@@ -21,8 +21,21 @@
  * LIABILITY, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
  * OF THIS SOFTWARE.
  */
+/**
+ * @file tif_version.c
+ * @brief Provide the runtime library version banner.
+ * @ingroup libtiff_private_foundations
+ */
+
 #include "tiffiop.h"
 
+/**
+ * @brief Hold the immutable banner returned by TIFFGetVersion().
+ * @ingroup libtiff_private_foundations
+ *
+ * Static storage belongs to the library and remains valid while it is loaded.
+ * Initialisation requires no allocation or runtime mutation.
+ */
 static const char TIFFVersion[] = TIFFLIB_VERSION_STR;
 
 const char *TIFFGetVersion(void) { return (TIFFVersion); }

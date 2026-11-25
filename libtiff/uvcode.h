@@ -1,12 +1,36 @@
 /* Version 1.0 generated April 7, 1997 by Greg Ward Larson, SGI */
+/**
+ * @file uvcode.h
+ * @brief Preserve the historical LogLuv chromaticity-bin table.
+ * @ingroup libtiff_private_sgilog
+ *
+ * The 1997 generator is not present in this source tree. These comments
+ * annotate the maintained snapshot; initializer values remain unchanged.
+ */
+
+/** @brief Set the chromaticity bin side length. */
 #define UV_SQSIZ (float)0.003500
+/** @brief Count all 16289 chromaticity bins. */
 #define UV_NDIVS 16289
+/** @brief Locate the lower v-prime edge of the first row. */
 #define UV_VSTART (float)0.016940
+/** @brief Count the 163 v-prime rows. */
 #define UV_NVS 163
+/**
+ * @brief Map each v-prime row to its u-prime start and bin index interval.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Immutable library-lifetime storage; do not modify or free it. nus is
+ * the horizontal bin count and ncum is the number of preceding bins.
+ */
 static const struct
 {
+    /** @brief Lower u-prime boundary of this row. */
     float ustart;
-    short nus, ncum;
+    /** @brief Count horizontal bins in this chromaticity row. */
+    short nus;
+    /** @brief Count all bins preceding this row. */
+    short ncum;
 } uv_row[UV_NVS] = {
     {(float)0.247663, 4, 0},       {(float)0.243779, 6, 4},
     {(float)0.241684, 7, 10},      {(float)0.237874, 9, 17},
@@ -91,3 +115,11 @@ static const struct
     {(float)0.010490, 40, 16197},  {(float)0.016994, 31, 16237},
     {(float)0.023659, 21, 16268},
 };
+
+/**
+ * @var uv_row
+ * @brief Map v-prime rows to u-prime boundaries and bin index intervals.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Immutable library-lifetime table; do not modify or free it.
+ */

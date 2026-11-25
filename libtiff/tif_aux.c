@@ -27,6 +27,11 @@
  *
  * Auxiliary Support Routines.
  */
+/**
+ * @file tif_aux.c
+ * @brief Implement checked shared helpers and directory-default queries.
+ */
+
 #include "tif_predict.h"
 #include "tiffiop.h"
 #include <float.h>
@@ -213,6 +218,26 @@ void *_TIFFCheckMalloc(TIFF *tif, tmsize_t nmemb, tmsize_t elem_size,
     return _TIFFCheckRealloc(tif, NULL, nmemb, elem_size, what);
 }
 
+/**
+ * @brief Allocate and cache default gamma transfer tables.
+ * @ingroup libtiff_private_tag_access
+ *
+ * Requires empty transfer-function slots; clears all three slots on entry
+ * without freeing old allocations. Builds 2^BitsPerSample entries using
+ * gamma 2.2 and allocates one or three identical arrays according to
+ * colour-channel count. Rejects more than 24 bits. On partial allocation
+ * failure frees all new arrays and leaves slots NULL. The directory owns
+ * successful arrays and releases them in TIFFFreeDirectory(). Does not mark
+ * tag presence. Caller adds the ordinary no-space diagnostic; allocation
+ * policy may report separately.
+ *
+ * @param[in,out] tif Non-NULL live TIFF handle; accessed without internal
+ * locking.
+ * @param[in,out] td Non-NULL directory with empty transfer-function slots
+ * and consistent sample counts.
+ * @return One on success, zero for unsupported bit depth or allocation
+ * failure.
+ */
 static int TIFFDefaultTransferFunction(TIFF *tif, TIFFDirectory *td)
 {
     uint16_t **tf = td->td_transferfunction;
@@ -261,6 +286,24 @@ bad:
     return 0;
 }
 
+/**
+ * @brief Allocate and cache six default reference levels.
+ * @ingroup libtiff_private_tag_access
+ *
+ * Requires an empty reference array slot; allocates handle-owned floats
+ * without setting tag presence. YCbCr uses {0,255,128,255,128,255}; other
+ * photometrics use zero and the bit-depth maximum per channel, capped at
+ * UINT64_MAX for 64 or more bits. Does not free an existing array.
+ * Allocation-policy diagnostics can occur; exhaustion otherwise returns
+ * zero silently.
+ *
+ * @param[in,out] tif Non-NULL live TIFF handle; accessed without internal
+ * locking.
+ * @param[in,out] td Non-NULL directory with an empty reference slot and
+ * current bit depth/photometric.
+ * @return One on success, zero on allocation failure; successful storage
+ * belongs to td until replacement/directory cleanup.
+ */
 static int TIFFDefaultRefBlackWhite(TIFF *tif, TIFFDirectory *td)
 {
     int i;

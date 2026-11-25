@@ -26,6 +26,12 @@
  * DEALINGS IN THE SOFTWARE.
  ****************************************************************************/
 
+/**
+ * @file tif_hash_set.c
+ * @brief Implement callback-driven buckets, recycled nodes, and element
+ * disposal.
+ */
+
 #include "tif_config.h"
 
 #include "tif_hash_set.h"
@@ -36,39 +42,80 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-/** List element structure. */
+/** @brief Name a private live/recycled hash-list node.
+ * @ingroup libtiff_private_hash
+ */
 typedef struct _TIFFList TIFFList;
 
-/** List element structure. */
+/**
+ * @brief Link a live hash element or a recycled node.
+ * @ingroup libtiff_private_hash
+ *
+ * The set owns nodes. Payload ownership follows the optional disposer;
+ * recycled nodes can contain stale payload values that must not be used.
+ */
 struct _TIFFList
 {
-    /*! Pointer to the data object. Should be allocated and freed by the
-     * caller.
-     * */
+    /** @brief Live payload pointer, or stale/unused recycled value. */
     void *pData;
-    /*! Pointer to the next element in list. NULL, if current element is the
-     * last one.
-     */
+    /** @brief Next live-bucket or recycling-list node. */
     struct _TIFFList *psNext;
 };
 
+/**
+ * @brief Own bucket/node storage and record callback-defined element policy.
+ * @ingroup libtiff_private_hash
+ *
+ * No TIFF handle or accounting allocator is used. Access and callback lifetime
+ * need external coordination; no internal lock or iteration mutation guard
+ * exists.
+ */
 struct _TIFFHashSet
 {
+    /** @brief Borrowed hash function, with a default installed at creation. */
     TIFFHashSetHashFunc fnHashFunc;
+    /**
+     * @brief Borrowed equality function, with a default installed at creation.
+     */
     TIFFHashSetEqualFunc fnEqualFunc;
+    /**
+     * @brief Optional consuming disposer, including for failed incoming
+     * insertions.
+     */
     TIFFHashSetFreeEltFunc fnFreeEltFunc;
+    /** @brief Owned array of bucket-head pointers. */
     TIFFList **tabList;
+    /** @brief Live-element count in normal externally visible state. */
     int nSize;
+    /**
+     * @brief Index into anPrimes; callers must keep growth/shrink selection in
+     * range.
+     */
     int nIndiceAllocatedSize;
+    /** @brief Logical bucket count used for hashing and traversal. */
     int nAllocatedSize;
+    /**
+     * @brief Owned spare-node list, whose payload fields are not live elements.
+     */
     TIFFList *psRecyclingList;
+    /**
+     * @brief Number of nodes in the spare-node list, capped at 128 on return.
+     */
     int nRecyclingListSize;
+    /** @brief Deferred rehash state used by optional deferred removal. */
     bool bRehash;
 #ifdef HASH_DEBUG
+    /** @brief Optional HASH_DEBUG collision counter. */
     int nCollisions;
 #endif
 };
 
+/**
+ * @brief Provide the fixed sequence of supported bucket capacities.
+ * @ingroup libtiff_private_hash
+ *
+ * Growth indexes this array without an explicit end-of-table guard.
+ */
 static const int anPrimes[] = {
     53,        97,        193,       389,       769,       1543,     3079,
     6151,      12289,     24593,     49157,     98317,     196613,   393241,
@@ -80,13 +127,17 @@ static const int anPrimes[] = {
 /************************************************************************/
 
 /**
- * Hash function for an arbitrary pointer
+ * @brief Hash a pointer value without dereferencing it.
+ * @ingroup libtiff_private_hash
  *
- * @param elt the arbitrary pointer to hash
+ * Does not allocate, mutate, dispose, or emit diagnostics. Collisions are
+ * resolved by equality; the result is not a persistent identifier or
+ * cryptographic hash.
  *
- * @return the hash value of the pointer
+ * @param[in] elt Arbitrary pointer, including NULL.
+ * @return The uintptr_t pointer representation converted to unsigned long;
+ * high bits can be truncated when that type is narrower.
  */
-
 static unsigned long TIFFHashSetHashPointer(const void *elt)
 {
     return (unsigned long)(uintptr_t)((void *)(elt));
@@ -97,14 +148,16 @@ static unsigned long TIFFHashSetHashPointer(const void *elt)
 /************************************************************************/
 
 /**
- * Equality function for arbitrary pointers
+ * @brief Compare pointer values without dereferencing them.
+ * @ingroup libtiff_private_hash
  *
- * @param elt1 the first arbitrary pointer to compare
- * @param elt2 the second arbitrary pointer to compare
+ * Does not allocate, mutate, dispose, transfer ownership, or emit
+ * diagnostics.
  *
- * @return true if the pointers are equal
+ * @param[in] elt1 First pointer, possibly NULL.
+ * @param[in] elt2 Second pointer, possibly NULL.
+ * @return true if the pointers compare equal; false otherwise.
  */
-
 static bool TIFFHashSetEqualPointer(const void *elt1, const void *elt2)
 {
     return elt1 == elt2;
@@ -113,27 +166,6 @@ static bool TIFFHashSetEqualPointer(const void *elt1, const void *elt2)
 /************************************************************************/
 /*                           TIFFHashSetNew()                           */
 /************************************************************************/
-
-/**
- * Creates a new hash set
- *
- * The hash function must return a hash value for the elements to insert.
- * If fnHashFunc is NULL, TIFFHashSetHashPointer will be used.
- *
- * The equal function must return if two elements are equal.
- * If fnEqualFunc is NULL, TIFFHashSetEqualPointer will be used.
- *
- * The free function is used to free elements inserted in the hash set,
- * when the hash set is destroyed, when elements are removed or replaced.
- * If fnFreeEltFunc is NULL, elements inserted into the hash set will not be
- * freed.
- *
- * @param fnHashFunc hash function. May be NULL.
- * @param fnEqualFunc equal function. May be NULL.
- * @param fnFreeEltFunc element free function. May be NULL.
- *
- * @return a new hash set
- */
 
 TIFFHashSet *TIFFHashSetNew(TIFFHashSetHashFunc fnHashFunc,
                             TIFFHashSetEqualFunc fnEqualFunc,
@@ -167,16 +199,6 @@ TIFFHashSet *TIFFHashSetNew(TIFFHashSetHashFunc fnHashFunc,
 /*                          TIFFHashSetSize()                           */
 /************************************************************************/
 
-/**
- * Returns the number of elements inserted in the hash set
- *
- * Note: this is not the internal size of the hash set
- *
- * @param set the hash set
- *
- * @return the number of elements in the hash set
- */
-
 int TIFFHashSetSize(const TIFFHashSet *set)
 {
     assert(set != NULL);
@@ -187,6 +209,19 @@ int TIFFHashSetSize(const TIFFHashSet *set)
 /*                      TIFFHashSetGetNewListElt()                      */
 /************************************************************************/
 
+/**
+ * @brief Acquire a detached node from the cache or libc allocator.
+ * @ingroup libtiff_private_hash
+ *
+ * Pops and decrements the recycling list when available, clearing its stale
+ * payload pointer; a freshly allocated node is uninitialised. The caller
+ * must initialise payload/link fields before linking. Does not invoke the
+ * disposer or emit diagnostics.
+ *
+ * @param[in,out] set Non-NULL live set with a consistent recycling
+ * list/count.
+ * @return A detached node, or NULL if fresh-node allocation fails.
+ */
 static TIFFList *TIFFHashSetGetNewListElt(TIFFHashSet *set)
 {
     if (set->psRecyclingList)
@@ -205,6 +240,19 @@ static TIFFList *TIFFHashSetGetNewListElt(TIFFHashSet *set)
 /*                      TIFFHashSetReturnListElt()                      */
 /************************************************************************/
 
+/**
+ * @brief Recycle a detached node or free it when the cache is full.
+ * @ingroup libtiff_private_hash
+ *
+ * Pushes the node onto the recycling list while fewer than 128 nodes are
+ * cached, otherwise calls free(). Does not dispose or dereference its
+ * payload; the caller must have completed element disposal/ownership
+ * handling first. Returns no status and emits no diagnostic.
+ *
+ * @param[in,out] set Non-NULL live set.
+ * @param[in] psList Detached owned node; must not be used by the caller
+ * afterward.
+ */
 static void TIFFHashSetReturnListElt(TIFFHashSet *set, TIFFList *psList)
 {
     if (set->nRecyclingListSize < 128)
@@ -223,6 +271,19 @@ static void TIFFHashSetReturnListElt(TIFFHashSet *set, TIFFList *psList)
 /*                      TIFFHashSetClearInternal()                      */
 /************************************************************************/
 
+/**
+ * @brief Unlink live buckets and dispose their elements as configured.
+ * @ingroup libtiff_private_hash
+ *
+ * Calls the disposer when installed, empties each bucket, and clears
+ * bRehash. Does not reset nSize or capacity metadata; Clear/Destroy callers
+ * finish that bookkeeping. Does not release a pre-existing recycling list or
+ * the bucket array. No status or direct diagnostic is provided.
+ *
+ * @param[in,out] set Non-NULL live set.
+ * @param[in] bFinalize true to free live nodes; false to recycle/free them
+ * through the cache.
+ */
 static void TIFFHashSetClearInternal(TIFFHashSet *set, bool bFinalize)
 {
     assert(set != NULL);
@@ -250,13 +311,15 @@ static void TIFFHashSetClearInternal(TIFFHashSet *set, bool bFinalize)
 /************************************************************************/
 
 /**
- * Destroy a list. Caller responsible for freeing data objects contained in
- * list elements.
+ * @brief Free a node chain without disposing its payload fields.
+ * @ingroup libtiff_private_hash
  *
- * @param psList pointer to list head.
+ * Walks psNext and frees nodes only. Appropriate for recycled nodes
+ * containing stale payload values. Does not free payload objects, invoke
+ * callbacks, or emit diagnostics.
  *
+ * @param[in] psList Owned list head, or NULL; chain nodes become invalid.
  */
-
 static void TIFFListDestroy(TIFFList *psList)
 {
     TIFFList *psCurrent = psList;
@@ -272,15 +335,6 @@ static void TIFFListDestroy(TIFFList *psList)
 /************************************************************************/
 /*                         TIFFHashSetDestroy()                         */
 /************************************************************************/
-
-/**
- * Destroys an allocated hash set.
- *
- * This function also frees the elements if a free function was
- * provided at the creation of the hash set.
- *
- * @param set the hash set
- */
 
 void TIFFHashSetDestroy(TIFFHashSet *set)
 {
@@ -298,15 +352,6 @@ void TIFFHashSetDestroy(TIFFHashSet *set)
 /*                          TIFFHashSetClear()                          */
 /************************************************************************/
 
-/**
- * Clear all elements from a hash set.
- *
- * This function also frees the elements if a free function was
- * provided at the creation of the hash set.
- *
- * @param set the hash set
- */
-
 void TIFFHashSetClear(TIFFHashSet *set)
 {
     TIFFHashSetClearInternal(set, false);
@@ -321,22 +366,6 @@ void TIFFHashSetClear(TIFFHashSet *set)
 /************************************************************************/
 /*                         TIFFHashSetForeach()                         */
 /************************************************************************/
-
-/**
- * Walk through the hash set and runs the provided function on all the
- * elements
- *
- * This function is provided the user_data argument of TIFFHashSetForeach.
- * It must return true to go on the walk through the hash set, or FALSE to
- * make it stop.
- *
- * Note : the structure of the hash set must *NOT* be modified during the
- * walk.
- *
- * @param set the hash set.
- * @param fnIterFunc the function called on each element.
- * @param user_data the user data provided to the function.
- */
 
 void TIFFHashSetForeach(TIFFHashSet *set, TIFFHashSetIterEltFunc fnIterFunc,
                         void *user_data)
@@ -363,6 +392,22 @@ void TIFFHashSetForeach(TIFFHashSet *set, TIFFHashSetIterEltFunc fnIterFunc,
 /*                         TIFFHashSetRehash()                          */
 /************************************************************************/
 
+/**
+ * @brief Replace the bucket array using the selected prime-capacity index.
+ * @ingroup libtiff_private_hash
+ *
+ * Allocation failure leaves the current array/nodes/elements unchanged; the
+ * caller owns any capacity-index rollback. Success invokes hash callbacks,
+ * relinks existing nodes, frees the old bucket array, updates capacity, and
+ * clears bRehash. Payload objects and list nodes do not move, but bucket
+ * views and traversal order change. HASH_DEBUG builds also update/log
+ * collision statistics. No direct allocation-failure diagnostic is emitted.
+ *
+ * @param[in,out] set Non-NULL set with nIndiceAllocatedSize within anPrimes
+ * bounds.
+ * @return true after relinking into the new bucket array; false if its
+ * calloc() fails.
+ */
 static bool TIFFHashSetRehash(TIFFHashSet *set)
 {
     int nNewAllocatedSize = anPrimes[set->nIndiceAllocatedSize];
@@ -406,6 +451,20 @@ static bool TIFFHashSetRehash(TIFFHashSet *set)
 /*                         TIFFHashSetFindPtr()                         */
 /************************************************************************/
 
+/**
+ * @brief Find the mutable payload slot for a matching key.
+ * @ingroup libtiff_private_hash
+ *
+ * Invokes callbacks without allocation or container mutation. The slot
+ * remains part of its node across rehash, but removal/recycling/destruction
+ * invalidates or repurposes it. Does not extend payload lifetime, take
+ * ownership, or emit diagnostics.
+ *
+ * @param[in] set Non-NULL live set.
+ * @param[in] elt Borrowed key supported by the hash/equality callbacks.
+ * @return A borrowed address of the matching node's payload slot, or NULL if
+ * absent.
+ */
 static void **TIFFHashSetFindPtr(TIFFHashSet *set, const void *elt)
 {
     const unsigned long nHashVal =
@@ -423,20 +482,6 @@ static void **TIFFHashSetFindPtr(TIFFHashSet *set, const void *elt)
 /************************************************************************/
 /*                         TIFFHashSetInsert()                          */
 /************************************************************************/
-
-/**
- * Inserts an element into a hash set.
- *
- * If the element was already inserted in the hash set, the previous
- * element is replaced by the new element. If a free function was provided,
- * it is used to free the previously inserted element
- *
- * @param set the hash set
- * @param elt the new element to insert in the hash set
- *
- * @return true if success. If false is returned, elt has not been inserted,
- * but TIFFHashSetInsert() will have run the free function if provided.
- */
 
 bool TIFFHashSetInsert(TIFFHashSet *set, void *elt)
 {
@@ -491,16 +536,6 @@ bool TIFFHashSetInsert(TIFFHashSet *set, void *elt)
 /*                         TIFFHashSetLookup()                          */
 /************************************************************************/
 
-/**
- * Returns the element found in the hash set corresponding to the element to
- * look up The element must not be modified.
- *
- * @param set the hash set
- * @param elt the element to look up in the hash set
- *
- * @return the element found in the hash set or NULL
- */
-
 void *TIFFHashSetLookup(TIFFHashSet *set, const void *elt)
 {
     assert(set != NULL);
@@ -515,6 +550,25 @@ void *TIFFHashSetLookup(TIFFHashSet *set, const void *elt)
 /*                     TIFFHashSetRemoveInternal()                      */
 /************************************************************************/
 
+/**
+ * @brief Remove a matching element with immediate or deferred shrink handling.
+ * @ingroup libtiff_private_hash
+ *
+ * Selects shrink handling before looking up the key. Immediate rehash
+ * failure restores the capacity index and returns before removing anything.
+ * Deferred handling can change index/rehash state even when the key is
+ * absent. A found node is unlinked, its payload is disposed if configured,
+ * its node is returned to the cache, and nSize decreases. No direct
+ * diagnostic is emitted.
+ *
+ * @param[in,out] set Non-NULL live set.
+ * @param[in] elt Borrowed removal key; may become invalid if it is the
+ * disposed element.
+ * @param[in] bDeferRehash true to mark a possible shrink for later rather
+ * than allocating now.
+ * @return true when removed; false if absent or immediate shrink allocation
+ * fails.
+ */
 static bool TIFFHashSetRemoveInternal(TIFFHashSet *set, const void *elt,
                                       bool bDeferRehash)
 {
@@ -568,15 +622,6 @@ static bool TIFFHashSetRemoveInternal(TIFFHashSet *set, const void *elt,
 /*                         TIFFHashSetRemove()                          */
 /************************************************************************/
 
-/**
- * Removes an element from a hash set
- *
- * @param set the hash set
- * @param elt the new element to remove from the hash set
- *
- * @return true if the element was in the hash set
- */
-
 bool TIFFHashSetRemove(TIFFHashSet *set, const void *elt)
 {
     return TIFFHashSetRemoveInternal(set, elt, false);
@@ -586,18 +631,6 @@ bool TIFFHashSetRemove(TIFFHashSet *set, const void *elt)
 /************************************************************************/
 /*                    TIFFHashSetRemoveDeferRehash()                    */
 /************************************************************************/
-
-/**
- * Removes an element from a hash set.
- *
- * This will defer potential rehashing of the set to later calls to
- * TIFFHashSetInsert() or TIFFHashSetRemove().
- *
- * @param set the hash set
- * @param elt the new element to remove from the hash set
- *
- * @return true if the element was in the hash set
- */
 
 bool TIFFHashSetRemoveDeferRehash(TIFFHashSet *set, const void *elt)
 {

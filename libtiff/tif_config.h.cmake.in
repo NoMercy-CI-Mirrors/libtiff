@@ -1,3 +1,14 @@
+/**
+ * @file tif_config.h
+ * @brief Define private build features, platform probes, and formatting helpers.
+ * @ingroup libtiff_private_configuration
+ *
+ * Generated for the current build. These definitions are implementation details,
+ * not installed application interfaces. Conditional features can be undefined.
+ * The public compatibility definitions shared with tiffconf.h retain their
+ * public documentation group.
+ */
+
 /* clang-format off */
 /* clang-format disabled because CMake scripts are very sensitive to the
  * formatting of this file. configure_file variables of type "@VAR@" are
@@ -9,143 +20,284 @@
 
 #include "tiffconf.h"
 
-/* Support CCITT Group 3 & 4 algorithms */
+/**
+ * @brief Repeat of the tiffconf.h definition of CCITT_SUPPORT.
+ * @ingroup libtiff_public_configuration
+ */
 #cmakedefine CCITT_SUPPORT 1
 
-/* Pick up YCbCr subsampling info from the JPEG data stream to support files
-   lacking the tag (default enabled). */
+/**
+ * @brief Repeat of the tiffconf.h definition of CHECK_JPEG_YCBCR_SUBSAMPLING.
+ * @ingroup libtiff_public_configuration
+ */
 #cmakedefine CHECK_JPEG_YCBCR_SUBSAMPLING 1
 
-/* enable partial strip reading for large strips (experimental) */
+/**
+ * @brief Define the experimental partial-strip-reading build marker.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine CHUNKY_STRIP_READ_SUPPORT 1
 
-/* Support C++ stream API (requires C++ compiler) */
+/**
+ * @brief Indicate inclusion of the C++ stream interface when defined.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine CXX_SUPPORT 1
 
-/* enable deferred strip/tile offset/size loading (experimental) */
+/**
+ * @brief Define the deferred strip/tile offset and byte-count loading marker.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine DEFER_STRILE_LOAD 1
 
-/* Define to 1 if you have the <assert.h> header file. */
+/**
+ * @brief Define to 1 if you have the `<assert.h>` header file.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine HAVE_ASSERT_H 1
 
-/* Define to 1 if you have the declaration of `optarg', and to 0 if you don't. */
+/**
+ * @brief Define whether the system declares optarg: 1 if declared, 0 otherwise.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine01 HAVE_DECL_OPTARG
 
-/* Define to 1 if you have the <fcntl.h> header file. */
+/**
+ * @brief Define to 1 if you have the `<fcntl.h>` header file.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine HAVE_FCNTL_H 1
 
-/* Define to 1 if fseeko (and presumably ftello) exists and is declared. */
+/**
+ * @brief Define to 1 if fseeko (and presumably ftello) exists and is declared.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine HAVE_FSEEKO 1
 
-/* Define to 1 if you have the `getopt' function. */
+/**
+ * @brief Define to 1 if you have the getopt function.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine HAVE_GETOPT 1
 
-/* Define to 1 if you have the <GLUT/glut.h> header file. */
+/**
+ * @brief Define to 1 if you have the `<GLUT/glut.h>` header file.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine HAVE_GLUT_GLUT_H 1
 
-/* Define to 1 if you have the <GL/glut.h> header file. */
+/**
+ * @brief Define to 1 if you have the `<GL/glut.h>` header file.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine HAVE_GL_GLUT_H 1
 
-/* Define to 1 if you have the <GL/glu.h> header file. */
+/**
+ * @brief Define to 1 if you have the `<GL/glu.h>` header file.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine HAVE_GL_GLU_H 1
 
-/* Define to 1 if you have the <GL/gl.h> header file. */
+/**
+ * @brief Define to 1 if you have the `<GL/gl.h>` header file.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine HAVE_GL_GL_H 1
 
-/* Define to 1 if you have the <io.h> header file. */
+/**
+ * @brief Define to 1 if you have the `<io.h>` header file.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine HAVE_IO_H 1
 
-/* Define to 1 if you have the `jbg_newlen' function. */
+/**
+ * @brief Define to 1 if you have the jbg_newlen function.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine HAVE_JBG_NEWLEN 1
 
-/* Define to 1 if you have the `mmap' function. */
+/**
+ * @brief Define to 1 if you have the mmap function.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine HAVE_MMAP 1
 
-/* Define to 1 if you have the <OpenGL/glu.h> header file. */
+/**
+ * @brief Define to 1 if you have the `<OpenGL/glu.h>` header file.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine HAVE_OPENGL_GLU_H 1
 
-/* Define to 1 if you have the <OpenGL/gl.h> header file. */
+/**
+ * @brief Define to 1 if you have the `<OpenGL/gl.h>` header file.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine HAVE_OPENGL_GL_H 1
 
-/* Define to 1 if you have the `setmode' function. */
+/**
+ * @brief Define to 1 if you have the setmode function.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine HAVE_SETMODE 1
 
-/* Define to 1 if you have the <strings.h> header file. */
+/**
+ * @brief Define to 1 if you have the `<strings.h>` header file.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine HAVE_STRINGS_H 1
 
-/* Define to 1 if you have the <sys/types.h> header file. */
+/**
+ * @brief Define to 1 if you have the `<sys/types.h>` header file.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine HAVE_SYS_TYPES_H 1
 
-/* Define to 1 if you have the <unistd.h> header file. */
+/**
+ * @brief Define to 1 if you have the `<unistd.h>` header file.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine HAVE_UNISTD_H 1
 
-/* 8/12 bit libjpeg dual mode enabled */
+/**
+ * @brief Enable the separate 8-bit/12-bit libjpeg integration when defined.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine JPEG_DUAL_MODE_8_12 1
 
-/* 8/12 bit dual mode JPEG built into libjpeg-turbo 3.0+ */
+/**
+ * @brief Indicate native 8-bit/12-bit support in libjpeg-turbo when defined.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine HAVE_JPEGTURBO_DUAL_MODE_8_12 1
 
-/* Support LERC compression */
+/**
+ * @brief Repeat of the tiffconf.h definition of LERC_SUPPORT.
+ * @ingroup libtiff_public_configuration
+ */
 #cmakedefine LERC_SUPPORT 1
 
-/* Define to 1 when building a static libtiff with LERC enabled. */
+/**
+ * @brief Select static-library linkage declarations for LERC when defined.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine LERC_STATIC
 
-/* 12bit libjpeg primary include file with path */
+/**
+ * @brief Name the configured 12-bit libjpeg header, including its path.
+ * @ingroup libtiff_private_configuration
+ */
 #define LIBJPEG_12_PATH "@LIBJPEG_12_PATH@"
 
-/* Support LZMA2 compression */
+/**
+ * @brief Indicate inclusion of LZMA2 compression support when defined.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine LZMA_SUPPORT 1
 
-/* Name of package */
+/**
+ * @brief Identify the configured package name.
+ * @ingroup libtiff_private_configuration
+ */
 #define PACKAGE "@PACKAGE_NAME@"
 
-/* Define to the address where bug reports for this package should be sent. */
+/**
+ * @brief Identify the configured bug-report destination.
+ * @ingroup libtiff_private_configuration
+ */
 #define PACKAGE_BUGREPORT "@PACKAGE_BUGREPORT@"
 
-/* Define to the full name of this package. */
+/**
+ * @brief Identify the full configured package name.
+ * @ingroup libtiff_private_configuration
+ */
 #define PACKAGE_NAME "@PACKAGE_NAME@"
 
-/* Define to the one symbol short name of this package. */
+/**
+ * @brief Identify the short package name used for distribution archives.
+ * @ingroup libtiff_private_configuration
+ */
 #define PACKAGE_TARNAME "@PACKAGE_TARNAME@"
 
-/* Define to the home page for this package. */
+/**
+ * @brief Identify the configured package home-page URL.
+ * @ingroup libtiff_private_configuration
+ */
 #define PACKAGE_URL "@PACKAGE_URL@"
 
-/* Size of size_t */
+/**
+ * @brief Define the size of size_t in bytes for this build.
+ * @ingroup libtiff_private_configuration
+ */
 #define SIZEOF_SIZE_T @SIZEOF_SIZE_T@
 
-/* Default size of the strip in bytes (when strip chopping enabled) */
+/**
+ * @brief Define the default target strip size in bytes.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine STRIP_SIZE_DEFAULT @STRIP_SIZE_DEFAULT@
 
-/** Maximum number of TIFF IFDs that libtiff can iterate through in a file. */
+/**
+ * @brief Limit the number of IFDs the library may traverse in a file.
+ * @ingroup libtiff_private_configuration
+ */
 #define TIFF_MAX_DIR_COUNT @TIFF_MAX_DIR_COUNT@
 
-/* define to use win32 IO system */
+/**
+ * @brief Select the native Windows I/O backend when defined.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine USE_WIN32_FILEIO 1
 
-/* Support WEBP compression */
+/**
+ * @brief Indicate inclusion of WebP compression support when defined.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine WEBP_SUPPORT 1
 
-/* Support ZSTD compression */
+/**
+ * @brief Indicate inclusion of Zstandard compression support when defined.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine ZSTD_SUPPORT 1
 
 
-/* Define WORDS_BIGENDIAN to 1 if your processor stores words with the most
-   significant byte first (like Motorola and SPARC, unlike Intel). */
+/**
+ * @brief Define CPU byte order: 1 for big-endian, 0 for little-endian.
+ * @ingroup libtiff_private_configuration
+ */
 #cmakedefine01 WORDS_BIGENDIAN
 
 #if !defined(__MINGW32__)
+/**
+ * @brief Provide the printf conversion fragment for size_t, without a percent sign.
+ * @ingroup libtiff_private_configuration
+ */
 #  define TIFF_SIZE_FORMAT "zu"
 #endif
 #if SIZEOF_SIZE_T == 8
+/**
+ * @brief Provide the printf conversion fragment for tmsize_t, without a percent sign.
+ * @ingroup libtiff_private_configuration
+ */
 #  define TIFF_SSIZE_FORMAT PRId64
 #  if defined(__MINGW32__)
+/**
+ * @brief Provide the printf conversion fragment for size_t, without a percent sign.
+ * @ingroup libtiff_private_configuration
+ */
 #    define TIFF_SIZE_FORMAT PRIu64
 #  endif
 #elif SIZEOF_SIZE_T == 4
+/**
+ * @brief Provide the printf conversion fragment for tmsize_t, without a percent sign.
+ * @ingroup libtiff_private_configuration
+ */
 #  define TIFF_SSIZE_FORMAT PRId32
 #  if defined(__MINGW32__)
+/**
+ * @brief Provide the printf conversion fragment for size_t, without a percent sign.
+ * @ingroup libtiff_private_configuration
+ */
 #    define TIFF_SIZE_FORMAT PRIu32
 #  endif
 #else

@@ -29,6 +29,11 @@
  * application extension capabilities.
  */
 
+/**
+ * @file tif_extension.c
+ * @brief Implement named client information and tag-extension queries.
+ */
+
 #include "tiffiop.h"
 
 int TIFFGetTagListCount(TIFF *tif)

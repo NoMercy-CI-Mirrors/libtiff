@@ -4,8 +4,8 @@ This file is just a placeholder; the entire documentation is now located
 as reStructuredText in the doc directory. To view the documentation
 as HTML, visit https://libtiff.gitlab.io/libtiff/ or
 http://www.simplesystems.org/libtiff/ or within the release package
-in the doc/html-prebuilt directory. The manual pages are
-located at doc/man-prebuilt.
+in the doc/sphinx/html-prebuilt directory. The manual pages are
+located at doc/sphinx/man-prebuilt.
 
 The release package can be downloaded at
 
@@ -53,7 +53,7 @@ before submitting it. AI tools are not considered authors, but their use
 should be disclosed, naming the tool and model used. The submitter must
 ensure that the contribution does not reproduce code or text with
 incompatible licensing. See the
-[AI policy](doc/project/ai-policy.rst) for full details
+[AI policy](doc/sphinx/project/ai-policy.rst) for full details
 ([online](https://libtiff.gitlab.io/libtiff/project/ai-policy.html)).
 
 Use and Copyright

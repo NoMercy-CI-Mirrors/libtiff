@@ -27,8 +27,26 @@
  *
  * Compression Scheme Configuration Support.
  */
+/**
+ * @file tif_compress.c
+ * @brief Register, look up and select compression schemes, and provide the
+ * default codec methods.
+ */
+
 #include "tiffiop.h"
 
+/**
+ * @brief Diagnose an unsupported encoder operation.
+ * @ingroup libtiff_private_codecs
+ *
+ * Looks up the name and invokes handle diagnostics; no buffer access,
+ * allocation or pixel I/O.
+ *
+ * @param[in] tif Non-NULL live handle; td_compression and tif_name are read
+ * for the diagnostic and codec state is unchanged.
+ * @param[in] method Borrowed method label used only during diagnostics.
+ * @return Minus one unconditionally.
+ */
 static int TIFFNoEncode(TIFF *tif, const char *method)
 {
     const TIFFCodec *c = TIFFFindCODEC(tif->tif_dir.td_compression);
@@ -72,6 +90,18 @@ int _TIFFNoTileEncode(TIFF *tif, uint8_t *pp, tmsize_t cc, uint16_t s)
     return (TIFFNoEncode(tif, "tile"));
 }
 
+/**
+ * @brief Diagnose an unsupported decoder operation.
+ * @ingroup libtiff_private_codecs
+ *
+ * Looks up the name and invokes handle diagnostics; no buffer access,
+ * allocation or pixel I/O.
+ *
+ * @param[in] tif Non-NULL live handle; td_compression and tif_name are read
+ * for the diagnostic and codec state is unchanged.
+ * @param[in] method Borrowed method label used only during diagnostics.
+ * @return Zero unconditionally.
+ */
 static int TIFFNoDecode(TIFF *tif, const char *method)
 {
     const TIFFCodec *c = TIFFFindCODEC(tif->tif_dir.td_compression);
@@ -87,6 +117,16 @@ static int TIFFNoDecode(TIFF *tif, const char *method)
     return (0);
 }
 
+/**
+ * @brief Accept a no-op codec tag fixup.
+ * @ingroup libtiff_private_codecs
+ *
+ * Ignores the handle; no state, allocation, I/O, diagnostics or ownership
+ * effects.
+ *
+ * @param[in] tif Handle (ignored).
+ * @return One unconditionally.
+ */
 static int _TIFFNoFixupTags(TIFF *tif)
 {
     (void)tif;
@@ -132,19 +172,56 @@ int _TIFFNoPreCode(TIFF *tif, uint16_t s)
     return (1);
 }
 
+/**
+ * @brief Accept a no-op codec setup or completion.
+ * @ingroup libtiff_private_codecs
+ *
+ * Ignores the handle; no state, allocation, I/O, diagnostics or ownership
+ * effects.
+ *
+ * @param[in] tif Handle (ignored).
+ * @return One unconditionally.
+ */
 static int _TIFFtrue(TIFF *tif)
 {
     (void)tif;
     return (1);
 }
+/**
+ * @brief Perform no codec close or cleanup work.
+ * @ingroup libtiff_private_codecs
+ *
+ * Ignores the handle; does not free codec state, flush, diagnose, allocate
+ * or transfer ownership.
+ *
+ * @param[in] tif Handle (ignored).
+ */
 static void _TIFFvoid(TIFF *tif) { (void)tif; }
 
+/**
+ * @brief Report an unknown codec compression ratio.
+ * @ingroup libtiff_private_codecs
+ *
+ * No state, allocation, I/O, diagnostics or ownership effects.
+ *
+ * @param[in] tif Handle (ignored).
+ * @return Zero for unknown.
+ */
 static uint64_t _TIFFDefaultGetMaxCompressionRatio(TIFF *tif)
 {
     (void)tif;
     return 0; /* unknown */
 }
 
+/**
+ * @brief Report the uncompressed ratio of one.
+ * @ingroup libtiff_private_codecs
+ *
+ * No state, allocation, I/O, diagnostics or ownership effects.
+ *
+ * @param[in] tif Handle (ignored).
+ * @return One unconditionally.
+ */
 static uint64_t _TIFFGetMaxCompressionRatioOne(TIFF *tif)
 {
     (void)tif;
@@ -204,11 +281,26 @@ uint64_t TIFFGetMaxCompressionRatio(TIFF *tif)
  * schemes can also override the builtin versions provided
  * by this library.
  */
+/**
+ * @brief Link a dynamically registered codec allocation.
+ * @ingroup libtiff_private_codecs
+ *
+ * The node, descriptor and copied name share one allocation released by
+ * unregister. Global list operations require external serialisation.
+ */
 typedef struct _codec
 {
+    /** @brief Next older registered node, borrowed within the global list. */
     struct _codec *next;
+    /** @brief Descriptor stored inside this node allocation. */
     TIFFCodec *info;
 } codec_t;
+/**
+ * @brief Head the newest-first registered codec list.
+ * @ingroup libtiff_private_codecs
+ *
+ * Process-global unsynchronised state; nodes are owned until unregister.
+ */
 static codec_t *registeredCODECS = NULL;
 
 const TIFFCodec *TIFFFindCODEC(uint16_t scheme)
@@ -274,13 +366,7 @@ void TIFFUnRegisterCODEC(TIFFCodec *c)
 /*                      TIFFGetConfiguredCODECs()                       */
 /************************************************************************/
 
-/**
- * Get list of configured codecs, both built-in and registered by user.
- * Caller is responsible to free this structure.
- *
- * @return returns array of TIFFCodec records (the last record should be NULL)
- * or NULL if function failed.
- */
+/* The public contract is documented with the declaration in tiffio.h. */
 
 TIFFCodec *TIFFGetConfiguredCODECs(void)
 {

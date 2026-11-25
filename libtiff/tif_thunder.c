@@ -22,6 +22,11 @@
  * OF THIS SOFTWARE.
  */
 
+/**
+ * @file tif_thunder.c
+ * @brief Implement the ThunderScan 4-bit run/delta decoder.
+ */
+
 #include "tiffiop.h"
 #include <assert.h>
 #ifdef THUNDER_SUPPORT
@@ -42,18 +47,87 @@
  * into a single byte.
  */
 // #define THUNDER_DATA 0x3f /* mask for 6-bit data */
+/**
+ * @brief Mask selecting the 2-bit code word in the top bits of a ThunderScan
+ * byte.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * The remaining low 6 bits carry the run count, packed deltas or raw pixel.
+ */
 #define THUNDER_CODE 0xc0 /* mask for 2-bit code word */
 /* code values */
-#define THUNDER_RUN 0x00        /* run of pixels w/ encoded count */
+/**
+ * @brief ThunderScan code word for a run of the previous pixel.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * The low 6 bits give the repeat count; a count of zero emits nothing.
+ */
+#define THUNDER_RUN 0x00 /* run of pixels w/ encoded count */
+/**
+ * @brief ThunderScan code word for three packed 2-bit pixel deltas.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * Deltas sit in bits 5-4, 3-2 and 1-0 and index twobitdeltas.
+ */
 #define THUNDER_2BITDELTAS 0x40 /* 3 pixels w/ encoded 2-bit deltas */
-#define DELTA2_SKIP 2           /* skip code for 2-bit deltas */
+/**
+ * @brief 2-bit delta value meaning "no pixel" in a THUNDER_2BITDELTAS byte.
+ * @ingroup libtiff_private_basic_codecs
+ */
+#define DELTA2_SKIP 2 /* skip code for 2-bit deltas */
+/**
+ * @brief ThunderScan code word for two packed 3-bit pixel deltas.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * Deltas sit in bits 5-3 and 2-0 and index threebitdeltas.
+ */
 #define THUNDER_3BITDELTAS 0x80 /* 2 pixels w/ encoded 3-bit deltas */
-#define DELTA3_SKIP 4           /* skip code for 3-bit deltas */
-#define THUNDER_RAW 0xc0        /* raw data encoded */
+/**
+ * @brief 3-bit delta value meaning "no pixel" in a THUNDER_3BITDELTAS byte.
+ * @ingroup libtiff_private_basic_codecs
+ */
+#define DELTA3_SKIP 4 /* skip code for 3-bit deltas */
+/**
+ * @brief ThunderScan code word for a literal 4-bit pixel.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * Same value as THUNDER_CODE; the pixel is in the low 4 bits.
+ */
+#define THUNDER_RAW 0xc0 /* raw data encoded */
 
+/**
+ * @brief Map two-bit delta codes to signed pixel increments.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * Indexed by a 2-bit delta field; index DELTA2_SKIP is never looked up.
+ */
 static const int twobitdeltas[4] = {0, 1, 0, -1};
+/**
+ * @brief Map three-bit delta codes to signed pixel increments.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * Indexed by a 3-bit delta field; index DELTA3_SKIP is never looked up.
+ */
 static const int threebitdeltas[8] = {0, 1, 2, 3, 0, -3, -2, -1};
 
+/**
+ * @brief Store a 4-bit pixel into the packed output if maxpixels has not
+ * been reached.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * Statement macro used by ThunderDecode(). Always sets the caller local
+ * lastpixel to (v) & 0xf, so later deltas are relative to it. If
+ * npixels < maxpixels it increments npixels and writes the nibble: an even
+ * pixel index stores it in the high nibble of op[0] (clearing the low
+ * nibble), an odd index ORs it into the low nibble and advances op. Pixels
+ * beyond maxpixels are dropped silently; ThunderDecode() reports the count
+ * mismatch afterwards. v is evaluated once; op is read and may be
+ * incremented once. No hidden control flow.
+ *
+ * @param[in,out] op Output byte-pointer lvalue, advanced after each odd
+ * pixel.
+ * @param[in] v Pixel value; only the low 4 bits are used.
+ */
 #define SETPIXEL(op, v)                                                        \
     {                                                                          \
         lastpixel = (v) & 0xf;                                                 \
@@ -66,6 +140,18 @@ static const int threebitdeltas[8] = {0, 1, 2, 3, 0, -3, -2, -1};
         }                                                                      \
     }
 
+/**
+ * @brief Validate four-bit single-plane ThunderScan decoding.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * Requires BitsPerSample four and either one sample or separate planes.
+ * Diagnoses unsupported settings; no allocation, I/O, buffer changes or
+ * ownership transfer.
+ *
+ * @param[in] tif Non-NULL live handle whose BitsPerSample, SamplesPerPixel
+ * and PlanarConfiguration are checked; serialise access.
+ * @return One for accepted layout, zero otherwise.
+ */
 static int ThunderSetupDecode(TIFF *tif)
 {
     static const char module[] = "ThunderSetupDecode";
@@ -90,6 +176,25 @@ static int ThunderSetupDecode(TIFF *tif)
     return (1);
 }
 
+/**
+ * @brief Expand one ThunderScan row into packed four-bit samples.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * Consumes raw/delta/run codes, writes high nibble first, and bounds
+ * emitted pixels by maxpixels. Updates raw cursor/counts; diagnoses too
+ * few/many pixels and clears the remaining packed tail on rejection.
+ * Requires nonnegative representable pixel count and ceil(maxpixels/2)
+ * destination bytes. No allocation/client I/O or ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live handle whose raw cursor and count are
+ * consumed and updated; serialise access.
+ * @param[out] op0 Borrowed writable packed four-bit output for maxpixels
+ * pixels.
+ * @param[in] maxpixels Nonnegative target pixel count with representable
+ * rounded packed size.
+ * @return One for exact pixel count, zero on mismatch; decoded pixels
+ * before the mismatch remain and the rest of the row is zeroed.
+ */
 static int ThunderDecode(TIFF *tif, uint8_t *op0, tmsize_t maxpixels)
 {
     static const char module[] = "ThunderDecode";
@@ -179,6 +284,24 @@ static int ThunderDecode(TIFF *tif, uint8_t *op0, tmsize_t maxpixels)
     return (1);
 }
 
+/**
+ * @brief Decode complete ThunderScan scanlines into caller storage.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * Requires positive cached scanline size, nonnegative extent divisible by
+ * it, and validated four-bit geometry. Calls ThunderDecode per row. On a
+ * failed row clears that entire row and the remaining requested output,
+ * leaving earlier rows and raw progress. No allocation/client I/O or
+ * ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live handle with validated four-bit geometry
+ * whose raw cursor and count are consumed; serialise access.
+ * @param[out] buf Borrowed writable decoded output covering the requested
+ * byte extent.
+ * @param[in] occ Nonnegative decoded output byte extent.
+ * @param[in] s Sample plane (ignored).
+ * @return One after complete rows, zero on fractional extent or failed row.
+ */
 static int ThunderDecodeRow(TIFF *tif, uint8_t *buf, tmsize_t occ, uint16_t s)
 {
     static const char module[] = "ThunderDecodeRow";

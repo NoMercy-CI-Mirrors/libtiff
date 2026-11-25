@@ -25,6 +25,11 @@
 /*
  * TIFF Library.
  */
+/**
+ * @file tif_error.c
+ * @brief Dispatch errors through per-handle and global callbacks.
+ */
+
 #include "tiffiop.h"
 
 TIFFErrorHandlerExt _TIFFerrorHandlerExt = NULL;

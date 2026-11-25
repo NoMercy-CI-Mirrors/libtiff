@@ -27,6 +27,11 @@
  *
  * Read and return a packed RGBA image.
  */
+/**
+ * @file tif_getimage.c
+ * @brief Read supported images into associated eight-bit RGBA rasters.
+ */
+
 #include "tiffiop.h"
 #include <limits.h>
 #include <math.h>
@@ -42,20 +47,54 @@ static int PickSeparateCase(TIFFRGBAImage *);
 static int BuildMapUaToAa(TIFFRGBAImage *img);
 static int BuildMapBitdepth16To8(TIFFRGBAImage *img);
 
+/**
+ * @brief Name the photometric tag in diagnostic messages.
+ * @ingroup libtiff_private_rgba
+ *
+ * Immutable library-lifetime storage; no ownership transfer.
+ */
 static const char photoTag[] = "PhotometricInterpretation";
 
 /*
  * Helper constants used in Orientation tag handling
  */
+/**
+ * @brief Select reversed raster row order.
+ * @ingroup libtiff_private_rgba
+ *
+ * Bit in the setorientation() result: the raster rows must be stored in
+ * reverse order relative to the image rows.
+ */
 #define FLIP_VERTICALLY 0x01
+/**
+ * @brief Select reversal within copied raster rows.
+ * @ingroup libtiff_private_rgba
+ *
+ * Bit in the setorientation() result: the pixels within each row must be
+ * stored in reverse order.
+ */
 #define FLIP_HORIZONTALLY 0x02
 
+/**
+ * @brief Reserve 1024 bytes for RGBA rejection messages.
+ * @ingroup libtiff_private_rgba
+ *
+ * Capacity in bytes, including the terminating null byte, of the emsg
+ * buffer passed to TIFFRGBAImageOK() and TIFFRGBAImageBegin(); callers
+ * must supply at least this much.
+ */
 #define EMSG_BUF_SIZE 1024
 
 /*
  * Color conversion constants. We will define display types here.
  */
 
+/**
+ * @brief Describe the fixed display transform used for Lab output.
+ * @ingroup libtiff_private_rgba
+ *
+ * Immutable library-lifetime storage; no ownership transfer.
+ */
 static const TIFFDisplay display_sRGB = {
     {/* XYZ -> luminance matrix */
      {3.2410f, -1.5374f, -0.4986f},
@@ -75,6 +114,12 @@ static const TIFFDisplay display_sRGB = {
     2.4f, /* Gamma values for the three guns */
 };
 
+/**
+ * @brief Map checked orientation numbers to diagnostic labels.
+ * @ingroup libtiff_private_rgba
+ *
+ * Immutable library-lifetime storage; no ownership transfer.
+ */
 static char const *const orientationStrings[] = {
     "not valid", /*0 for error printout */
     "TOPLEFT",   /*1 row 0 top, col 0 lhs */
@@ -86,6 +131,16 @@ static char const *const orientationStrings[] = {
     "RIGHTBOT",  /*7 row 0 rhs, col 0 bottom */
     "LEFTBOT"    /*8 row 0 lhs, col 0 bottom */
 };
+/**
+ * @brief Validate a TIFF orientation number.
+ * @ingroup libtiff_private_rgba
+ *
+ * Pure range test; no allocation, I/O, mutation, diagnostics, or ownership
+ * effect.
+ *
+ * @param[in] orientation Orientation code to check.
+ * @return Input orientation in 1..8, or zero otherwise.
+ */
 static uint16_t checkedOrientation(uint16_t orientation)
 {
     if (orientation < 1 || orientation > 8)
@@ -316,6 +371,17 @@ void TIFFRGBAImageEnd(TIFFRGBAImage *img)
     }
 }
 
+/**
+ * @brief Recognise CCITT fax compression schemes.
+ * @ingroup libtiff_private_rgba
+ *
+ * Queries the compression tag through the handle methods; assumes a
+ * configured directory. No output allocation or ownership transfer.
+ *
+ * @param[in] tif Non-NULL live handle with a current directory; only
+ * queried through TIFFGetField(). Serialise access externally.
+ * @return Nonzero for Fax3/Fax4/RLE/RLEW, zero otherwise.
+ */
 static int isCCITTCompression(TIFF *tif)
 {
     uint16_t compress;
@@ -661,6 +727,19 @@ int TIFFReadRGBAImage(TIFF *tif, uint32_t rwidth, uint32_t rheight,
                                      ORIENTATION_BOTLEFT, stop);
 }
 
+/**
+ * @brief Choose horizontal and vertical raster flips.
+ * @ingroup libtiff_private_rgba
+ *
+ * Normalises invalid requested orientation to bottom-left with a warning.
+ * Does not rotate or transpose; warns for requested/image orientation
+ * families requiring rotation. Mutates req_orientation; diagnostics can
+ * invoke callbacks. No allocation or pixel I/O.
+ *
+ * @param[in,out] img Non-NULL caller-owned RGBA state; its borrowed handle
+ * must remain live.
+ * @return Bitmask of FLIP_VERTICALLY and FLIP_HORIZONTALLY.
+ */
 static int setorientation(TIFFRGBAImage *img)
 {
     int flip_ret = 0;
@@ -774,6 +853,39 @@ static int setorientation(TIFFRGBAImage *img)
  * requested orientation and raster-origin.
  * Furthermore, row_offset and col_offset is checked to be 0 or positive and
  * req_orientation value is checked to be in enummeration range. */
+/**
+ * @brief Compute clipped raster placement and signed row steps.
+ * @ingroup libtiff_private_rgba
+ *
+ * Validates offsets, clips copy extents, calls setorientation(), computes a
+ * borrowed raster start pointer and checks signed row-skew bounds. Requires
+ * positive raster dimensions, valid tile width for tiled access, and
+ * sufficient representable allocation. Outputs can be partially assigned
+ * before a diagnosed rejection; no allocation or pixel I/O.
+ *
+ * @param[in,out] img Non-NULL caller-owned RGBA state; its borrowed handle
+ * must remain live. setorientation() may reset req_orientation.
+ * @param[in] raster Base of the caller's rwidth*rheight raster; not
+ * accessed, only used to compute *pp_raster_start.
+ * @param[in] rwidth Positive raster stride in pixels.
+ * @param[in] rheight Positive raster height; allocation product must be
+ * representable.
+ * @param[out] pwcpy Non-NULL clipped pixel-width output.
+ * @param[out] phcpy Non-NULL clipped row-count output.
+ * @param[out] pflip Non-NULL flip-mask output.
+ * @param[out] pp_raster_start Non-NULL borrowed start-pointer output within
+ * raster.
+ * @param[out] ptoskew Non-NULL signed destination row-step adjustment
+ * output in pixels.
+ * @param[out] py Non-NULL starting row-index output.
+ * @param[in] isTiled True for tiled traversal.
+ * @param[in] tilewidth Valid tile width in pixels when tiled, zero
+ * otherwise.
+ * @param[in] funcName Borrowed diagnostic function label.
+ * @return One on computed placement, zero on an invalid row or column
+ * offset or a row-skew overflow. An invalid requested orientation is
+ * normalised with a warning by setorientation(), not rejected.
+ */
 static int calcCopyToRasterParameter(TIFFRGBAImage *img, uint32_t *raster,
                                      uint32_t rwidth, uint32_t rheight,
                                      uint32_t *pwcpy, uint32_t *phcpy,
@@ -886,6 +998,19 @@ static int calcCopyToRasterParameter(TIFFRGBAImage *img, uint32_t *raster,
  * such a request rather than return wrong content.  bitoffset is the bit
  * position of the first sample to read (a multiple of 8 for bps >= 8).
  */
+/**
+ * @brief Reject a packed-sample offset between byte boundaries.
+ * @ingroup libtiff_private_rgba
+ *
+ * Tests bitoffset modulo eight and diagnoses rejection. No allocation,
+ * pixel I/O, ownership transfer, or independent geometry validation.
+ *
+ * @param[in] img Non-NULL caller-owned RGBA state; only read to build the
+ * diagnostic, which can invoke the handle's error callbacks.
+ * @param[in] module Borrowed diagnostic context string.
+ * @param[in] bitoffset Nonnegative sample bit offset.
+ * @return One for byte alignment, zero otherwise.
+ */
 static int checkColOffsetByteAligned(TIFFRGBAImage *img, const char *module,
                                      tmsize_t bitoffset)
 {
@@ -906,6 +1031,30 @@ static int checkColOffsetByteAligned(TIFFRGBAImage *img, const char *module,
  *	PlanarConfiguration contiguous if SamplesPerPixel > 1
  * or
  *	SamplesPerPixel == 1
+ */
+/**
+ * @brief Read contiguous tiles into a clipped RGBA raster.
+ * @ingroup libtiff_private_rgba
+ *
+ * Computes placement/skews, validates byte-aligned column offsets,
+ * allocates temporary decoded storage, reads striles, dispatches the
+ * installed put callback, then optionally flips horizontally. Temporary
+ * storage is released on normal completion and read-error exits; early
+ * arithmetic rejection paths need not undo prior state. Requires selected
+ * callbacks and valid positive raster geometry. stoponerr zero can continue
+ * after failed reads when storage exists, using partial or retained bytes.
+ * Reader/codec state, raster and file position can change before failure;
+ * no rollback or output ownership transfer.
+ *
+ * @param[in,out] img Non-NULL caller-owned RGBA state; its borrowed handle
+ * must remain live.
+ * @param[out] raster Borrowed writable positive rwidth*rheight pixel
+ * allocation, disjoint from state/input.
+ * @param[in] rwidth Positive raster stride in pixels.
+ * @param[in] rheight Positive raster height; allocation product must be
+ * representable.
+ * @return One after traversal including tolerated read errors, zero on
+ * detected fatal geometry/allocation/read failure.
  */
 static int gtTileContig(TIFFRGBAImage *img, uint32_t *raster, uint32_t rwidth,
                         uint32_t rheight)
@@ -1058,6 +1207,30 @@ static int gtTileContig(TIFFRGBAImage *img, uint32_t *raster, uint32_t rwidth,
  *	 SamplesPerPixel > 1
  *	 PlanarConfiguration separated
  * We assume that all such images are RGB.
+ */
+/**
+ * @brief Read separate-plane tiles into a clipped RGBA raster.
+ * @ingroup libtiff_private_rgba
+ *
+ * Computes placement/skews, validates byte-aligned column offsets,
+ * allocates temporary decoded storage, reads striles, dispatches the
+ * installed put callback, then optionally flips horizontally. Temporary
+ * storage is released on normal completion and read-error exits; early
+ * arithmetic rejection paths need not undo prior state. Requires selected
+ * callbacks and valid positive raster geometry. stoponerr zero can continue
+ * after failed reads when storage exists, using partial or retained bytes.
+ * Reader/codec state, raster and file position can change before failure;
+ * no rollback or output ownership transfer.
+ *
+ * @param[in,out] img Non-NULL caller-owned RGBA state; its borrowed handle
+ * must remain live.
+ * @param[out] raster Borrowed writable positive rwidth*rheight pixel
+ * allocation, disjoint from state/input.
+ * @param[in] rwidth Positive raster stride in pixels.
+ * @param[in] rheight Positive raster height; allocation product must be
+ * representable.
+ * @return One after traversal including tolerated read errors, zero on
+ * detected fatal geometry/allocation/read failure.
  */
 static int gtTileSeparate(TIFFRGBAImage *img, uint32_t *raster, uint32_t rwidth,
                           uint32_t rheight)
@@ -1286,6 +1459,30 @@ static int gtTileSeparate(TIFFRGBAImage *img, uint32_t *raster, uint32_t rwidth,
  * or
  *	SamplesPerPixel == 1
  */
+/**
+ * @brief Read contiguous strips into a clipped RGBA raster.
+ * @ingroup libtiff_private_rgba
+ *
+ * Computes placement/skews, validates byte-aligned column offsets, allocates
+ * temporary decoded storage, reads striles, dispatches the installed put
+ * callback, then optionally flips horizontally. Temporary storage is released
+ * on normal completion and read-error exits, but the per-strip integer-overflow
+ * rejection returns without releasing a buffer allocated in an earlier
+ * iteration (it leaks). Requires selected callbacks and valid positive raster
+ * geometry. stoponerr zero can continue after failed reads when storage exists,
+ * using partial or retained bytes. Reader/codec state, raster and file position
+ * can change before failure; no rollback or output ownership transfer.
+ *
+ * @param[in,out] img Non-NULL caller-owned RGBA state; its borrowed handle
+ * must remain live.
+ * @param[out] raster Borrowed writable positive rwidth*rheight pixel
+ * allocation, disjoint from state/input.
+ * @param[in] rwidth Positive raster stride in pixels.
+ * @param[in] rheight Positive raster height; allocation product must be
+ * representable.
+ * @return One after traversal including tolerated read errors, zero on
+ * detected fatal geometry/allocation/read failure.
+ */
 static int gtStripContig(TIFFRGBAImage *img, uint32_t *raster, uint32_t rwidth,
                          uint32_t rheight)
 {
@@ -1434,6 +1631,30 @@ static int gtStripContig(TIFFRGBAImage *img, uint32_t *raster, uint32_t rwidth,
  *	 SamplesPerPixel > 1
  *	 PlanarConfiguration separated
  * We assume that all such images are RGB.
+ */
+/**
+ * @brief Read separate-plane strips into a clipped RGBA raster.
+ * @ingroup libtiff_private_rgba
+ *
+ * Computes placement/skews, validates byte-aligned column offsets, allocates
+ * temporary decoded storage, reads striles, dispatches the installed put
+ * callback, then optionally flips horizontally. Temporary storage is released
+ * on normal completion and read-error exits, but the per-strip integer-overflow
+ * rejection returns without releasing a buffer allocated in an earlier
+ * iteration (it leaks). Requires selected callbacks and valid positive raster
+ * geometry. stoponerr zero can continue after failed reads when storage exists,
+ * using partial or retained bytes. Reader/codec state, raster and file position
+ * can change before failure; no rollback or output ownership transfer.
+ *
+ * @param[in,out] img Non-NULL caller-owned RGBA state; its borrowed handle
+ * must remain live.
+ * @param[out] raster Borrowed writable positive rwidth*rheight pixel
+ * allocation, disjoint from state/input.
+ * @param[in] rwidth Positive raster stride in pixels.
+ * @param[in] rheight Positive raster height; allocation product must be
+ * representable.
+ * @return One after traversal including tolerated read errors, zero on
+ * detected fatal geometry/allocation/read failure.
  */
 static int gtStripSeparate(TIFFRGBAImage *img, uint32_t *raster,
                            uint32_t rwidth, uint32_t rheight)
@@ -1626,15 +1847,52 @@ static int gtStripSeparate(TIFFRGBAImage *img, uint32_t *raster,
  * PickSeparateCase analyze the parameters and select
  * the appropriate "get" and "put" routine to use.
  */
+/**
+ * @brief Expand an operation eight times.
+ * @ingroup libtiff_private_rgba
+ *
+ * Expands to eight copies of op separated by semicolons, with no enclosing
+ * braces; use only as a statement in a braced context.
+ *
+ * @param[in] op Statement to expand; it may modify local cursors.
+ */
 #define REPEAT8(op)                                                            \
     REPEAT4(op);                                                               \
     REPEAT4(op)
+/**
+ * @brief Expand an operation four times.
+ * @ingroup libtiff_private_rgba
+ *
+ * Expands to four copies of op separated by semicolons, with no enclosing
+ * braces; use only as a statement in a braced context.
+ *
+ * @param[in] op Statement to expand; it may modify local cursors.
+ */
 #define REPEAT4(op)                                                            \
     REPEAT2(op);                                                               \
     REPEAT2(op)
+/**
+ * @brief Expand an operation twice.
+ * @ingroup libtiff_private_rgba
+ *
+ * Expands to two copies of op separated by semicolons, with no enclosing
+ * braces; use only as a statement in a braced context.
+ *
+ * @param[in] op Statement to expand; it may modify local cursors.
+ */
 #define REPEAT2(op)                                                            \
     op;                                                                        \
     op
+/**
+ * @brief Dispatch an eight-pixel unrolled remainder.
+ * @ingroup libtiff_private_rgba
+ *
+ * Expands to a switch that falls through to execute op x times for x in
+ * 1..7; other values execute nothing. x is evaluated once.
+ *
+ * @param[in] x Remaining pixel count.
+ * @param[in] op Statement to expand; it may modify local cursors.
+ */
 #define CASE8(x, op)                                                           \
     switch (x)                                                                 \
     {                                                                          \
@@ -1656,6 +1914,16 @@ static int gtStripSeparate(TIFFRGBAImage *img, uint32_t *raster,
         default:                                                               \
             break;                                                             \
     }
+/**
+ * @brief Dispatch a four-pixel unrolled remainder.
+ * @ingroup libtiff_private_rgba
+ *
+ * Expands to a switch that falls through to execute op x times for x in
+ * 1..3; other values execute nothing. x is evaluated once.
+ *
+ * @param[in] x Remaining pixel count.
+ * @param[in] op Statement to expand; it may modify local cursors.
+ */
 #define CASE4(x, op)                                                           \
     switch (x)                                                                 \
     {                                                                          \
@@ -1669,8 +1937,27 @@ static int gtStripSeparate(TIFFRGBAImage *img, uint32_t *raster,
         default:                                                               \
             break;                                                             \
     }
+/**
+ * @brief Supply an empty loop operation.
+ * @ingroup libtiff_private_rgba
+ *
+ * Expands to nothing; passed as the per-group op1 argument of UNROLL8()
+ * when no work is needed before each group of pixels.
+ */
 #define NOP
 
+/**
+ * @brief Traverse complete eight-pixel groups and their remainder.
+ * @ingroup libtiff_private_rgba
+ *
+ * Copies w into a local counter and, for each group of up to 8 pixels,
+ * runs op1 once followed by op2 once per pixel. w is evaluated once and is
+ * not modified. Expands to a braced block declaring a local _x.
+ *
+ * @param[in] w Pixel count for the row.
+ * @param[in] op1 Statement run once before each group, or NOP.
+ * @param[in] op2 Per-pixel statement; it may modify local cursors.
+ */
 #define UNROLL8(w, op1, op2)                                                   \
     {                                                                          \
         uint32_t _x;                                                           \
@@ -1685,6 +1972,18 @@ static int gtStripSeparate(TIFFRGBAImage *img, uint32_t *raster,
             CASE8(_x, op2);                                                    \
         }                                                                      \
     }
+/**
+ * @brief Traverse complete four-pixel groups and their remainder.
+ * @ingroup libtiff_private_rgba
+ *
+ * Copies w into a local counter and, for each group of up to 4 pixels,
+ * runs op1 once followed by op2 once per pixel. w is evaluated once and is
+ * not modified. Expands to a braced block declaring a local _x.
+ *
+ * @param[in] w Pixel count for the row.
+ * @param[in] op1 Statement run once before each group, or NOP.
+ * @param[in] op2 Per-pixel statement; it may modify local cursors.
+ */
 #define UNROLL4(w, op1, op2)                                                   \
     {                                                                          \
         uint32_t _x;                                                           \
@@ -1699,6 +1998,18 @@ static int gtStripSeparate(TIFFRGBAImage *img, uint32_t *raster,
             CASE4(_x, op2);                                                    \
         }                                                                      \
     }
+/**
+ * @brief Traverse complete two-pixel groups and their remainder.
+ * @ingroup libtiff_private_rgba
+ *
+ * Copies w into a local counter and, for each group of up to 2 pixels,
+ * runs op1 once followed by op2 once per pixel. w is evaluated once and is
+ * not modified. Expands to a braced block declaring a local _x.
+ *
+ * @param[in] w Pixel count for the row.
+ * @param[in] op1 Statement run once before each group, or NOP.
+ * @param[in] op2 Per-pixel statement; it may modify local cursors.
+ */
 #define UNROLL2(w, op1, op2)                                                   \
     {                                                                          \
         uint32_t _x;                                                           \
@@ -1714,12 +2025,37 @@ static int gtStripSeparate(TIFFRGBAImage *img, uint32_t *raster,
         }                                                                      \
     }
 
+/**
+ * @brief Advance three plane pointers by a source skew.
+ * @ingroup libtiff_private_rgba
+ *
+ * Adds skew to each of the three plane pointers; skew is evaluated three
+ * times.
+ *
+ * @param[in,out] r Red-plane cursor, advanced in place.
+ * @param[in,out] g Green-plane cursor, advanced in place.
+ * @param[in,out] b Blue-plane cursor, advanced in place.
+ * @param[in] skew Signed element offset added to each cursor.
+ */
 #define SKEW(r, g, b, skew)                                                    \
     {                                                                          \
         r += skew;                                                             \
         g += skew;                                                             \
         b += skew;                                                             \
     }
+/**
+ * @brief Advance four plane pointers by a source skew.
+ * @ingroup libtiff_private_rgba
+ *
+ * Adds skew to each of the four plane pointers; skew is evaluated four
+ * times.
+ *
+ * @param[in,out] r Red-plane cursor, advanced in place.
+ * @param[in,out] g Green-plane cursor, advanced in place.
+ * @param[in,out] b Blue-plane cursor, advanced in place.
+ * @param[in,out] a Alpha- or black-plane cursor, advanced in place.
+ * @param[in] skew Signed element offset added to each cursor.
+ */
 #define SKEW4(r, g, b, a, skew)                                                \
     {                                                                          \
         r += skew;                                                             \
@@ -1728,13 +2064,54 @@ static int gtStripSeparate(TIFFRGBAImage *img, uint32_t *raster,
         a += skew;                                                             \
     }
 
+/**
+ * @brief Set an opaque alpha byte in a packed word.
+ * @ingroup libtiff_private_rgba
+ *
+ * Value 0xff000000: the alpha (most significant) byte of a packed raster
+ * word set to fully opaque.
+ */
 #define A1 (((uint32_t)0xffL) << 24)
+/**
+ * @brief Pack RGB bytes with opaque alpha.
+ * @ingroup libtiff_private_rgba
+ *
+ * Each operand is evaluated once and converted to uint32_t; values must be
+ * in 0..255.
+ *
+ * @param[in] r Red byte, stored in bits 0-7.
+ * @param[in] g Green byte, stored in bits 8-15.
+ * @param[in] b Blue byte, stored in bits 16-23.
+ * @return Packed word with alpha 0xff.
+ */
 #define PACK(r, g, b)                                                          \
     ((uint32_t)(r) | ((uint32_t)(g) << 8) | ((uint32_t)(b) << 16) | A1)
+/**
+ * @brief Pack RGB and alpha bytes.
+ * @ingroup libtiff_private_rgba
+ *
+ * Each operand is evaluated once and converted to uint32_t; values must be
+ * in 0..255.
+ *
+ * @param[in] r Red byte, stored in bits 0-7.
+ * @param[in] g Green byte, stored in bits 8-15.
+ * @param[in] b Blue byte, stored in bits 16-23.
+ * @param[in] a Alpha byte, stored in bits 24-31.
+ * @return Packed word.
+ */
 #define PACK4(r, g, b, a)                                                      \
     ((uint32_t)(r) | ((uint32_t)(g) << 8) | ((uint32_t)(b) << 16) |            \
      ((uint32_t)(a) << 24))
 
+/**
+ * @brief Declare the concrete contiguous packer signature.
+ * @ingroup libtiff_private_rgba
+ *
+ * Expands to the start of a static function definition of type
+ * tileContigRoutine; the function body follows the macro.
+ *
+ * @param[in] name Identifier of the packer being defined.
+ */
 #define DECLAREContigPutFunc(name)                                             \
     static void name(TIFFRGBAImage *img, uint32_t *cp, uint32_t x, uint32_t y, \
                      uint32_t w, uint32_t h, int32_t fromskew, int32_t toskew, \
@@ -1742,6 +2119,34 @@ static int gtStripSeparate(TIFFRGBAImage *img, uint32_t *raster,
 
 /*
  * 8-bit palette => colormap/RGB
+ */
+/**
+ * @brief Pack 8bitcmaptile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 8-bit palette => colormap/RGB. Inputs and destination must not overlap.
+ * Assumes prior geometry, capacity, sample-format and table validation; no
+ * bounds checking or status result. Converts into numeric 0xAABBGGRR words with
+ * opaque alpha. No allocation, I/O, diagnostics, retained pointers, or
+ * ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source row adjustment in pixels (sample groups);
+ * scaled by this packer for byte/word/subsampling layout.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] pp Borrowed contiguous decoded samples with the selected
+ * format, padded groups, and alignment (uint16_t for sixteen-bit samples).
  */
 DECLAREContigPutFunc(put8bitcmaptile)
 {
@@ -1767,6 +2172,34 @@ DECLAREContigPutFunc(put8bitcmaptile)
 /*
  * 4-bit palette => colormap/RGB
  */
+/**
+ * @brief Pack 4bitcmaptile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 4-bit palette => colormap/RGB. Inputs and destination must not overlap.
+ * Assumes prior geometry, capacity, sample-format and table validation; no
+ * bounds checking or status result. Converts into numeric 0xAABBGGRR words with
+ * opaque alpha. No allocation, I/O, diagnostics, retained pointers, or
+ * ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source row adjustment in pixels (sample groups);
+ * scaled by this packer for byte/word/subsampling layout.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] pp Borrowed contiguous decoded samples with the selected
+ * format, padded groups, and alignment (uint16_t for sixteen-bit samples).
+ */
 DECLAREContigPutFunc(put4bitcmaptile)
 {
     uint32_t **PALmap = img->PALmap;
@@ -1785,6 +2218,34 @@ DECLAREContigPutFunc(put4bitcmaptile)
 
 /*
  * 2-bit palette => colormap/RGB
+ */
+/**
+ * @brief Pack 2bitcmaptile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 2-bit palette => colormap/RGB. Inputs and destination must not overlap.
+ * Assumes prior geometry, capacity, sample-format and table validation; no
+ * bounds checking or status result. Converts into numeric 0xAABBGGRR words with
+ * opaque alpha. No allocation, I/O, diagnostics, retained pointers, or
+ * ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source row adjustment in pixels (sample groups);
+ * scaled by this packer for byte/word/subsampling layout.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] pp Borrowed contiguous decoded samples with the selected
+ * format, padded groups, and alignment (uint16_t for sixteen-bit samples).
  */
 DECLAREContigPutFunc(put2bitcmaptile)
 {
@@ -1805,6 +2266,34 @@ DECLAREContigPutFunc(put2bitcmaptile)
 /*
  * 1-bit palette => colormap/RGB
  */
+/**
+ * @brief Pack 1bitcmaptile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 1-bit palette => colormap/RGB. Inputs and destination must not overlap.
+ * Assumes prior geometry, capacity, sample-format and table validation; no
+ * bounds checking or status result. Converts into numeric 0xAABBGGRR words with
+ * opaque alpha. No allocation, I/O, diagnostics, retained pointers, or
+ * ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source row adjustment in pixels (sample groups);
+ * scaled by this packer for byte/word/subsampling layout.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] pp Borrowed contiguous decoded samples with the selected
+ * format, padded groups, and alignment (uint16_t for sixteen-bit samples).
+ */
 DECLAREContigPutFunc(put1bitcmaptile)
 {
     uint32_t **PALmap = img->PALmap;
@@ -1823,6 +2312,34 @@ DECLAREContigPutFunc(put1bitcmaptile)
 
 /*
  * 8-bit greyscale => colormap/RGB
+ */
+/**
+ * @brief Pack greytile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 8-bit greyscale => colormap/RGB. Inputs and destination must not overlap.
+ * Assumes prior geometry, capacity, sample-format and table validation; no
+ * bounds checking or status result. Converts into numeric 0xAABBGGRR words with
+ * opaque alpha. No allocation, I/O, diagnostics, retained pointers, or
+ * ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source row adjustment in pixels (sample groups);
+ * scaled by this packer for byte/word/subsampling layout.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] pp Borrowed contiguous decoded samples with the selected
+ * format, padded groups, and alignment (uint16_t for sixteen-bit samples).
  */
 DECLAREContigPutFunc(putgreytile)
 {
@@ -1848,6 +2365,35 @@ DECLAREContigPutFunc(putgreytile)
 /*
  * 8-bit greyscale with associated alpha => colormap/RGBA
  */
+/**
+ * @brief Pack agreytile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * Eight-bit greyscale with alpha, selected for either alpha association. Inputs
+ * and destination must not overlap. Assumes prior geometry, capacity,
+ * sample-format and table validation; no bounds checking or status result.
+ * Converts into numeric 0xAABBGGRR words. This packer copies the gray map and
+ * alpha directly; it does not premultiply unassociated gray through UaToAa. No
+ * allocation, I/O, diagnostics, retained pointers, or ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source row adjustment in pixels (sample groups);
+ * scaled by this packer for byte/word/subsampling layout.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] pp Borrowed contiguous decoded samples with the selected
+ * format, padded groups, and alignment (uint16_t for sixteen-bit samples).
+ */
 DECLAREContigPutFunc(putagreytile)
 {
     int samplesperpixel = img->samplesperpixel;
@@ -1871,6 +2417,34 @@ DECLAREContigPutFunc(putagreytile)
 
 /*
  * 16-bit greyscale => colormap/RGB
+ */
+/**
+ * @brief Pack 16bitbwtile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 16-bit greyscale => colormap/RGB. Inputs and destination must not overlap.
+ * Assumes prior geometry, capacity, sample-format and table validation; no
+ * bounds checking or status result. Converts into numeric 0xAABBGGRR words with
+ * opaque alpha. No allocation, I/O, diagnostics, retained pointers, or
+ * ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source row adjustment in pixels (sample groups);
+ * scaled by this packer for byte/word/subsampling layout.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] pp Borrowed contiguous decoded samples with the selected
+ * format, padded groups, and alignment (uint16_t for sixteen-bit samples).
  */
 DECLAREContigPutFunc(put16bitbwtile)
 {
@@ -1901,6 +2475,34 @@ DECLAREContigPutFunc(put16bitbwtile)
 /*
  * 1-bit bilevel => colormap/RGB
  */
+/**
+ * @brief Pack 1bitbwtile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 1-bit bilevel => colormap/RGB. Inputs and destination must not overlap.
+ * Assumes prior geometry, capacity, sample-format and table validation; no
+ * bounds checking or status result. Converts into numeric 0xAABBGGRR words with
+ * opaque alpha. No allocation, I/O, diagnostics, retained pointers, or
+ * ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source row adjustment in pixels (sample groups);
+ * scaled by this packer for byte/word/subsampling layout.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] pp Borrowed contiguous decoded samples with the selected
+ * format, padded groups, and alignment (uint16_t for sixteen-bit samples).
+ */
 DECLAREContigPutFunc(put1bitbwtile)
 {
     uint32_t **BWmap = img->BWmap;
@@ -1919,6 +2521,34 @@ DECLAREContigPutFunc(put1bitbwtile)
 
 /*
  * 2-bit greyscale => colormap/RGB
+ */
+/**
+ * @brief Pack 2bitbwtile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 2-bit greyscale => colormap/RGB. Inputs and destination must not overlap.
+ * Assumes prior geometry, capacity, sample-format and table validation; no
+ * bounds checking or status result. Converts into numeric 0xAABBGGRR words with
+ * opaque alpha. No allocation, I/O, diagnostics, retained pointers, or
+ * ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source row adjustment in pixels (sample groups);
+ * scaled by this packer for byte/word/subsampling layout.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] pp Borrowed contiguous decoded samples with the selected
+ * format, padded groups, and alignment (uint16_t for sixteen-bit samples).
  */
 DECLAREContigPutFunc(put2bitbwtile)
 {
@@ -1939,6 +2569,34 @@ DECLAREContigPutFunc(put2bitbwtile)
 /*
  * 4-bit greyscale => colormap/RGB
  */
+/**
+ * @brief Pack 4bitbwtile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 4-bit greyscale => colormap/RGB. Inputs and destination must not overlap.
+ * Assumes prior geometry, capacity, sample-format and table validation; no
+ * bounds checking or status result. Converts into numeric 0xAABBGGRR words with
+ * opaque alpha. No allocation, I/O, diagnostics, retained pointers, or
+ * ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source row adjustment in pixels (sample groups);
+ * scaled by this packer for byte/word/subsampling layout.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] pp Borrowed contiguous decoded samples with the selected
+ * format, padded groups, and alignment (uint16_t for sixteen-bit samples).
+ */
 DECLAREContigPutFunc(put4bitbwtile)
 {
     uint32_t **BWmap = img->BWmap;
@@ -1957,6 +2615,34 @@ DECLAREContigPutFunc(put4bitbwtile)
 
 /*
  * 8-bit packed samples, no Map => RGB
+ */
+/**
+ * @brief Pack RGBcontig8bittile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 8-bit packed samples, no Map => RGB. Inputs and destination must not overlap.
+ * Assumes prior geometry, capacity, sample-format and table validation; no
+ * bounds checking or status result. Converts into numeric 0xAABBGGRR words with
+ * opaque alpha. No allocation, I/O, diagnostics, retained pointers, or
+ * ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source row adjustment in pixels (sample groups);
+ * scaled by this packer for byte/word/subsampling layout.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] pp Borrowed contiguous decoded samples with the selected
+ * format, padded groups, and alignment (uint16_t for sixteen-bit samples).
  */
 DECLAREContigPutFunc(putRGBcontig8bittile)
 {
@@ -1979,6 +2665,35 @@ DECLAREContigPutFunc(putRGBcontig8bittile)
  * 8-bit packed samples => RGBA w/ associated alpha
  * (known to have Map == NULL)
  */
+/**
+ * @brief Pack RGBAAcontig8bittile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 8-bit packed samples => RGBA w/ associated alpha (known to have Map == NULL).
+ * Inputs and destination must not overlap. Assumes prior geometry, capacity,
+ * sample-format and table validation; no bounds checking or status result.
+ * Converts into numeric 0xAABBGGRR words, copying the associated alpha sample
+ * into the alpha byte. No allocation, I/O, diagnostics, retained pointers, or
+ * ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source row adjustment in pixels (sample groups);
+ * scaled by this packer for byte/word/subsampling layout.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] pp Borrowed contiguous decoded samples with the selected
+ * format, padded groups, and alignment (uint16_t for sixteen-bit samples).
+ */
 DECLAREContigPutFunc(putRGBAAcontig8bittile)
 {
     int samplesperpixel = img->samplesperpixel;
@@ -1999,6 +2714,35 @@ DECLAREContigPutFunc(putRGBAAcontig8bittile)
 /*
  * 8-bit packed samples => RGBA w/ unassociated alpha
  * (known to have Map == NULL)
+ */
+/**
+ * @brief Pack RGBUAcontig8bittile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 8-bit packed samples => RGBA w/ unassociated alpha (known to have Map ==
+ * NULL). Inputs and destination must not overlap. Assumes prior geometry,
+ * capacity, sample-format and table validation; no bounds checking or status
+ * result. Converts into numeric 0xAABBGGRR words, premultiplying the colour
+ * samples by the unassociated alpha through UaToAa. No allocation, I/O,
+ * diagnostics, retained pointers, or ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source row adjustment in pixels (sample groups);
+ * scaled by this packer for byte/word/subsampling layout.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] pp Borrowed contiguous decoded samples with the selected
+ * format, padded groups, and alignment (uint16_t for sixteen-bit samples).
  */
 DECLAREContigPutFunc(putRGBUAcontig8bittile)
 {
@@ -2028,6 +2772,34 @@ DECLAREContigPutFunc(putRGBUAcontig8bittile)
 /*
  * 16-bit packed samples => RGB
  */
+/**
+ * @brief Pack RGBcontig16bittile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 16-bit packed samples => RGB. Inputs and destination must not overlap.
+ * Assumes prior geometry, capacity, sample-format and table validation; no
+ * bounds checking or status result. Converts into numeric 0xAABBGGRR words with
+ * opaque alpha. No allocation, I/O, diagnostics, retained pointers, or
+ * ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source row adjustment in pixels (sample groups);
+ * scaled by this packer for byte/word/subsampling layout.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] pp Borrowed contiguous decoded samples with the selected
+ * format, padded groups, and alignment (uint16_t for sixteen-bit samples).
+ */
 DECLAREContigPutFunc(putRGBcontig16bittile)
 {
     int samplesperpixel = img->samplesperpixel;
@@ -2052,6 +2824,35 @@ DECLAREContigPutFunc(putRGBcontig16bittile)
  * 16-bit packed samples => RGBA w/ associated alpha
  * (known to have Map == NULL)
  */
+/**
+ * @brief Pack RGBAAcontig16bittile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 16-bit packed samples => RGBA w/ associated alpha (known to have Map ==
+ * NULL). Inputs and destination must not overlap. Assumes prior geometry,
+ * capacity, sample-format and table validation; no bounds checking or status
+ * result. Converts into numeric 0xAABBGGRR words, copying the associated alpha
+ * sample into the alpha byte. No allocation, I/O, diagnostics, retained
+ * pointers, or ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source row adjustment in pixels (sample groups);
+ * scaled by this packer for byte/word/subsampling layout.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] pp Borrowed contiguous decoded samples with the selected
+ * format, padded groups, and alignment (uint16_t for sixteen-bit samples).
+ */
 DECLAREContigPutFunc(putRGBAAcontig16bittile)
 {
     int samplesperpixel = img->samplesperpixel;
@@ -2075,6 +2876,35 @@ DECLAREContigPutFunc(putRGBAAcontig16bittile)
 /*
  * 16-bit packed samples => RGBA w/ unassociated alpha
  * (known to have Map == NULL)
+ */
+/**
+ * @brief Pack RGBUAcontig16bittile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 16-bit packed samples => RGBA w/ unassociated alpha (known to have Map ==
+ * NULL). Inputs and destination must not overlap. Assumes prior geometry,
+ * capacity, sample-format and table validation; no bounds checking or status
+ * result. Converts into numeric 0xAABBGGRR words, premultiplying the colour
+ * samples by the unassociated alpha through UaToAa. No allocation, I/O,
+ * diagnostics, retained pointers, or ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source row adjustment in pixels (sample groups);
+ * scaled by this packer for byte/word/subsampling layout.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] pp Borrowed contiguous decoded samples with the selected
+ * format, padded groups, and alignment (uint16_t for sixteen-bit samples).
  */
 DECLAREContigPutFunc(putRGBUAcontig16bittile)
 {
@@ -2107,6 +2937,34 @@ DECLAREContigPutFunc(putRGBUAcontig16bittile)
  *
  * NB: The conversion of CMYK->RGB is *very* crude.
  */
+/**
+ * @brief Pack RGBcontig8bitCMYKtile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 8-bit packed CMYK samples w/o Map => RGB NB: The conversion of CMYK->RGB is
+ * very crude.. Inputs and destination must not overlap. Assumes prior geometry,
+ * capacity, sample-format and table validation; no bounds checking or status
+ * result. Converts into numeric 0xAABBGGRR words with opaque alpha. No
+ * allocation, I/O, diagnostics, retained pointers, or ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source row adjustment in pixels (sample groups);
+ * scaled by this packer for byte/word/subsampling layout.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] pp Borrowed contiguous decoded samples with the selected
+ * format, padded groups, and alignment (uint16_t for sixteen-bit samples).
+ */
 DECLAREContigPutFunc(putRGBcontig8bitCMYKtile)
 {
     int samplesperpixel = img->samplesperpixel;
@@ -2133,6 +2991,34 @@ DECLAREContigPutFunc(putRGBcontig8bitCMYKtile)
  *
  * NB: The conversion of CMYK->RGB is *very* crude.
  */
+/**
+ * @brief Pack RGBcontig8bitCMYKMaptile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 8-bit packed CMYK samples w/Map => RGB NB: The conversion of CMYK->RGB is
+ * very crude.. Inputs and destination must not overlap. Assumes prior geometry,
+ * capacity, sample-format and table validation; no bounds checking or status
+ * result. Converts into numeric 0xAABBGGRR words with opaque alpha. No
+ * allocation, I/O, diagnostics, retained pointers, or ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source row adjustment in pixels (sample groups);
+ * scaled by this packer for byte/word/subsampling layout.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] pp Borrowed contiguous decoded samples with the selected
+ * format, padded groups, and alignment (uint16_t for sixteen-bit samples).
+ */
 DECLAREContigPutFunc(putRGBcontig8bitCMYKMaptile)
 {
     int samplesperpixel = img->samplesperpixel;
@@ -2158,6 +3044,15 @@ DECLAREContigPutFunc(putRGBcontig8bitCMYKMaptile)
     }
 }
 
+/**
+ * @brief Declare the concrete separate-plane packer signature.
+ * @ingroup libtiff_private_rgba
+ *
+ * Expands to the start of a static function definition of type
+ * tileSeparateRoutine; the function body follows the macro.
+ *
+ * @param[in] name Identifier of the packer being defined.
+ */
 #define DECLARESepPutFunc(name)                                                \
     static void name(TIFFRGBAImage *img, uint32_t *cp, uint32_t x, uint32_t y, \
                      uint32_t w, uint32_t h, int32_t fromskew, int32_t toskew, \
@@ -2166,6 +3061,39 @@ DECLAREContigPutFunc(putRGBcontig8bitCMYKMaptile)
 
 /*
  * 8-bit unpacked samples => RGB
+ */
+/**
+ * @brief Pack RGBseparate8bittile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 8-bit unpacked samples => RGB. Inputs and destination must not overlap.
+ * Assumes prior geometry, capacity, sample-format and table validation; no
+ * bounds checking or status result. Converts into numeric 0xAABBGGRR words with
+ * opaque alpha. No allocation, I/O, diagnostics, retained pointers, or
+ * ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source pixels to skip after each row; added unscaled
+ * to every plane cursor, since each plane holds one sample per pixel.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] r Borrowed non-NULL red (or grey) plane of 8-bit
+ * samples; for one-channel images g and b alias it.
+ * @param[in] g Borrowed non-NULL green plane; the same pointer as r for
+ * one-channel images.
+ * @param[in] b Borrowed non-NULL blue plane; the same pointer as r for
+ * one-channel images.
+ * @param[in] a Not used by this packer; NULL when img->alpha is zero.
  */
 DECLARESepPutFunc(putRGBseparate8bittile)
 {
@@ -2184,6 +3112,39 @@ DECLARESepPutFunc(putRGBseparate8bittile)
 /*
  * 8-bit unpacked samples => RGBA w/ associated alpha
  */
+/**
+ * @brief Pack RGBAAseparate8bittile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 8-bit unpacked samples => RGBA w/ associated alpha. Inputs and destination
+ * must not overlap. Assumes prior geometry, capacity, sample-format and table
+ * validation; no bounds checking or status result. Converts into numeric
+ * 0xAABBGGRR words, copying the associated alpha sample into the alpha byte. No
+ * allocation, I/O, diagnostics, retained pointers, or ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source pixels to skip after each row; added unscaled
+ * to every plane cursor, since each plane holds one sample per pixel.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] r Borrowed non-NULL red (or grey) plane of 8-bit
+ * samples; for one-channel images g and b alias it.
+ * @param[in] g Borrowed non-NULL green plane; the same pointer as r for
+ * one-channel images.
+ * @param[in] b Borrowed non-NULL blue plane; the same pointer as r for
+ * one-channel images.
+ * @param[in] a Borrowed non-NULL associated-alpha plane.
+ */
 DECLARESepPutFunc(putRGBAAseparate8bittile)
 {
     (void)img;
@@ -2199,6 +3160,37 @@ DECLARESepPutFunc(putRGBAAseparate8bittile)
 
 /*
  * 8-bit unpacked CMYK samples => RGBA
+ */
+/**
+ * @brief Pack CMYKseparate8bittile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 8-bit unpacked CMYK samples => RGBA. Inputs and destination must not overlap.
+ * Assumes prior geometry, capacity, sample-format and table validation; no
+ * bounds checking or status result. Converts into numeric 0xAABBGGRR words with
+ * opaque alpha; the fourth plane is black (K), not alpha. No allocation, I/O,
+ * diagnostics, retained pointers, or ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source pixels to skip after each row; added unscaled
+ * to every plane cursor, since each plane holds one sample per pixel.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] r Borrowed non-NULL cyan plane of 8-bit samples.
+ * @param[in] g Borrowed non-NULL magenta plane.
+ * @param[in] b Borrowed non-NULL yellow plane.
+ * @param[in] a Borrowed non-NULL black (K) plane; PickSeparateCase() sets
+ * img->alpha so that the caller reads and passes the fourth plane.
  */
 DECLARESepPutFunc(putCMYKseparate8bittile)
 {
@@ -2222,6 +3214,40 @@ DECLARESepPutFunc(putCMYKseparate8bittile)
 
 /*
  * 8-bit unpacked samples => RGBA w/ unassociated alpha
+ */
+/**
+ * @brief Pack RGBUAseparate8bittile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 8-bit unpacked samples => RGBA w/ unassociated alpha. Inputs and destination
+ * must not overlap. Assumes prior geometry, capacity, sample-format and table
+ * validation; no bounds checking or status result. Converts into numeric
+ * 0xAABBGGRR words, premultiplying the colour samples by the unassociated alpha
+ * through UaToAa. No allocation, I/O, diagnostics, retained pointers, or
+ * ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source pixels to skip after each row; added unscaled
+ * to every plane cursor, since each plane holds one sample per pixel.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] r Borrowed non-NULL red (or grey) plane of 8-bit
+ * samples; for one-channel images g and b alias it.
+ * @param[in] g Borrowed non-NULL green plane; the same pointer as r for
+ * one-channel images.
+ * @param[in] b Borrowed non-NULL blue plane; the same pointer as r for
+ * one-channel images.
+ * @param[in] a Borrowed non-NULL unassociated-alpha plane.
  */
 DECLARESepPutFunc(putRGBUAseparate8bittile)
 {
@@ -2248,6 +3274,39 @@ DECLARESepPutFunc(putRGBUAseparate8bittile)
 /*
  * 16-bit unpacked samples => RGB
  */
+/**
+ * @brief Pack RGBseparate16bittile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 16-bit unpacked samples => RGB. Inputs and destination must not overlap.
+ * Assumes prior geometry, capacity, sample-format and table validation; no
+ * bounds checking or status result. Converts into numeric 0xAABBGGRR words with
+ * opaque alpha. No allocation, I/O, diagnostics, retained pointers, or
+ * ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source pixels to skip after each row; added unscaled
+ * to every plane cursor, counted in uint16_t samples.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] r Borrowed non-NULL red (or grey) plane of uint16_t (passed as
+ * unsigned char *) samples; for one-channel images g and b alias it.
+ * @param[in] g Borrowed non-NULL green plane; the same pointer as r for
+ * one-channel images.
+ * @param[in] b Borrowed non-NULL blue plane; the same pointer as r for
+ * one-channel images.
+ * @param[in] a Not used by this packer; NULL when img->alpha is zero.
+ */
 DECLARESepPutFunc(putRGBseparate16bittile)
 {
     uint16_t *wr = (uint16_t *)r;
@@ -2269,6 +3328,39 @@ DECLARESepPutFunc(putRGBseparate16bittile)
 /*
  * 16-bit unpacked samples => RGBA w/ associated alpha
  */
+/**
+ * @brief Pack RGBAAseparate16bittile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 16-bit unpacked samples => RGBA w/ associated alpha. Inputs and destination
+ * must not overlap. Assumes prior geometry, capacity, sample-format and table
+ * validation; no bounds checking or status result. Converts into numeric
+ * 0xAABBGGRR words, copying the associated alpha sample into the alpha byte. No
+ * allocation, I/O, diagnostics, retained pointers, or ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source pixels to skip after each row; added unscaled
+ * to every plane cursor, counted in uint16_t samples.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] r Borrowed non-NULL red (or grey) plane of uint16_t (passed as
+ * unsigned char *) samples; for one-channel images g and b alias it.
+ * @param[in] g Borrowed non-NULL green plane; the same pointer as r for
+ * one-channel images.
+ * @param[in] b Borrowed non-NULL blue plane; the same pointer as r for
+ * one-channel images.
+ * @param[in] a Borrowed non-NULL associated-alpha plane.
+ */
 DECLARESepPutFunc(putRGBAAseparate16bittile)
 {
     uint16_t *wr = (uint16_t *)r;
@@ -2289,6 +3381,40 @@ DECLARESepPutFunc(putRGBAAseparate16bittile)
 
 /*
  * 16-bit unpacked samples => RGBA w/ unassociated alpha
+ */
+/**
+ * @brief Pack RGBUAseparate16bittile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 16-bit unpacked samples => RGBA w/ unassociated alpha. Inputs and destination
+ * must not overlap. Assumes prior geometry, capacity, sample-format and table
+ * validation; no bounds checking or status result. Converts into numeric
+ * 0xAABBGGRR words, premultiplying the colour samples by the unassociated alpha
+ * through UaToAa. No allocation, I/O, diagnostics, retained pointers, or
+ * ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source pixels to skip after each row; added unscaled
+ * to every plane cursor, counted in uint16_t samples.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] r Borrowed non-NULL red (or grey) plane of uint16_t (passed as
+ * unsigned char *) samples; for one-channel images g and b alias it.
+ * @param[in] g Borrowed non-NULL green plane; the same pointer as r for
+ * one-channel images.
+ * @param[in] b Borrowed non-NULL blue plane; the same pointer as r for
+ * one-channel images.
+ * @param[in] a Borrowed non-NULL unassociated-alpha plane.
  */
 DECLARESepPutFunc(putRGBUAseparate16bittile)
 {
@@ -2319,6 +3445,34 @@ DECLARESepPutFunc(putRGBUAseparate16bittile)
 /*
  * 8-bit packed CIE L*a*b 1976 samples => RGB
  */
+/**
+ * @brief Pack contig8bitCIELab8 samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 8-bit packed CIE L a b 1976 samples => RGB. Inputs and destination must not
+ * overlap. Assumes prior geometry, capacity, sample-format and table
+ * validation; no bounds checking or status result. Converts into numeric
+ * 0xAABBGGRR words with opaque alpha. No allocation, I/O, diagnostics, retained
+ * pointers, or ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source row adjustment in pixels (sample groups);
+ * scaled by this packer for byte/word/subsampling layout.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] pp Borrowed contiguous decoded samples with the selected
+ * format, padded groups, and alignment (uint16_t for sixteen-bit samples).
+ */
 DECLAREContigPutFunc(putcontig8bitCIELab8)
 {
     float X, Y, Z;
@@ -2342,6 +3496,34 @@ DECLAREContigPutFunc(putcontig8bitCIELab8)
 
 /*
  * 16-bit packed CIE L*a*b 1976 samples => RGB
+ */
+/**
+ * @brief Pack contig8bitCIELab16 samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 16-bit packed CIE L a b 1976 samples => RGB. Inputs and destination must not
+ * overlap. Assumes prior geometry, capacity, sample-format and table
+ * validation; no bounds checking or status result. Converts into numeric
+ * 0xAABBGGRR words with opaque alpha. No allocation, I/O, diagnostics, retained
+ * pointers, or ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source row adjustment in pixels (sample groups);
+ * scaled by this packer for byte/word/subsampling layout.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] pp Borrowed contiguous decoded samples with the selected
+ * format, padded groups, and alignment (uint16_t for sixteen-bit samples).
  */
 DECLAREContigPutFunc(putcontig8bitCIELab16)
 {
@@ -2369,6 +3551,17 @@ DECLAREContigPutFunc(putcontig8bitCIELab16)
  * YCbCr -> RGB conversion and packing routines.
  */
 
+/**
+ * @brief Convert a local YCbCr group and pack an opaque output word.
+ * @ingroup libtiff_private_rgba
+ *
+ * Converts luma Y with the chroma values in the enclosing locals Cb and Cr
+ * through img->ycbcr and assigns the packed result to dst. Expands to a
+ * braced block declaring locals r, g and b; each operand is evaluated once.
+ *
+ * @param[out] dst Lvalue receiving the packed output word.
+ * @param[in] Y Luma sample value.
+ */
 #define YCbCrtoRGB(dst, Y)                                                     \
     {                                                                          \
         uint32_t r, g, b;                                                      \
@@ -2378,6 +3571,34 @@ DECLAREContigPutFunc(putcontig8bitCIELab16)
 
 /*
  * 8-bit packed YCbCr samples w/ 4,4 subsampling => RGB
+ */
+/**
+ * @brief Pack contig8bitYCbCr44tile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 8-bit packed YCbCr samples w/ 4,4 subsampling => RGB. Inputs and destination
+ * must not overlap. Assumes prior geometry, capacity, sample-format and table
+ * validation; no bounds checking or status result. Converts into numeric
+ * 0xAABBGGRR words with opaque alpha. No allocation, I/O, diagnostics, retained
+ * pointers, or ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source row adjustment in pixels (sample groups);
+ * scaled by this packer for byte/word/subsampling layout.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] pp Borrowed contiguous decoded samples with the selected
+ * format, padded groups, and alignment (uint16_t for sixteen-bit samples).
  */
 DECLAREContigPutFunc(putcontig8bitYCbCr44tile)
 {
@@ -2522,6 +3743,34 @@ DECLAREContigPutFunc(putcontig8bitYCbCr44tile)
 /*
  * 8-bit packed YCbCr samples w/ 4,2 subsampling => RGB
  */
+/**
+ * @brief Pack contig8bitYCbCr42tile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 8-bit packed YCbCr samples w/ 4,2 subsampling => RGB. Inputs and destination
+ * must not overlap. Assumes prior geometry, capacity, sample-format and table
+ * validation; no bounds checking or status result. Converts into numeric
+ * 0xAABBGGRR words with opaque alpha. No allocation, I/O, diagnostics, retained
+ * pointers, or ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source row adjustment in pixels (sample groups);
+ * scaled by this packer for byte/word/subsampling layout.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] pp Borrowed contiguous decoded samples with the selected
+ * format, padded groups, and alignment (uint16_t for sixteen-bit samples).
+ */
 DECLAREContigPutFunc(putcontig8bitYCbCr42tile)
 {
     uint32_t *cp1 = cp + w + toskew;
@@ -2628,6 +3877,34 @@ DECLAREContigPutFunc(putcontig8bitYCbCr42tile)
 /*
  * 8-bit packed YCbCr samples w/ 4,1 subsampling => RGB
  */
+/**
+ * @brief Pack contig8bitYCbCr41tile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 8-bit packed YCbCr samples w/ 4,1 subsampling => RGB. Inputs and destination
+ * must not overlap. Assumes prior geometry, capacity, sample-format and table
+ * validation; no bounds checking or status result. Converts into numeric
+ * 0xAABBGGRR words with opaque alpha. No allocation, I/O, diagnostics, retained
+ * pointers, or ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source row adjustment in pixels (sample groups);
+ * scaled by this packer for byte/word/subsampling layout.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] pp Borrowed contiguous decoded samples with the selected
+ * format, padded groups, and alignment (uint16_t for sixteen-bit samples).
+ */
 DECLAREContigPutFunc(putcontig8bitYCbCr41tile)
 {
     (void)y;
@@ -2681,6 +3958,34 @@ DECLAREContigPutFunc(putcontig8bitYCbCr41tile)
 
 /*
  * 8-bit packed YCbCr samples w/ 2,2 subsampling => RGB
+ */
+/**
+ * @brief Pack contig8bitYCbCr22tile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 8-bit packed YCbCr samples w/ 2,2 subsampling => RGB. Inputs and destination
+ * must not overlap. Assumes prior geometry, capacity, sample-format and table
+ * validation; no bounds checking or status result. Converts into numeric
+ * 0xAABBGGRR words with opaque alpha. No allocation, I/O, diagnostics, retained
+ * pointers, or ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source row adjustment in pixels (sample groups);
+ * scaled by this packer for byte/word/subsampling layout.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] pp Borrowed contiguous decoded samples with the selected
+ * format, padded groups, and alignment (uint16_t for sixteen-bit samples).
  */
 DECLAREContigPutFunc(putcontig8bitYCbCr22tile)
 {
@@ -2747,6 +4052,34 @@ DECLAREContigPutFunc(putcontig8bitYCbCr22tile)
 /*
  * 8-bit packed YCbCr samples w/ 2,1 subsampling => RGB
  */
+/**
+ * @brief Pack contig8bitYCbCr21tile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 8-bit packed YCbCr samples w/ 2,1 subsampling => RGB. Inputs and destination
+ * must not overlap. Assumes prior geometry, capacity, sample-format and table
+ * validation; no bounds checking or status result. Converts into numeric
+ * 0xAABBGGRR words with opaque alpha. No allocation, I/O, diagnostics, retained
+ * pointers, or ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source row adjustment in pixels (sample groups);
+ * scaled by this packer for byte/word/subsampling layout.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] pp Borrowed contiguous decoded samples with the selected
+ * format, padded groups, and alignment (uint16_t for sixteen-bit samples).
+ */
 DECLAREContigPutFunc(putcontig8bitYCbCr21tile)
 {
     (void)y;
@@ -2786,6 +4119,34 @@ DECLAREContigPutFunc(putcontig8bitYCbCr21tile)
 
 /*
  * 8-bit packed YCbCr samples w/ 1,2 subsampling => RGB
+ */
+/**
+ * @brief Pack contig8bitYCbCr12tile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 8-bit packed YCbCr samples w/ 1,2 subsampling => RGB. Inputs and destination
+ * must not overlap. Assumes prior geometry, capacity, sample-format and table
+ * validation; no bounds checking or status result. Converts into numeric
+ * 0xAABBGGRR words with opaque alpha. No allocation, I/O, diagnostics, retained
+ * pointers, or ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source row adjustment in pixels (sample groups);
+ * scaled by this packer for byte/word/subsampling layout.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] pp Borrowed contiguous decoded samples with the selected
+ * format, padded groups, and alignment (uint16_t for sixteen-bit samples).
  */
 DECLAREContigPutFunc(putcontig8bitYCbCr12tile)
 {
@@ -2830,6 +4191,34 @@ DECLAREContigPutFunc(putcontig8bitYCbCr12tile)
 /*
  * 8-bit packed YCbCr samples w/ no subsampling => RGB
  */
+/**
+ * @brief Pack contig8bitYCbCr11tile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 8-bit packed YCbCr samples w/ no subsampling => RGB. Inputs and destination
+ * must not overlap. Assumes prior geometry, capacity, sample-format and table
+ * validation; no bounds checking or status result. Converts into numeric
+ * 0xAABBGGRR words with opaque alpha. No allocation, I/O, diagnostics, retained
+ * pointers, or ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source row adjustment in pixels (sample groups);
+ * scaled by this packer for byte/word/subsampling layout.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] pp Borrowed contiguous decoded samples with the selected
+ * format, padded groups, and alignment (uint16_t for sixteen-bit samples).
+ */
 DECLAREContigPutFunc(putcontig8bitYCbCr11tile)
 {
     (void)y;
@@ -2855,6 +4244,36 @@ DECLAREContigPutFunc(putcontig8bitYCbCr11tile)
 /*
  * 8-bit packed YCbCr samples w/ no subsampling => RGB
  */
+/**
+ * @brief Pack separate8bitYCbCr11tile samples into RGBA words.
+ * @ingroup libtiff_private_rgba
+ *
+ * 8-bit packed YCbCr samples w/ no subsampling => RGB. Inputs and destination
+ * must not overlap. Assumes prior geometry, capacity, sample-format and table
+ * validation; no bounds checking or status result. Converts into numeric
+ * 0xAABBGGRR words with opaque alpha. No allocation, I/O, diagnostics, retained
+ * pointers, or ownership transfer.
+ *
+ * @param[in] img Borrowed initialised conversion state with the maps/format
+ * selected for this packer.
+ * @param[out] cp Borrowed writable output region covering w by h pixels and
+ * all signed row steps.
+ * @param[in] x Horizontal coordinate or scratch loop value; default packers
+ * do not retain it.
+ * @param[in] y Vertical coordinate; default packers do not retain it.
+ * @param[in] w Positive visible width compatible with the selected
+ * sampling/packing case.
+ * @param[in] h Positive visible row count, with full padded sampling groups
+ * available in input.
+ * @param[in] fromskew Source pixels to skip after each row; added unscaled
+ * to every plane cursor, since each plane holds one sample per pixel.
+ * @param[in] toskew Signed destination adjustment in uint32_t pixels after
+ * each visible row.
+ * @param[in] r Borrowed non-NULL Y plane of 8-bit samples.
+ * @param[in] g Borrowed non-NULL Cb plane.
+ * @param[in] b Borrowed non-NULL Cr plane.
+ * @param[in] a Not used by this packer; NULL when img->alpha is zero.
+ */
 DECLARESepPutFunc(putseparate8bitYCbCr11tile)
 {
     (void)y;
@@ -2876,11 +4295,38 @@ DECLARESepPutFunc(putseparate8bitYCbCr11tile)
 }
 #undef YCbCrtoRGB
 
+/**
+ * @brief Check a reference endpoint against conversion integer bounds.
+ * @ingroup libtiff_private_rgba
+ *
+ * Strict comparisons also reject NaN. Pure arithmetic without side effects,
+ * allocation, diagnostics, or ownership effects.
+ *
+ * @param[in] f Reference endpoint value.
+ * @return One inside the accepted open interval, zero otherwise.
+ */
 static int isInRefBlackWhiteRange(float f)
 {
     return (f > (float)(-0x7FFFFFFF + 128) && f < (float)0x7FFFFFFF);
 }
 
+/**
+ * @brief Allocate and initialise RGBA YCbCr contribution tables.
+ * @ingroup libtiff_private_rgba
+ *
+ * Reuses or allocates the correctly sized trailing-table block, fetches
+ * defaulted coefficients/endpoints, rejects NaN coefficients, a green
+ * coefficient that compares exactly equal to zero (TIFF_FLOAT_EQ is an exact
+ * test, so a tiny nonzero value is accepted) and out-of-range
+ * ReferenceBlackWhite endpoints, then initialises tables. On later failure the
+ * allocation remains reader-owned for End; no pixel I/O.
+ * Getters/diagnostics can invoke callbacks.
+ *
+ * @param[in,out] img Non-NULL caller-owned RGBA state; its borrowed handle
+ * must remain live.
+ * @return One on setup, zero on invalid coefficients or endpoints, or on
+ * allocation failure.
+ */
 static int initYCbCrConversion(TIFFRGBAImage *img)
 {
     static const char module[] = "initYCbCrConversion";
@@ -2932,6 +4378,24 @@ static int initYCbCrConversion(TIFFRGBAImage *img)
     return 1;
 }
 
+/**
+ * @brief Prepare Lab state and select an 8- or 16-bit packer.
+ * @ingroup libtiff_private_rgba
+ *
+ * Fetches the white point and rejects it only when y compares exactly equal
+ * to zero or is NaN (TIFF_FLOAT_EQ is an exact test; x is not checked).
+ * Converts it to XYZ with Y=100, allocates/reuses reader-owned state and
+ * initialises the sRGB display tables. Getters/diagnostics can invoke
+ * callbacks; no pixel I/O. The current colour initialiser always returns
+ * zero, so its negative-status cleanup branch is dormant; if reached, it
+ * would free img->cielab without clearing it, and TIFFRGBAImageEnd() would
+ * then free it again. State is otherwise released by End.
+ *
+ * @param[in,out] img Non-NULL caller-owned RGBA state; its borrowed handle
+ * must remain live.
+ * @return Borrowed static packer callback, or NULL for unsupported
+ * depth/detected setup failure; code remains live with the library.
+ */
 static tileContigRoutine initCIELabConversion(TIFFRGBAImage *img)
 {
     static const char module[] = "initCIELabConversion";
@@ -2983,6 +4447,19 @@ static tileContigRoutine initCIELabConversion(TIFFRGBAImage *img)
  * is setup so that put*bwtile (below) can retrieve 8/bitspersample
  * pixel values simply by indexing into the table with one
  * number.
+ */
+/**
+ * @brief Build byte-indexed packed grayscale expansion tables.
+ * @ingroup libtiff_private_rgba
+ *
+ * Requires a valid Map and supported bit depth. Allocates combined
+ * pointer/pixel storage owned by img until End; existing BWmap must be NULL
+ * to avoid leaks. Diagnostics report allocation failure, leaving NULL. No
+ * pixel I/O.
+ *
+ * @param[in,out] img Non-NULL caller-owned RGBA state; its borrowed handle
+ * must remain live.
+ * @return One on table construction, zero on allocation failure.
  */
 static int makebwmap(TIFFRGBAImage *img)
 {
@@ -3052,6 +4529,20 @@ static int makebwmap(TIFFRGBAImage *img)
  * of the data samples to [0,255] --for display.  This
  * process also handles inverting B&W images when needed.
  */
+/**
+ * @brief Build sample scaling and grayscale unpacking maps.
+ * @ingroup libtiff_private_rgba
+ *
+ * Allocates reader-owned Map, maps to 0..255 with inversion for miniswhite,
+ * treats sixteen-bit input via eight-bit reduction, and optionally builds
+ * BWmap then releases Map. Requires supported nonzero bit depth and fresh
+ * pointers. Allocation failures can retain partial state for End;
+ * diagnostics can run. No pixel I/O.
+ *
+ * @param[in,out] img Non-NULL caller-owned RGBA state; its borrowed handle
+ * must remain live.
+ * @return One after map setup, zero on allocation/helper failure.
+ */
 static int setupMap(TIFFRGBAImage *img)
 {
     int32_t x, range;
@@ -3097,6 +4588,18 @@ static int setupMap(TIFFRGBAImage *img)
     return 1;
 }
 
+/**
+ * @brief Infer whether copied palette entries use eight or sixteen bits.
+ * @ingroup libtiff_private_rgba
+ *
+ * Scans all three copied arrays for entries >=256. Requires 2^bitspersample
+ * entries per array. No mutation, allocation, I/O, diagnostics or ownership
+ * transfer.
+ *
+ * @param[in] img Non-NULL caller-owned RGBA state; only its copied colormap
+ * arrays and bit depth are read.
+ * @return Sixteen if any entry is >=256, otherwise eight.
+ */
 static int checkcmap(TIFFRGBAImage *img)
 {
     uint16_t *r = img->redcmap;
@@ -3110,6 +4613,17 @@ static int checkcmap(TIFFRGBAImage *img)
     return 8;
 }
 
+/**
+ * @brief Reduce all copied palette entries to their high byte.
+ * @ingroup libtiff_private_rgba
+ *
+ * Mutates reader-owned copied arrays in place; requires 2^bitspersample
+ * entries each. No allocation, I/O, diagnostics, ownership change or error
+ * status.
+ *
+ * @param[in,out] img Non-NULL caller-owned RGBA state; its borrowed handle
+ * must remain live.
+ */
 static void cvtcmap(TIFFRGBAImage *img)
 {
     uint16_t *r = img->redcmap;
@@ -3133,6 +4647,18 @@ static void cvtcmap(TIFFRGBAImage *img)
  * is setup so that put*cmaptile (below) can retrieve 8/bitspersample
  * pixel values simply by indexing into the table with one
  * number.
+ */
+/**
+ * @brief Build byte-indexed packed palette expansion tables.
+ * @ingroup libtiff_private_rgba
+ *
+ * Requires valid eight-bit palette entries and bit depth 1/2/4/8. Allocates
+ * combined pointer/pixel storage owned by img until End; PALmap must
+ * initially be NULL. Reports allocation failure; no pixel I/O.
+ *
+ * @param[in,out] img Non-NULL caller-owned RGBA state; its borrowed handle
+ * must remain live.
+ * @return One on construction, zero on allocation failure.
  */
 static int makecmap(TIFFRGBAImage *img)
 {
@@ -3199,6 +4725,22 @@ static int makecmap(TIFFRGBAImage *img)
  * Construct any mapping table used
  * by the associated put routine.
  */
+/**
+ * @brief Build the lookup maps needed by a selected photometric case.
+ * @ingroup libtiff_private_rgba
+ *
+ * Builds a sample scaling Map through setupMap() for grayscale images and
+ * for RGB, YCbCr and Separated images that are not 8-bit (grayscale also
+ * gets BWmap, and its Map is then released). For palette images, reduces
+ * 16-bit colormap entries to 8 bits or warns when assuming an old eight-bit
+ * palette, and builds PALmap only when bitspersample is at most 8. Allocations
+ * and copied palette changes remain reader-owned until End, including partial
+ * failure state. No pixel I/O.
+ *
+ * @param[in,out] img Non-NULL caller-owned RGBA state; its borrowed handle
+ * must remain live.
+ * @return One after applicable map setup, zero on helper failure.
+ */
 static int buildMap(TIFFRGBAImage *img)
 {
     switch (img->photometric)
@@ -3239,6 +4781,21 @@ static int buildMap(TIFFRGBAImage *img)
 
 /*
  * Select the appropriate conversion routine for packed data.
+ */
+/**
+ * @brief Select contiguous get/put callbacks for the conversion.
+ * @ingroup libtiff_private_rgba
+ *
+ * Examines photometric, channel count, depth, alpha and YCbCr subsampling;
+ * can build reader-owned maps/conversion state and diagnose failure.
+ * Supports enumerated subsampling pairs and rejects image extents smaller
+ * than their sampling block. Updates callbacks before returning; partial
+ * allocations remain for End. No pixel reads.
+ *
+ * @param[in,out] img Non-NULL caller-owned RGBA state; its borrowed handle
+ * must remain live.
+ * @return One if both callbacks selected, zero on unsupported layout or
+ * helper failure.
  */
 static int PickContigCase(TIFFRGBAImage *img)
 {
@@ -3428,6 +4985,20 @@ static int PickContigCase(TIFFRGBAImage *img)
  * NB: we assume that unpacked single channel data is directed
  *	 to the "packed routines.
  */
+/**
+ * @brief Select separate-plane get/put callbacks for the conversion.
+ * @ingroup libtiff_private_rgba
+ *
+ * Supports enumerated grayscale/RGB/CMYK and 1x1 YCbCr cases, with
+ * applicable alpha/depth maps. CMYK uses the fourth plane through the alpha
+ * input slot. Updates callbacks and can allocate or diagnose; partial state
+ * remains for End. No pixel reads.
+ *
+ * @param[in,out] img Non-NULL caller-owned RGBA state; its borrowed handle
+ * must remain live.
+ * @return One if both callbacks selected, zero on unsupported layout or
+ * helper failure.
+ */
 static int PickSeparateCase(TIFFRGBAImage *img)
 {
     img->get = TIFFIsTiled(img->tif) ? gtTileSeparate : gtStripSeparate;
@@ -3507,6 +5078,18 @@ static int PickSeparateCase(TIFFRGBAImage *img)
     return ((img->get != NULL) && (img->put.separate != NULL));
 }
 
+/**
+ * @brief Build the unassociated-to-associated eight-bit channel map.
+ * @ingroup libtiff_private_rgba
+ *
+ * Requires UaToAa NULL, allocates 65536 reader-owned bytes indexed by
+ * (alpha<<8)|value, and stores (value*alpha+127)/255. Released by End.
+ * Reports allocation failure; no pixel I/O.
+ *
+ * @param[in,out] img Non-NULL caller-owned RGBA state; its borrowed handle
+ * must remain live.
+ * @return One on construction, zero on allocation failure.
+ */
 static int BuildMapUaToAa(TIFFRGBAImage *img)
 {
     static const char module[] = "BuildMapUaToAa";
@@ -3528,6 +5111,18 @@ static int BuildMapUaToAa(TIFFRGBAImage *img)
     return 1;
 }
 
+/**
+ * @brief Build rounded sixteen-to-eight-bit sample reduction.
+ * @ingroup libtiff_private_rgba
+ *
+ * Requires Bitdepth16To8 NULL; allocates 65536 reader-owned bytes storing
+ * (value+128)/257. Released by End. Reports allocation failure; no pixel
+ * I/O.
+ *
+ * @param[in,out] img Non-NULL caller-owned RGBA state; its borrowed handle
+ * must remain live.
+ * @return One on construction, zero on allocation failure.
+ */
 static int BuildMapBitdepth16To8(TIFFRGBAImage *img)
 {
     static const char module[] = "BuildMapBitdepth16To8";
@@ -3749,3 +5344,37 @@ int TIFFReadRGBATileExt(TIFF *tif, uint32_t col, uint32_t row, uint32_t *raster,
 
     return ok;
 }
+
+/**
+ * @def GREY(x)
+ * @brief Append a grayscale-map entry to the expansion table.
+ * @ingroup libtiff_private_rgba
+ *
+ * Looks up x in the enclosing Map, stores it in the local c and appends
+ * PACK(c, c, c) at the local cursor p. x is evaluated once. Defined inside
+ * makebwmap() only.
+ *
+ * @param[in] x Sample value used as the Map index.
+ */
+/**
+ * @def CVT(x)
+ * @brief Reduce a palette entry to its high byte.
+ * @ingroup libtiff_private_rgba
+ *
+ * Evaluates x once and returns its high byte as uint16_t; used by
+ * cvtcmap() to reduce 16-bit colormap entries.
+ *
+ * @param[in] x Sixteen-bit colormap entry.
+ * @return x >> 8.
+ */
+/**
+ * @def CMAP(x)
+ * @brief Append a palette-map entry to the expansion table.
+ * @ingroup libtiff_private_rgba
+ *
+ * Stores x in the local c and appends the packed low bytes of the
+ * colormap entries r[c], g[c] and b[c] at the local cursor p. x is
+ * evaluated once. Defined inside makecmap() only.
+ *
+ * @param[in] x Palette index.
+ */

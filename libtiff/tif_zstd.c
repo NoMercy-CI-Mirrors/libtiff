@@ -22,6 +22,11 @@
  * OF THIS SOFTWARE.
  */
 
+/**
+ * @file tif_zstd.c
+ * @brief Implement predictor-aware ZSTD streaming compression.
+ */
+
 #include "tiffiop.h"
 #ifdef ZSTD_SUPPORT
 /*
@@ -39,19 +44,46 @@
 /*
  * State block for each open TIFF file using ZSTD compression/decompression.
  */
+/**
+ * @brief Own ZSTD streams predictor prefix and output cursor.
+ * @ingroup libtiff_private_zstd
+ *
+ * Codec-owned state must remain live until cleanup. Internal buffers and
+ * dependency objects have the individual ownership described below;
+ * borrowed parent methods must remain callable.
+ */
 typedef struct
 {
+    /** @brief Predictor prefix, first in the codec state. */
     TIFFPredictorState predict;
+    /**
+     * @brief Owned dependency decompression stream; released by
+     * ZSTD_freeDStream.
+     */
     ZSTD_DStream *dstream;
+    /**
+     * @brief Owned dependency compression stream; released by ZSTD_freeCStream.
+     */
     ZSTD_CStream *cstream;
-    int compression_level; /* compression level */
+    /**
+     * @brief Cached level applied on the next compression-stream
+     * initialisation.
+     */
+    int compression_level;
+    /** @brief Dependency output descriptor borrowing the handle raw buffer. */
     ZSTD_outBuffer out_buffer;
-    int state; /* state flags */
+    /**
+     * @brief Decode/encode initialisation flags; switching modes releases the
+     * old stream.
+     */
+    int state;
 #define LSTATE_INIT_DECODE 0x01
 #define LSTATE_INIT_ENCODE 0x02
 
-    TIFFVGetMethod vgetparent; /* super-class method */
-    TIFFVSetMethod vsetparent; /* super-class method */
+    /** @brief Borrowed parent tag getter restored during cleanup. */
+    TIFFVGetMethod vgetparent;
+    /** @brief Borrowed parent tag setter restored during cleanup. */
+    TIFFVSetMethod vsetparent;
 } ZSTDState;
 
 #define GetZSTDState(tif) ((ZSTDState *)(tif)->tif_data)
@@ -61,12 +93,33 @@ typedef struct
 static int ZSTDEncode(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s);
 static int ZSTDDecode(TIFF *tif, uint8_t *op, tmsize_t occ, uint16_t s);
 
+/**
+ * @brief Accept ZSTD tag fixup without changes.
+ * @ingroup libtiff_private_zstd
+ *
+ * No allocation, I/O, diagnostics, state or ownership effects.
+ *
+ * @param[in] tif Unused handle.
+ * @return One unconditionally.
+ */
 static int ZSTDFixupTags(TIFF *tif)
 {
     (void)tif;
     return 1;
 }
 
+/**
+ * @brief Switch ZSTD state into decode mode.
+ * @ingroup libtiff_private_zstd
+ *
+ * Frees any previous compression stream and clears its pointer, then sets
+ * decode flags. Invalidates compression-stream views; no raw/pixel I/O,
+ * diagnostics or output allocation. Requires initialised state.
+ *
+ * @param[in,out] tif Non-NULL live ZSTD handle with valid
+ * predictor-prefixed state; serialise operations.
+ * @return One unconditionally.
+ */
 static int ZSTDSetupDecode(TIFF *tif)
 {
     ZSTDState *sp = ZSTDDecoderState(tif);
@@ -87,6 +140,20 @@ static int ZSTDSetupDecode(TIFF *tif)
 
 /*
  * Setup state for decoding a strip.
+ */
+/**
+ * @brief Create or reset the ZSTD decompression stream for a strile.
+ * @ingroup libtiff_private_zstd
+ *
+ * Ensures decode setup, lazily creates a dependency-owned DStream and
+ * resets it. Stream remains codec-owned for cleanup even after init
+ * failure. Diagnoses dependency allocation/init errors; no pixel reads or
+ * caller storage ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live ZSTD handle with valid
+ * predictor-prefixed state; serialise operations.
+ * @param[in] s Unused sample-plane argument.
+ * @return One after reset, zero on dependency allocation/init failure.
  */
 static int ZSTDPreDecode(TIFF *tif, uint16_t s)
 {
@@ -121,6 +188,27 @@ static int ZSTDPreDecode(TIFF *tif, uint16_t s)
     return 1;
 }
 
+/**
+ * @brief Decompress cached ZSTD input into caller output.
+ * @ingroup libtiff_private_zstd
+ *
+ * Requires decode mode and initialised DStream. Repeatedly decompresses
+ * until output fills, frame ends or input exhausts. On dependency error or
+ * short output zeroes the unfilled tail and diagnoses, without committing
+ * local raw cursor consumption; stream/output may already change. On
+ * success advances rawcp and reduces rawcc. Does not require consuming a
+ * complete frame when the requested output fills. No allocation owned by
+ * caller, client I/O or ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live ZSTD handle with valid
+ * predictor-prefixed state; serialise operations.
+ * @param[out] op Borrowed writable occ-byte decoded output, disjoint from
+ * raw input/state.
+ * @param[in] occ Nonnegative decoded byte extent representable by size_t.
+ * @param[in] s Unused sample-plane argument.
+ * @return One when the requested output is filled, zero on
+ * dependency/short-output failure.
+ */
 static int ZSTDDecode(TIFF *tif, uint8_t *op, tmsize_t occ, uint16_t s)
 {
     static const char module[] = "ZSTDDecode";
@@ -170,6 +258,18 @@ static int ZSTDDecode(TIFF *tif, uint8_t *op, tmsize_t occ, uint16_t s)
     return 1;
 }
 
+/**
+ * @brief Switch ZSTD state into encode mode.
+ * @ingroup libtiff_private_zstd
+ *
+ * Frees any previous decompression stream and clears its pointer, then sets
+ * encode flags. No pixel I/O or caller-owned output allocation; dependency
+ * views are invalidated.
+ *
+ * @param[in,out] tif Non-NULL live ZSTD handle with valid
+ * predictor-prefixed state; serialise operations.
+ * @return One unconditionally.
+ */
 static int ZSTDSetupEncode(TIFF *tif)
 {
     ZSTDState *sp = ZSTDEncoderState(tif);
@@ -188,6 +288,22 @@ static int ZSTDSetupEncode(TIFF *tif)
 
 /*
  * Reset encoding state at the start of a strip.
+ */
+/**
+ * @brief Create and initialise a ZSTD compression stream for a strile.
+ * @ingroup libtiff_private_zstd
+ *
+ * Ensures encode mode, lazily creates CStream, initialises it at the cached
+ * compression level and attaches the raw output buffer. Requires positive
+ * usable raw capacity. Dependency stream remains codec-owned on later
+ * failure; diagnoses dependency allocation/init errors. No payload flush or
+ * input ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live ZSTD handle with valid
+ * predictor-prefixed state; serialise operations.
+ * @param[in] s Unused sample-plane argument.
+ * @return One after initialisation, zero on dependency allocation/init
+ * failure.
  */
 static int ZSTDPreEncode(TIFF *tif, uint16_t s)
 {
@@ -227,6 +343,24 @@ static int ZSTDPreEncode(TIFF *tif, uint16_t s)
 
 /*
  * Encode a chunk of pixels.
+ */
+/**
+ * @brief Compress input through the active ZSTD stream.
+ * @ingroup libtiff_private_zstd
+ *
+ * Requires successful preencode and live positive-capacity raw storage.
+ * Consumes borrowed input synchronously, flushing full output buffers via
+ * TIFFFlushData1. Dependency/flush failures diagnose where applicable and
+ * leave partial stream, cache and file progress. Input bytes are not
+ * changed; no ownership transfer or rollback.
+ *
+ * @param[in,out] tif Non-NULL live ZSTD handle with valid
+ * predictor-prefixed state; serialise operations.
+ * @param[in] bp Borrowed readable cc-byte input, not retained or modified.
+ * @param[in] cc Nonnegative input byte extent representable by size_t.
+ * @param[in] s Unused sample-plane argument.
+ * @return One when input has been consumed, zero on dependency/flush
+ * failure.
  */
 static int ZSTDEncode(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
 {
@@ -270,6 +404,20 @@ static int ZSTDEncode(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
 /*
  * Finish off an encoded strip by flushing it.
  */
+/**
+ * @brief Finish the ZSTD frame and flush its remaining output.
+ * @ingroup libtiff_private_zstd
+ *
+ * Repeatedly ends the active stream and flushes produced bytes. Dependency
+ * or I/O failure can leave an incomplete frame and changed state/file
+ * bytes. Requires successful preencode and valid raw capacity. Does not
+ * write the IFD or promise durability; no ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live ZSTD handle with valid
+ * predictor-prefixed state; serialise operations.
+ * @return One after frame completion and buffer flushes, zero on
+ * dependency/I/O failure.
+ */
 static int ZSTDPostEncode(TIFF *tif)
 {
     static const char module[] = "ZSTDPostEncode";
@@ -297,6 +445,19 @@ static int ZSTDPostEncode(TIFF *tif)
     return 1;
 }
 
+/**
+ * @brief Release ZSTD streams state and chained codec methods.
+ * @ingroup libtiff_private_zstd
+ *
+ * Restores predictor and saved tag hooks, frees dependency streams with
+ * their matching ZSTD free functions, frees outer Ext state, clears
+ * tif_data and installs default callbacks. Invalidates state/stream views.
+ * Does not finish frames, flush payload, close the handle or return a
+ * status.
+ *
+ * @param[in,out] tif Non-NULL live ZSTD handle with valid
+ * predictor-prefixed state; serialise operations.
+ */
 static void ZSTDCleanup(TIFF *tif)
 {
     ZSTDState *sp = GetZSTDState(tif);
@@ -324,6 +485,24 @@ static void ZSTDCleanup(TIFF *tif)
     _TIFFSetDefaultCompressionState(tif);
 }
 
+/**
+ * @brief Store ZSTD compression level or delegate another tag assignment.
+ * @ingroup libtiff_private_zstd
+ *
+ * TIFFTAG_ZSTD_LEVEL consumes int, stores it even outside
+ * 1..ZSTD_maxCLevel(), warns for that range and returns success. Stream
+ * reinitialisation applies it later. Other tags follow parent variadic
+ * contracts; no ownership transfer for the level. Callbacks/diagnostics can
+ * mutate state.
+ *
+ * @param[in,out] tif Non-NULL live ZSTD handle with valid
+ * predictor-prefixed state; serialise operations.
+ * @param[in] tag Pseudo-tag or delegated tag identifier.
+ * @param[in,out] ap Live tag-specific va_list consumed synchronously; not
+ * retained.
+ * @return One for level assignment including warned values, otherwise
+ * parent status.
+ */
 static int ZSTDVSetField(TIFF *tif, uint32_t tag, va_list ap)
 {
     static const char module[] = "ZSTDVSetField";
@@ -347,6 +526,21 @@ static int ZSTDVSetField(TIFF *tif, uint32_t tag, va_list ap)
     /*NOTREACHED*/
 }
 
+/**
+ * @brief Retrieve ZSTD compression level or delegate another tag query.
+ * @ingroup libtiff_private_zstd
+ *
+ * TIFFTAG_ZSTD_LEVEL consumes a non-NULL int* and writes the cached level.
+ * Other tags follow parent variadic contracts. No allocation or ownership
+ * transfer for the level.
+ *
+ * @param[in,out] tif Non-NULL live ZSTD handle with valid
+ * predictor-prefixed state; serialise operations.
+ * @param[in] tag Pseudo-tag or delegated tag identifier.
+ * @param[in,out] ap Live tag-specific va_list consumed synchronously; not
+ * retained.
+ * @return One for level retrieval, otherwise parent status.
+ */
 static int ZSTDVGetField(TIFF *tif, uint32_t tag, va_list ap)
 {
     ZSTDState *sp = GetZSTDState(tif);
@@ -362,11 +556,28 @@ static int ZSTDVGetField(TIFF *tif, uint32_t tag, va_list ap)
     return 1;
 }
 
+/**
+ * @brief Define the ZSTD compression-level pseudo-tag.
+ * @ingroup libtiff_private_zstd
+ *
+ * Immutable library-lifetime metadata merged into a handle; no caller
+ * ownership transfer.
+ */
 static const TIFFField ZSTDFields[] = {
     {TIFFTAG_ZSTD_LEVEL, 0, 0, TIFF_ANY, 0, TIFF_SETGET_INT, FIELD_PSEUDO, TRUE,
      FALSE, "ZSTD compression_level", NULL},
 };
 
+/**
+ * @brief Report the ZSTD expansion allocation heuristic.
+ * @ingroup libtiff_private_zstd
+ *
+ * Returns a fixed estimate without handle inspection, I/O, diagnostics,
+ * allocation or state changes; not a universal bound.
+ *
+ * @param[in] tif Unused handle.
+ * @return Thirty-three thousand.
+ */
 static uint64_t ZSTDGetMaxCompressionRatio(TIFF *tif)
 {
     (void)tif;
@@ -444,3 +655,52 @@ bad:
     return 0;
 }
 #endif /* ZSTD_SUPPORT */
+
+/**
+ * @def LSTATE_INIT_DECODE
+ * @brief Bit 0x01 of the codec state field: decoding has been set up.
+ * @ingroup libtiff_private_zstd
+ *
+ * Set by ZSTDSetupDecode(). Each setup first tears down the other mode, if
+ * active, and clears the field.
+ */
+
+/**
+ * @def LSTATE_INIT_ENCODE
+ * @brief Bit 0x02 of the codec state field: encoding has been set up.
+ * @ingroup libtiff_private_zstd
+ *
+ * Set by ZSTDSetupEncode(). Each setup first tears down the other mode, if
+ * active, and clears the field.
+ */
+
+/**
+ * @def GetZSTDState(tif)
+ * @brief Cast tif->tif_data to the ZSTDState.
+ * @ingroup libtiff_private_zstd
+ *
+ * tif is evaluated once. Requires the codec to be initialised (tif_data
+ * non-NULL).
+ *
+ * @param[in] tif Handle whose codec state is returned.
+ */
+
+/**
+ * @def ZSTDDecoderState(tif)
+ * @brief Alias of GetZSTDState(), returning the ZSTDState for decoding.
+ * @ingroup libtiff_private_zstd
+ *
+ * tif is evaluated once. Requires the codec to be initialised.
+ *
+ * @param[in] tif Handle whose codec state is returned.
+ */
+
+/**
+ * @def ZSTDEncoderState(tif)
+ * @brief Alias of GetZSTDState(), returning the ZSTDState for encoding.
+ * @ingroup libtiff_private_zstd
+ *
+ * tif is evaluated once. Requires the codec to be initialised.
+ *
+ * @param[in] tif Handle whose codec state is returned.
+ */

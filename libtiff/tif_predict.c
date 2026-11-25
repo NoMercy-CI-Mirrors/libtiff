@@ -27,6 +27,11 @@
  *
  * Predictor Tag Support (used by multiple codecs).
  */
+/**
+ * @file tif_predict.c
+ * @brief Implement integer and floating-point Predictor tag transforms.
+ */
+
 #include "tif_predict.h"
 #include "tiffiop.h"
 
@@ -60,6 +65,21 @@ static int PredictorEncodeRow(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s);
 static int PredictorEncodeTile(TIFF *tif, uint8_t *bp0, tmsize_t cc0,
                                uint16_t s);
 
+/**
+ * @brief Validate predictor format and cache stride and row extent.
+ * @ingroup libtiff_private_predictor
+ *
+ * Accepts no predictor, integer horizontal 8/16/32/64-bit samples, or
+ * floating-point 16/24/32/64-bit samples. Derives contiguous sample stride
+ * or separate stride one and a positive decoded row size. Diagnoses
+ * unsupported settings; no pixel I/O or owned result allocation. Cached
+ * state may change before failure.
+ *
+ * @param[in,out] tif Non-NULL live handle whose tif_data begins with a
+ * valid TIFFPredictorState; serialise codec operations.
+ * @return One for accepted setup, zero on unsupported predictor/format or
+ * zero row size.
+ */
 static int PredictorSetup(TIFF *tif)
 {
     static const char module[] = "PredictorSetup";
@@ -124,6 +144,20 @@ static int PredictorSetup(TIFF *tif)
     return 1;
 }
 
+/**
+ * @brief Chain parent decoder setup and install predictor decoding.
+ * @ingroup libtiff_private_predictor
+ *
+ * Invokes parent setup first without undoing its effects on later failure.
+ * Selects accumulation, wraps row/strile callbacks, and disables ordinary
+ * postdecode swapping where the predictor handles byte order. Requires
+ * fresh/non-recursive parent chains; may allocate through parent setup and
+ * diagnostics, but does not read pixels directly.
+ *
+ * @param[in,out] tif Non-NULL live handle whose tif_data begins with a
+ * valid TIFFPredictorState; serialise codec operations.
+ * @return One after setup, zero on parent or predictor validation failure.
+ */
 static int PredictorSetupDecode(TIFF *tif)
 {
     TIFFPredictorState *sp = PredictorState(tif);
@@ -225,6 +259,19 @@ static int PredictorSetupDecode(TIFF *tif)
     return 1;
 }
 
+/**
+ * @brief Chain parent encoder setup and install predictor encoding.
+ * @ingroup libtiff_private_predictor
+ *
+ * Invokes parent setup then validates predictor geometry and selects
+ * differencing/wrappers. Can disable ordinary postdecode swapping. Parent
+ * and wrapper changes survive failure; parent allocation/diagnostic effects
+ * apply. Does not write pixels directly.
+ *
+ * @param[in,out] tif Non-NULL live handle whose tif_data begins with a
+ * valid TIFFPredictorState; serialise codec operations.
+ * @return One after setup, zero on parent or predictor validation failure.
+ */
 static int PredictorSetupEncode(TIFF *tif)
 {
     TIFFPredictorState *sp = PredictorState(tif);
@@ -359,6 +406,20 @@ static int PredictorSetupEncode(TIFF *tif)
  * them in this per-sample hot path.  _TIFFmemcpy() is an out-of-line wrapper
  * in non-LTO builds.
  */
+/**
+ * @brief Add two unaligned native-order 16-bit samples modulo their width.
+ * @ingroup libtiff_private_predictor
+ *
+ * Uses fixed-size memcpy to load/store without typed alignment
+ * requirements. Reads previous before overwriting current, permitting
+ * identical slots. No bounds checks, allocation, I/O, diagnostics, handle
+ * changes or ownership effects.
+ *
+ * @param[in,out] current Writable byte storage for one native-order sample,
+ * unaligned allowed.
+ * @param[in] previous Readable byte storage for one same-width native-order
+ * sample, unaligned allowed.
+ */
 TIFF_NOSANITIZE_UNSIGNED_INT_OVERFLOW
 static void PredictorAccumulate16NativeUnaligned(uint8_t *current,
                                                  const uint8_t *previous)
@@ -372,6 +433,20 @@ static void PredictorAccumulate16NativeUnaligned(uint8_t *current,
     memcpy(current, &thisval, sizeof(thisval));
 }
 
+/**
+ * @brief Add two unaligned native-order 32-bit samples modulo their width.
+ * @ingroup libtiff_private_predictor
+ *
+ * Uses fixed-size memcpy to load/store without typed alignment
+ * requirements. Reads previous before overwriting current, permitting
+ * identical slots. No bounds checks, allocation, I/O, diagnostics, handle
+ * changes or ownership effects.
+ *
+ * @param[in,out] current Writable byte storage for one native-order sample,
+ * unaligned allowed.
+ * @param[in] previous Readable byte storage for one same-width native-order
+ * sample, unaligned allowed.
+ */
 TIFF_NOSANITIZE_UNSIGNED_INT_OVERFLOW
 static void PredictorAccumulate32NativeUnaligned(uint8_t *current,
                                                  const uint8_t *previous)
@@ -384,6 +459,20 @@ static void PredictorAccumulate32NativeUnaligned(uint8_t *current,
     memcpy(current, &thisval, sizeof(thisval));
 }
 
+/**
+ * @brief Add two unaligned native-order 64-bit samples modulo their width.
+ * @ingroup libtiff_private_predictor
+ *
+ * Uses fixed-size memcpy to load/store without typed alignment
+ * requirements. Reads previous before overwriting current, permitting
+ * identical slots. No bounds checks, allocation, I/O, diagnostics, handle
+ * changes or ownership effects.
+ *
+ * @param[in,out] current Writable byte storage for one native-order sample,
+ * unaligned allowed.
+ * @param[in] previous Readable byte storage for one same-width native-order
+ * sample, unaligned allowed.
+ */
 TIFF_NOSANITIZE_UNSIGNED_INT_OVERFLOW
 static void PredictorAccumulate64NativeUnaligned(uint8_t *current,
                                                  const uint8_t *previous)
@@ -396,6 +485,16 @@ static void PredictorAccumulate64NativeUnaligned(uint8_t *current,
     memcpy(current, &thisval, sizeof(thisval));
 }
 
+/**
+ * @brief Reverse each 16-bit sample in an unaligned byte stream.
+ * @ingroup libtiff_private_predictor
+ *
+ * Swaps bytes directly; zero count performs no accesses. No bounds checks,
+ * allocation, I/O, diagnostics, or ownership effects.
+ *
+ * @param[in,out] cp Writable byte stream covering n complete samples.
+ * @param[in] n Nonnegative sample count.
+ */
 static void PredictorSwabByteStream16(uint8_t *cp, tmsize_t n)
 {
     while (n-- > 0)
@@ -407,6 +506,16 @@ static void PredictorSwabByteStream16(uint8_t *cp, tmsize_t n)
     }
 }
 
+/**
+ * @brief Reverse each 32-bit sample in an unaligned byte stream.
+ * @ingroup libtiff_private_predictor
+ *
+ * Swaps bytes directly; zero count performs no accesses. No bounds checks,
+ * allocation, I/O, diagnostics, or ownership effects.
+ *
+ * @param[in,out] cp Writable byte stream covering n complete samples.
+ * @param[in] n Nonnegative sample count.
+ */
 static void PredictorSwabByteStream32(uint8_t *cp, tmsize_t n)
 {
     while (n-- > 0)
@@ -421,6 +530,16 @@ static void PredictorSwabByteStream32(uint8_t *cp, tmsize_t n)
     }
 }
 
+/**
+ * @brief Reverse each 64-bit sample in an unaligned byte stream.
+ * @ingroup libtiff_private_predictor
+ *
+ * Swaps bytes directly; zero count performs no accesses. No bounds checks,
+ * allocation, I/O, diagnostics, or ownership effects.
+ *
+ * @param[in,out] cp Writable byte stream covering n complete samples.
+ * @param[in] n Nonnegative sample count.
+ */
 static void PredictorSwabByteStream64(uint8_t *cp, tmsize_t n)
 {
     while (n-- > 0)
@@ -441,6 +560,22 @@ static void PredictorSwabByteStream64(uint8_t *cp, tmsize_t n)
     }
 }
 
+/**
+ * @brief Accumulate 8-bit horizontal predictor samples in place.
+ * @ingroup libtiff_private_predictor
+ *
+ * Requires positive nonzero cached stride and nonnegative complete row
+ * bytes divisible by 1*stride, with representable products and live
+ * writable storage. Uses unsigned modular arithmetic; first-pixel channel
+ * samples remain unchanged. No allocation, pixel I/O, or ownership
+ * transfer; invalid extent is diagnosed through handle callbacks.
+ *
+ * @param[in] tif Non-NULL handle whose TIFFPredictorState supplies the
+ * cached stride; used otherwise only for diagnostics.
+ * @param[in,out] cp0 Borrowed writable row storage of cc bytes.
+ * @param[in] cc Row byte extent under the selected transform preconditions.
+ * @return One on transformation, zero on rejected row extent.
+ */
 TIFF_NOSANITIZE_UNSIGNED_INT_OVERFLOW
 static int horAcc8(TIFF *tif, uint8_t *cp0, tmsize_t cc)
 {
@@ -517,6 +652,24 @@ static int horAcc8(TIFF *tif, uint8_t *cp0, tmsize_t cc)
     return 1;
 }
 
+/**
+ * @brief Swap and accumulate 16-bit horizontal predictor samples in place.
+ * @ingroup libtiff_private_predictor
+ *
+ * Requires positive nonzero cached stride and nonnegative complete row
+ * bytes divisible by 2*stride, with representable products and live
+ * writable storage. Swaps complete samples before accumulation, even before
+ * the inner divisibility rejection; input can change on rejection.
+ * Accumulation uses byte-stream/memcpy helpers and accepts unaligned
+ * storage. No allocation, pixel I/O, or ownership transfer; invalid extent
+ * is diagnosed through handle callbacks.
+ *
+ * @param[in] tif Non-NULL handle whose TIFFPredictorState supplies the
+ * cached stride; used otherwise only for diagnostics.
+ * @param[in,out] cp0 Borrowed writable row storage of cc bytes.
+ * @param[in] cc Row byte extent under the selected transform preconditions.
+ * @return One on transformation, zero on rejected row extent.
+ */
 static int swabHorAcc16(TIFF *tif, uint8_t *cp0, tmsize_t cc)
 {
     tmsize_t wc = cc / 2;
@@ -525,6 +678,23 @@ static int swabHorAcc16(TIFF *tif, uint8_t *cp0, tmsize_t cc)
     return horAcc16(tif, cp0, cc);
 }
 
+/**
+ * @brief Accumulate 16-bit horizontal predictor samples in place.
+ * @ingroup libtiff_private_predictor
+ *
+ * Requires positive nonzero cached stride and nonnegative complete row
+ * bytes divisible by 2*stride, with representable products and live
+ * writable storage. Uses unsigned modular arithmetic; first-pixel channel
+ * samples remain unchanged. Accumulation uses byte-stream/memcpy helpers
+ * and accepts unaligned storage. No allocation, pixel I/O, or ownership
+ * transfer; invalid extent is diagnosed through handle callbacks.
+ *
+ * @param[in] tif Non-NULL handle whose TIFFPredictorState supplies the
+ * cached stride; used otherwise only for diagnostics.
+ * @param[in,out] cp0 Borrowed writable row storage of cc bytes.
+ * @param[in] cc Row byte extent under the selected transform preconditions.
+ * @return One on transformation, zero on rejected row extent.
+ */
 TIFF_NOSANITIZE_UNSIGNED_INT_OVERFLOW
 static int horAcc16(TIFF *tif, uint8_t *cp0, tmsize_t cc)
 {
@@ -552,6 +722,24 @@ static int horAcc16(TIFF *tif, uint8_t *cp0, tmsize_t cc)
     return 1;
 }
 
+/**
+ * @brief Swap and accumulate 32-bit horizontal predictor samples in place.
+ * @ingroup libtiff_private_predictor
+ *
+ * Requires positive nonzero cached stride and nonnegative complete row
+ * bytes divisible by 4*stride, with representable products and live
+ * writable storage. Swaps complete samples before accumulation, even before
+ * the inner divisibility rejection; input can change on rejection.
+ * Accumulation uses byte-stream/memcpy helpers and accepts unaligned
+ * storage. No allocation, pixel I/O, or ownership transfer; invalid extent
+ * is diagnosed through handle callbacks.
+ *
+ * @param[in] tif Non-NULL handle whose TIFFPredictorState supplies the
+ * cached stride; used otherwise only for diagnostics.
+ * @param[in,out] cp0 Borrowed writable row storage of cc bytes.
+ * @param[in] cc Row byte extent under the selected transform preconditions.
+ * @return One on transformation, zero on rejected row extent.
+ */
 static int swabHorAcc32(TIFF *tif, uint8_t *cp0, tmsize_t cc)
 {
     tmsize_t wc = cc / 4;
@@ -560,6 +748,23 @@ static int swabHorAcc32(TIFF *tif, uint8_t *cp0, tmsize_t cc)
     return horAcc32(tif, cp0, cc);
 }
 
+/**
+ * @brief Accumulate 32-bit horizontal predictor samples in place.
+ * @ingroup libtiff_private_predictor
+ *
+ * Requires positive nonzero cached stride and nonnegative complete row
+ * bytes divisible by 4*stride, with representable products and live
+ * writable storage. Uses unsigned modular arithmetic; first-pixel channel
+ * samples remain unchanged. Accumulation uses byte-stream/memcpy helpers
+ * and accepts unaligned storage. No allocation, pixel I/O, or ownership
+ * transfer; invalid extent is diagnosed through handle callbacks.
+ *
+ * @param[in] tif Non-NULL handle whose TIFFPredictorState supplies the
+ * cached stride; used otherwise only for diagnostics.
+ * @param[in,out] cp0 Borrowed writable row storage of cc bytes.
+ * @param[in] cc Row byte extent under the selected transform preconditions.
+ * @return One on transformation, zero on rejected row extent.
+ */
 TIFF_NOSANITIZE_UNSIGNED_INT_OVERFLOW
 static int horAcc32(TIFF *tif, uint8_t *cp0, tmsize_t cc)
 {
@@ -587,6 +792,24 @@ static int horAcc32(TIFF *tif, uint8_t *cp0, tmsize_t cc)
     return 1;
 }
 
+/**
+ * @brief Swap and accumulate 64-bit horizontal predictor samples in place.
+ * @ingroup libtiff_private_predictor
+ *
+ * Requires positive nonzero cached stride and nonnegative complete row
+ * bytes divisible by 8*stride, with representable products and live
+ * writable storage. Swaps complete samples before accumulation, even before
+ * the inner divisibility rejection; input can change on rejection.
+ * Accumulation uses byte-stream/memcpy helpers and accepts unaligned
+ * storage. No allocation, pixel I/O, or ownership transfer; invalid extent
+ * is diagnosed through handle callbacks.
+ *
+ * @param[in] tif Non-NULL handle whose TIFFPredictorState supplies the
+ * cached stride; used otherwise only for diagnostics.
+ * @param[in,out] cp0 Borrowed writable row storage of cc bytes.
+ * @param[in] cc Row byte extent under the selected transform preconditions.
+ * @return One on transformation, zero on rejected row extent.
+ */
 static int swabHorAcc64(TIFF *tif, uint8_t *cp0, tmsize_t cc)
 {
     tmsize_t wc = cc / 8;
@@ -595,6 +818,23 @@ static int swabHorAcc64(TIFF *tif, uint8_t *cp0, tmsize_t cc)
     return horAcc64(tif, cp0, cc);
 }
 
+/**
+ * @brief Accumulate 64-bit horizontal predictor samples in place.
+ * @ingroup libtiff_private_predictor
+ *
+ * Requires positive nonzero cached stride and nonnegative complete row
+ * bytes divisible by 8*stride, with representable products and live
+ * writable storage. Uses unsigned modular arithmetic; first-pixel channel
+ * samples remain unchanged. Accumulation uses byte-stream/memcpy helpers
+ * and accepts unaligned storage. No allocation, pixel I/O, or ownership
+ * transfer; invalid extent is diagnosed through handle callbacks.
+ *
+ * @param[in] tif Non-NULL handle whose TIFFPredictorState supplies the
+ * cached stride; used otherwise only for diagnostics.
+ * @param[in,out] cp0 Borrowed writable row storage of cc bytes.
+ * @param[in] cc Row byte extent under the selected transform preconditions.
+ * @return One on transformation, zero on rejected row extent.
+ */
 TIFF_NOSANITIZE_UNSIGNED_INT_OVERFLOW
 static int horAcc64(TIFF *tif, uint8_t *cp0, tmsize_t cc)
 {
@@ -624,6 +864,25 @@ static int horAcc64(TIFF *tif, uint8_t *cp0, tmsize_t cc)
 
 /*
  * Floating point predictor accumulation routine.
+ */
+/**
+ * @brief Undo floating-point byte-plane prediction on one row.
+ * @ingroup libtiff_private_predictor
+ *
+ * Requires setup-selected nonzero bytes per sample and stride, a positive
+ * complete row extent divisible by their product, and sufficient writable
+ * storage. Accumulates byte planes then interlaces them into native sample
+ * order. Allocates a row-sized temporary buffer, released on success;
+ * rejected divisibility or allocation returns zero. Does not perform
+ * floating-point arithmetic on sample values. Buffer mutations survive
+ * later failure; no pixel I/O or ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live handle whose tif_data begins with a
+ * valid TIFFPredictorState; serialise codec operations.
+ * @param[in,out] cp0 Borrowed writable row storage of cc bytes; cc must be
+ * positive, since a zero extent fails the temporary allocation.
+ * @param[in] cc Row byte extent under the selected transform preconditions.
+ * @return One on transformation, zero on extent/allocation failure.
  */
 static int fpAcc(TIFF *tif, uint8_t *cp0, tmsize_t cc)
 {
@@ -741,6 +1000,23 @@ static int fpAcc(TIFF *tif, uint8_t *cp0, tmsize_t cc)
 /*
  * Decode a scanline and apply the predictor routine.
  */
+/**
+ * @brief Decode one row then undo prediction in place.
+ * @ingroup libtiff_private_predictor
+ *
+ * Requires installed parent decoder and transform. Parent callback consumes
+ * raw input and can allocate/diagnose; transform runs only on nonzero
+ * parent status. Caller retains output, which can be partial or changed on
+ * failure. No rollback or ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live handle whose tif_data begins with a
+ * valid TIFFPredictorState; serialise codec operations.
+ * @param[out] op0 Caller-owned writable decoded output of occ0 bytes.
+ * @param[in] occ0 Nonnegative decoded byte extent, complete rows for strile
+ * wrappers.
+ * @param[in] s Sample plane passed unchanged to the parent codec.
+ * @return Transform status after parent success, zero on parent failure.
+ */
 static int PredictorDecodeRow(TIFF *tif, uint8_t *op0, tmsize_t occ0,
                               uint16_t s)
 {
@@ -764,6 +1040,24 @@ static int PredictorDecodeRow(TIFF *tif, uint8_t *op0, tmsize_t occ0,
  * row-by-row basis.  The width of a "row" has already
  * been calculated at pre-decode time according to the
  * strip/tile dimensions.
+ */
+/**
+ * @brief Decode a strile then undo prediction row by row.
+ * @ingroup libtiff_private_predictor
+ *
+ * Calls saved decodetile for both strip and tile wrapping, then requires an
+ * extent divisible by positive rowsize. Invokes decodepfunc per row and
+ * stops on failure. Parent input progress and earlier output rows remain
+ * changed. No rollback or output ownership transfer; callbacks may
+ * allocate, diagnose and read client data.
+ *
+ * @param[in,out] tif Non-NULL live handle whose tif_data begins with a
+ * valid TIFFPredictorState; serialise codec operations.
+ * @param[out] op0 Caller-owned writable decoded output of occ0 bytes.
+ * @param[in] occ0 Nonnegative decoded byte extent, complete rows for strile
+ * wrappers.
+ * @param[in] s Sample plane passed unchanged to the parent codec.
+ * @return One after all rows, zero on parent, extent, or transform failure.
  */
 static int PredictorDecodeTile(TIFF *tif, uint8_t *op0, tmsize_t occ0,
                                uint16_t s)
@@ -797,6 +1091,22 @@ static int PredictorDecodeTile(TIFF *tif, uint8_t *op0, tmsize_t occ0,
         return 0;
 }
 
+/**
+ * @brief Difference 8-bit horizontal predictor samples in place.
+ * @ingroup libtiff_private_predictor
+ *
+ * Requires positive nonzero cached stride and nonnegative complete row
+ * bytes divisible by 1*stride, with representable products and live
+ * writable storage. Uses unsigned modular arithmetic; first-pixel channel
+ * samples remain unchanged. No allocation, pixel I/O, or ownership
+ * transfer; invalid extent is diagnosed through handle callbacks.
+ *
+ * @param[in] tif Non-NULL handle whose TIFFPredictorState supplies the
+ * cached stride; used otherwise only for diagnostics.
+ * @param[in,out] cp0 Borrowed writable row storage of cc bytes.
+ * @param[in] cc Row byte extent under the selected transform preconditions.
+ * @return One on transformation, zero on rejected row extent.
+ */
 TIFF_NOSANITIZE_UNSIGNED_INT_OVERFLOW
 static int horDiff8(TIFF *tif, uint8_t *cp0, tmsize_t cc)
 {
@@ -875,6 +1185,23 @@ static int horDiff8(TIFF *tif, uint8_t *cp0, tmsize_t cc)
     return 1;
 }
 
+/**
+ * @brief Difference 16-bit horizontal predictor samples in place.
+ * @ingroup libtiff_private_predictor
+ *
+ * Requires positive nonzero cached stride and nonnegative complete row
+ * bytes divisible by 2*stride, with representable products and live
+ * writable storage. Uses unsigned modular arithmetic; first-pixel channel
+ * samples remain unchanged. Requires uint16_t alignment for typed
+ * differencing. No allocation, pixel I/O, or ownership transfer; invalid
+ * extent is diagnosed through handle callbacks.
+ *
+ * @param[in] tif Non-NULL handle whose TIFFPredictorState supplies the
+ * cached stride; used otherwise only for diagnostics.
+ * @param[in,out] cp0 Borrowed writable row storage of cc bytes.
+ * @param[in] cc Row byte extent under the selected transform preconditions.
+ * @return One on transformation, zero on rejected row extent.
+ */
 TIFF_NOSANITIZE_UNSIGNED_INT_OVERFLOW
 static int horDiff16(TIFF *tif, uint8_t *cp0, tmsize_t cc)
 {
@@ -905,6 +1232,23 @@ static int horDiff16(TIFF *tif, uint8_t *cp0, tmsize_t cc)
     return 1;
 }
 
+/**
+ * @brief Swap and difference 16-bit horizontal predictor samples in place.
+ * @ingroup libtiff_private_predictor
+ *
+ * Requires positive nonzero cached stride and nonnegative complete row
+ * bytes divisible by 2*stride, with representable products and live
+ * writable storage. Differences native-order samples first, then swaps
+ * after success. Requires uint16_t alignment for typed differencing. No
+ * allocation, pixel I/O, or ownership transfer; invalid extent is diagnosed
+ * through handle callbacks.
+ *
+ * @param[in] tif Non-NULL handle whose TIFFPredictorState supplies the
+ * cached stride; used otherwise only for diagnostics.
+ * @param[in,out] cp0 Borrowed writable row storage of cc bytes.
+ * @param[in] cc Row byte extent under the selected transform preconditions.
+ * @return One on transformation, zero on rejected row extent.
+ */
 static int swabHorDiff16(TIFF *tif, uint8_t *cp0, tmsize_t cc)
 {
     uint16_t *wp = (uint16_t *)cp0;
@@ -917,6 +1261,23 @@ static int swabHorDiff16(TIFF *tif, uint8_t *cp0, tmsize_t cc)
     return 1;
 }
 
+/**
+ * @brief Difference 32-bit horizontal predictor samples in place.
+ * @ingroup libtiff_private_predictor
+ *
+ * Requires positive nonzero cached stride and nonnegative complete row
+ * bytes divisible by 4*stride, with representable products and live
+ * writable storage. Uses unsigned modular arithmetic; first-pixel channel
+ * samples remain unchanged. Requires uint32_t alignment for typed
+ * differencing. No allocation, pixel I/O, or ownership transfer; invalid
+ * extent is diagnosed through handle callbacks.
+ *
+ * @param[in] tif Non-NULL handle whose TIFFPredictorState supplies the
+ * cached stride; used otherwise only for diagnostics.
+ * @param[in,out] cp0 Borrowed writable row storage of cc bytes.
+ * @param[in] cc Row byte extent under the selected transform preconditions.
+ * @return One on transformation, zero on rejected row extent.
+ */
 TIFF_NOSANITIZE_UNSIGNED_INT_OVERFLOW
 static int horDiff32(TIFF *tif, uint8_t *cp0, tmsize_t cc)
 {
@@ -944,6 +1305,23 @@ static int horDiff32(TIFF *tif, uint8_t *cp0, tmsize_t cc)
     return 1;
 }
 
+/**
+ * @brief Swap and difference 32-bit horizontal predictor samples in place.
+ * @ingroup libtiff_private_predictor
+ *
+ * Requires positive nonzero cached stride and nonnegative complete row
+ * bytes divisible by 4*stride, with representable products and live
+ * writable storage. Differences native-order samples first, then swaps
+ * after success. Requires uint32_t alignment for typed differencing. No
+ * allocation, pixel I/O, or ownership transfer; invalid extent is diagnosed
+ * through handle callbacks.
+ *
+ * @param[in] tif Non-NULL handle whose TIFFPredictorState supplies the
+ * cached stride; used otherwise only for diagnostics.
+ * @param[in,out] cp0 Borrowed writable row storage of cc bytes.
+ * @param[in] cc Row byte extent under the selected transform preconditions.
+ * @return One on transformation, zero on rejected row extent.
+ */
 static int swabHorDiff32(TIFF *tif, uint8_t *cp0, tmsize_t cc)
 {
     uint32_t *wp = (uint32_t *)cp0;
@@ -956,6 +1334,23 @@ static int swabHorDiff32(TIFF *tif, uint8_t *cp0, tmsize_t cc)
     return 1;
 }
 
+/**
+ * @brief Difference 64-bit horizontal predictor samples in place.
+ * @ingroup libtiff_private_predictor
+ *
+ * Requires positive nonzero cached stride and nonnegative complete row
+ * bytes divisible by 8*stride, with representable products and live
+ * writable storage. Uses unsigned modular arithmetic; first-pixel channel
+ * samples remain unchanged. Requires uint64_t alignment for typed
+ * differencing. No allocation, pixel I/O, or ownership transfer; invalid
+ * extent is diagnosed through handle callbacks.
+ *
+ * @param[in] tif Non-NULL handle whose TIFFPredictorState supplies the
+ * cached stride; used otherwise only for diagnostics.
+ * @param[in,out] cp0 Borrowed writable row storage of cc bytes.
+ * @param[in] cc Row byte extent under the selected transform preconditions.
+ * @return One on transformation, zero on rejected row extent.
+ */
 TIFF_NOSANITIZE_UNSIGNED_INT_OVERFLOW
 static int horDiff64(TIFF *tif, uint8_t *cp0, tmsize_t cc)
 {
@@ -983,6 +1378,23 @@ static int horDiff64(TIFF *tif, uint8_t *cp0, tmsize_t cc)
     return 1;
 }
 
+/**
+ * @brief Swap and difference 64-bit horizontal predictor samples in place.
+ * @ingroup libtiff_private_predictor
+ *
+ * Requires positive nonzero cached stride and nonnegative complete row
+ * bytes divisible by 8*stride, with representable products and live
+ * writable storage. Differences native-order samples first, then swaps
+ * after success. Requires uint64_t alignment for typed differencing. No
+ * allocation, pixel I/O, or ownership transfer; invalid extent is diagnosed
+ * through handle callbacks.
+ *
+ * @param[in] tif Non-NULL handle whose TIFFPredictorState supplies the
+ * cached stride; used otherwise only for diagnostics.
+ * @param[in,out] cp0 Borrowed writable row storage of cc bytes.
+ * @param[in] cc Row byte extent under the selected transform preconditions.
+ * @return One on transformation, zero on rejected row extent.
+ */
 static int swabHorDiff64(TIFF *tif, uint8_t *cp0, tmsize_t cc)
 {
     uint64_t *wp = (uint64_t *)cp0;
@@ -997,6 +1409,25 @@ static int swabHorDiff64(TIFF *tif, uint8_t *cp0, tmsize_t cc)
 
 /*
  * Floating point predictor differencing routine.
+ */
+/**
+ * @brief Apply floating-point byte-plane prediction on one row.
+ * @ingroup libtiff_private_predictor
+ *
+ * Requires setup-selected nonzero bytes per sample and stride, a positive
+ * complete row extent divisible by their product, and sufficient writable
+ * storage. Reorders native sample bytes into byte planes then differences
+ * those planes. Allocates a row-sized temporary buffer, released on
+ * success; rejected divisibility or allocation returns zero. Does not
+ * perform floating-point arithmetic on sample values. Buffer mutations
+ * survive later failure; no pixel I/O or ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live handle whose tif_data begins with a
+ * valid TIFFPredictorState; serialise codec operations.
+ * @param[in,out] cp0 Borrowed writable row storage of cc bytes; cc must be
+ * positive, since a zero extent fails the temporary allocation.
+ * @param[in] cc Row byte extent under the selected transform preconditions.
+ * @return One on transformation, zero on extent/allocation failure.
  */
 TIFF_NOSANITIZE_UNSIGNED_INT_OVERFLOW
 static int fpDiff(TIFF *tif, uint8_t *cp0, tmsize_t cc)
@@ -1042,6 +1473,24 @@ static int fpDiff(TIFF *tif, uint8_t *cp0, tmsize_t cc)
     return 1;
 }
 
+/**
+ * @brief Transform a temporary row copy then call the parent encoder.
+ * @ingroup libtiff_private_predictor
+ *
+ * Allocates a working copy, preserves caller bytes from this predictor
+ * layer, checks transform status, invokes the parent encoder and frees
+ * temporary storage on each exit. Parent state/output effects remain on
+ * failure; public write postdecode conversion can separately mutate the
+ * original input. Reports allocation failure; no ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live handle whose tif_data begins with a
+ * valid TIFFPredictorState; serialise codec operations.
+ * @param[in] bp Borrowed readable row input of cc bytes, copied before
+ * prediction.
+ * @param[in] cc Row byte extent under the selected transform preconditions.
+ * @param[in] s Sample plane passed unchanged to the parent codec.
+ * @return Parent encoder status, or zero on allocation/transform failure.
+ */
 static int PredictorEncodeRow(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
 {
     static const char module[] = "PredictorEncodeRow";
@@ -1078,6 +1527,25 @@ static int PredictorEncodeRow(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
     return result_code;
 }
 
+/**
+ * @brief Transform a temporary strile copy then call the parent encoder.
+ * @ingroup libtiff_private_predictor
+ *
+ * Allocates/copies input and validates divisibility by positive rowsize.
+ * Transforms each row but currently ignores encodepfunc return values, then
+ * calls saved encodetile for both strip and tile wrappers. Frees temporary
+ * storage on every ordinary exit. Caller bytes are preserved by this layer;
+ * parent state/output can change on failure. No ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live handle whose tif_data begins with a
+ * valid TIFFPredictorState; serialise codec operations.
+ * @param[in] bp0 Borrowed readable strile input of cc0 bytes, copied before
+ * prediction.
+ * @param[in] cc0 Positive complete-row input byte extent.
+ * @param[in] s Sample plane passed unchanged to the parent codec.
+ * @return Parent encoder status, or zero on allocation/extent rejection;
+ * not an independent guarantee that each row transform succeeded.
+ */
 static int PredictorEncodeTile(TIFF *tif, uint8_t *bp0, tmsize_t cc0,
                                uint16_t s)
 {
@@ -1130,11 +1598,36 @@ static int PredictorEncodeTile(TIFF *tif, uint8_t *bp0, tmsize_t cc0,
 
 #define FIELD_PREDICTOR (FIELD_CODEC + 0) /* XXX */
 
+/**
+ * @brief Define the codec-owned Predictor field metadata.
+ * @ingroup libtiff_private_predictor
+ *
+ * Immutable library-lifetime table merged during initialisation; do not
+ * free it.
+ */
 static const TIFFField predictFields[] = {
     {TIFFTAG_PREDICTOR, 1, 1, TIFF_SHORT, 0, TIFF_SETGET_UINT16,
      FIELD_PREDICTOR, FALSE, FALSE, "Predictor", NULL},
 };
 
+/**
+ * @brief Store Predictor or delegate another variadic tag assignment.
+ * @ingroup libtiff_private_predictor
+ *
+ * For TIFFTAG_PREDICTOR consumes uint16_vap (normally promoted int),
+ * narrows to uint16_t, sets the field bit and directory dirty flag. Does
+ * not validate predictor support until setup. Other tags consume their
+ * usual variadic contract through saved vsetparent. Callbacks can
+ * mutate/allocate/diagnose; no ownership transfer for Predictor.
+ *
+ * @param[in,out] tif Non-NULL live handle whose tif_data begins with a
+ * valid TIFFPredictorState; serialise codec operations.
+ * @param[in] tag Tag identifier; delegated tags follow their usual argument
+ * contract.
+ * @param[in,out] ap Live va_list cursor carrying the tag-specific promoted
+ * value/output pointer; consumed synchronously, not retained.
+ * @return One for Predictor assignment, otherwise parent setter status.
+ */
 static int PredictorVSetField(TIFF *tif, uint32_t tag, va_list ap)
 {
     TIFFPredictorState *sp = PredictorState(tif);
@@ -1155,6 +1648,23 @@ static int PredictorVSetField(TIFF *tif, uint32_t tag, va_list ap)
     return 1;
 }
 
+/**
+ * @brief Fetch Predictor or delegate another variadic tag query.
+ * @ingroup libtiff_private_predictor
+ *
+ * For TIFFTAG_PREDICTOR consumes a non-NULL uint16_t* and writes the cached
+ * value. Other tags follow the saved parent getter contract. No output
+ * allocation or ownership transfer for Predictor; parent effects depend on
+ * tag.
+ *
+ * @param[in,out] tif Non-NULL live handle whose tif_data begins with a
+ * valid TIFFPredictorState; serialise codec operations.
+ * @param[in] tag Tag identifier; delegated tags follow their usual argument
+ * contract.
+ * @param[in,out] ap Live va_list cursor carrying the tag-specific promoted
+ * value/output pointer; consumed synchronously, not retained.
+ * @return One for Predictor retrieval, otherwise parent getter status.
+ */
 static int PredictorVGetField(TIFF *tif, uint32_t tag, va_list ap)
 {
     TIFFPredictorState *sp = PredictorState(tif);
@@ -1173,6 +1683,20 @@ static int PredictorVGetField(TIFF *tif, uint32_t tag, va_list ap)
     return 1;
 }
 
+/**
+ * @brief Print predictor information then chain the parent printer.
+ * @ingroup libtiff_private_predictor
+ *
+ * Writes to borrowed FILE without checking stdio errors, prints only when
+ * its field bit is set, then invokes saved printer with flags. Does not
+ * close the stream or transfer ownership; parent printer effects apply. No
+ * separate status channel.
+ *
+ * @param[in] tif Non-NULL handle whose TIFFPredictorState holds the
+ * predictor value and saved parent printer; not modified.
+ * @param[in,out] fd Borrowed writable stdio stream; remains caller-owned.
+ * @param[in] flags Print flags forwarded to the saved printer.
+ */
 static void PredictorPrintDir(TIFF *tif, FILE *fd, long flags)
 {
     TIFFPredictorState *sp = PredictorState(tif);
@@ -1255,3 +1779,51 @@ int TIFFPredictorCleanup(TIFF *tif)
 
     return 1;
 }
+
+/**
+ * @def PredictorState(tif)
+ * @brief Borrow the predictor prefix of codec-owned tif_data.
+ * @ingroup libtiff_private_predictor
+ *
+ * Expands to a cast of tif->tif_data to TIFFPredictorState *, evaluating tif
+ * once. Valid only for codecs whose state struct begins with a
+ * TIFFPredictorState member and that have called TIFFPredictorInit; nothing
+ * is checked.
+ *
+ * @param[in] tif TIFF handle whose codec state is borrowed.
+ */
+
+/**
+ * @def REPEAT4(n, op)
+ * @brief Repeat a statement using an unrolled small-count switch.
+ * @ingroup libtiff_private_predictor
+ *
+ * Expands to a switch on n whose cases fall through, so op runs n times for
+ * n from 0 to 4 and, through a loop in the default case, n times for larger
+ * n. A negative n reaches the default case and runs op four times. n is
+ * evaluated twice. The default case declares a block-local tmsize_t i, so op
+ * must not refer to an outer i.
+ *
+ * @param[in] n Repeat count, normally the stride; evaluated twice.
+ * @param[in] op Statement to repeat.
+ */
+
+/**
+ * @def OP
+ * @brief Accumulate the next byte in the floating-point fast path.
+ * @ingroup libtiff_private_predictor
+ *
+ * Local to the stride-1 path of fpAcc: adds the byte at cp[0] to cp[1]
+ * modulo 256 and advances the enclosing cp by one. Undefined again after
+ * that loop.
+ */
+
+/**
+ * @def FIELD_PREDICTOR
+ * @brief Reserve the codec field bit for Predictor.
+ * @ingroup libtiff_private_predictor
+ *
+ * Value FIELD_CODEC + 0, the first codec-private field bit. Used in
+ * predictFields, set by PredictorVSetField when Predictor is assigned, and
+ * tested by PredictorPrintDir.
+ */

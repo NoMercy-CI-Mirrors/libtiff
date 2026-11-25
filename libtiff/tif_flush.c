@@ -25,6 +25,11 @@
 /*
  * TIFF Library.
  */
+/**
+ * @file tif_flush.c
+ * @brief Flush buffered data and patch deferred strile metadata.
+ */
+
 #include "tiffiop.h"
 
 int TIFFFlush(TIFF *tif)

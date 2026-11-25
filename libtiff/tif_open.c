@@ -30,6 +30,11 @@
 #undef TIFF_DO_NOT_USE_NON_EXT_ALLOC_FUNCTIONS
 #endif
 
+/**
+ * @file tif_open.c
+ * @brief Initialise handles and open options, with shared allocation helpers.
+ */
+
 #include "tiffiop.h"
 #include <assert.h>
 #include <limits.h>
@@ -86,32 +91,18 @@ TIFFOpenOptions *TIFFOpenOptionsAlloc(void)
 
 void TIFFOpenOptionsFree(TIFFOpenOptions *opts) { _TIFFfree(opts); }
 
-/** Define a limit in bytes for a single memory allocation done by libtiff.
- *  If max_single_mem_alloc is set to 0, which is the default, no other limit
- *  that the underlying _TIFFmalloc() or
- *  TIFFOpenOptionsSetMaxCumulatedMemAlloc() will be applied.
- */
 void TIFFOpenOptionsSetMaxSingleMemAlloc(TIFFOpenOptions *opts,
                                          tmsize_t max_single_mem_alloc)
 {
     opts->max_single_mem_alloc = max_single_mem_alloc;
 }
 
-/** Define a limit in bytes for the cumulated memory allocations done by libtiff
- *  on a given TIFF handle.
- *  If max_cumulated_mem_alloc is set to 0, which is the default, no other limit
- *  that the underlying _TIFFmalloc() or
- *  TIFFOpenOptionsSetMaxSingleMemAlloc() will be applied.
- */
 void TIFFOpenOptionsSetMaxCumulatedMemAlloc(TIFFOpenOptions *opts,
                                             tmsize_t max_cumulated_mem_alloc)
 {
     opts->max_cumulated_mem_alloc = max_cumulated_mem_alloc;
 }
 
-/** Whether a warning should be emitted when encountering a unknown tag.
- * Default is FALSE since libtiff 4.7.1
- */
 void TIFFOpenOptionsSetWarnAboutUnknownTags(TIFFOpenOptions *opts,
                                             int warn_about_unknown_tags)
 {
@@ -134,6 +125,19 @@ void TIFFOpenOptionsSetWarningHandlerExtR(TIFFOpenOptions *opts,
     opts->warnhandler_user_data = warnhandler_user_data;
 }
 
+/**
+ * @brief Report a rejected single allocation-policy check.
+ * @ingroup libtiff_private_memory
+ *
+ * Formats the stored limit and size values through TIFFErrorExtR(). Does not
+ * allocate, free, update accounting, or decide the caller's return status.
+ * Diagnostic callbacks may have their normal side effects.
+ *
+ * @param[in] tif Non-NULL handle whose tif_max_single_mem_alloc is reported.
+ * @param[in] pszFunction Borrowed diagnostic module name.
+ * @param[in] s Requested payload bytes that exceeded the single-allocation
+ * limit.
+ */
 static void _TIFFEmitErrorAboveMaxSingleMemAlloc(TIFF *tif,
                                                  const char *pszFunction,
                                                  tmsize_t s)
@@ -145,6 +149,20 @@ static void _TIFFEmitErrorAboveMaxSingleMemAlloc(TIFF *tif,
                   (uint64_t)s, (uint64_t)tif->tif_max_single_mem_alloc);
 }
 
+/**
+ * @brief Report a rejected cumulative allocation-policy check.
+ * @ingroup libtiff_private_memory
+ *
+ * Formats the stored limit and size values through TIFFErrorExtR(). Does not
+ * allocate, free, update accounting, or decide the caller's return status.
+ * Diagnostic callbacks may have their normal side effects.
+ *
+ * @param[in] tif Non-NULL handle whose current cumulated total and
+ * cumulated limit are reported.
+ * @param[in] pszFunction Borrowed diagnostic module name.
+ * @param[in] s Requested payload bytes, or additional payload growth for
+ * cumulative realloc reporting.
+ */
 static void _TIFFEmitErrorAboveMaxCumulatedMemAlloc(TIFF *tif,
                                                     const char *pszFunction,
                                                     tmsize_t s)
@@ -167,9 +185,13 @@ static void _TIFFEmitErrorAboveMaxCumulatedMemAlloc(TIFF *tif,
  * CMakeLists.txt defines TIFF_DO_NOT_USE_NON_EXT_ALLOC_FUNCTIONS, which in
  * turn disables the definition of the non Ext version in tiffio.h
  */
+/** @brief Reserve two size_t widths before a cumulatively tracked payload.
+ * @ingroup libtiff_private_memory
+ *
+ * Private accounting/alignment prefix; callers must not access or infer it.
+ */
 #define LEADING_AREA_TO_STORE_ALLOC_SIZE (2 * SIZEOF_SIZE_T)
 
-/** malloc() version that takes into account memory-specific open options */
 void *_TIFFmallocExt(TIFF *tif, tmsize_t s)
 {
     if (s <= 0)
@@ -199,7 +221,6 @@ void *_TIFFmallocExt(TIFF *tif, tmsize_t s)
     return _TIFFmalloc(s);
 }
 
-/** calloc() version that takes into account memory-specific open options */
 void *_TIFFcallocExt(TIFF *tif, tmsize_t nmemb, tmsize_t siz)
 {
     if (nmemb <= 0 || siz <= 0 || nmemb > TIFF_TMSIZE_T_MAX / siz)
@@ -233,7 +254,6 @@ void *_TIFFcallocExt(TIFF *tif, tmsize_t nmemb, tmsize_t siz)
     return _TIFFcalloc(nmemb, siz);
 }
 
-/** realloc() version that takes into account memory-specific open options */
 void *_TIFFreallocExt(TIFF *tif, void *p, tmsize_t s)
 {
     if (s <= 0)
@@ -278,7 +298,6 @@ void *_TIFFreallocExt(TIFF *tif, void *p, tmsize_t s)
     return _TIFFrealloc(p, s);
 }
 
-/** free() version that takes into account memory-specific open options */
 void _TIFFfreeExt(TIFF *tif, void *p)
 {
     if (p != NULL && tif != NULL && tif->tif_max_cumulated_mem_alloc > 0)
@@ -443,7 +462,7 @@ TIFF *TIFFClientOpenExt(const char *name, const char *mode,
      * 'b' use big-endian byte order for creating a file
      * 'L' read/write information using LSB2MSB bit order
      * 'B' read/write information using MSB2LSB bit order
-     * 'H' read/write information using host bit order
+     * 'H' deprecated alias of 'B' (emits a warning)
      * 'M' enable use of memory-mapped files when supported
      * 'm' disable use of memory-mapped files
      * 'C' enable strip chopping support when reading

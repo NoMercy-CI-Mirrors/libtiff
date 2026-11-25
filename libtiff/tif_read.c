@@ -26,6 +26,11 @@
  * TIFF Library.
  * Scanline-oriented Read Support
  */
+/**
+ * @file tif_read.c
+ * @brief Transfer image bytes through raw buffers and codec methods.
+ */
+
 #include "tiffiop.h"
 #include <limits.h>
 #include <stdio.h>
@@ -40,13 +45,71 @@ static tmsize_t TIFFReadRawStrip1(TIFF *tif, uint32_t strip, void *buf,
 static tmsize_t TIFFReadRawTile1(TIFF *tif, uint32_t tile, void *buf,
                                  tmsize_t size, const char *module);
 
+/**
+ * @brief Start progressive raw-buffer reads at one MiB.
+ * @ingroup libtiff_private_image_transfers
+ *
+ * Size in bytes of the first chunk TIFFReadAndRealloc() reads on 64-bit
+ * hosts when the raw buffer must grow, so a truncated file does not force
+ * one large allocation up front.
+ */
 #define INITIAL_THRESHOLD (1024 * 1024)
+/**
+ * @brief Grow raw-buffer read allocation stages by a factor of ten.
+ * @ingroup libtiff_private_image_transfers
+ *
+ * Each chunk TIFFReadAndRealloc() reads is ten times the previous one
+ * (1, 10, 100 MiB).
+ */
 #define THRESHOLD_MULTIPLIER 10
+/**
+ * @brief Set the allocation-growth cutoff to 1000 MiB.
+ * @ingroup libtiff_private_image_transfers
+ *
+ * Once the chunk size reaches this value, TIFFReadAndRealloc() reads the
+ * whole remaining request at once; it is not a maximum read size.
+ */
 #define MAX_THRESHOLD                                                          \
     (THRESHOLD_MULTIPLIER * THRESHOLD_MULTIPLIER * THRESHOLD_MULTIPLIER *      \
      INITIAL_THRESHOLD)
 
+/**
+ * @brief Bound accepted raw strile byte counts to INT64_MAX.
+ * @ingroup libtiff_private_image_transfers
+ *
+ * Expands to INT64_MAX; TIFFFillStrip() and TIFFFillTile() reject strile
+ * byte counts beyond the signed 64-bit range.
+ */
 #define TIFF_INT64_MAX ((((int64_t)0x7FFFFFFF) << 32) | 0xFFFFFFFF)
+/**
+ * @brief Grow and fill the raw buffer from the current client position.
+ * @ingroup libtiff_private_image_transfers
+ *
+ * Reads from the current client position, which the caller has already
+ * set; this function does not seek. Requires nonnegative representable
+ * size/offset, and a library-owned raw buffer (TIFF_MYBUFFER) if it must
+ * grow. On 64-bit hosts the buffer grows in progressive 1/10/100 MiB read
+ * stages; the cutoff is not a maximum read size. On 32-bit hosts, requests
+ * above 1e9 bytes that are not smaller than the file size are rejected.
+ * Realloc failure frees the old raw allocation and clears capacity;
+ * short/error reads zero the remaining allocated tail but retain partial
+ * data. tif_rawcp is not updated and can point into freed storage after
+ * growth; callers must reset it. Failures report through TIFFErrorExtR();
+ * no errno contract. See @ref image_transfers.
+ *
+ * @param[in,out] tif Non-NULL live handle whose raw buffer can be grown or
+ * freed; the client file position moves; serialise access externally.
+ * @param[in] size Nonnegative number of bytes to read at rawdata_offset; zero
+ * reads nothing and succeeds.
+ * @param[in] rawdata_offset Nonnegative raw-buffer destination byte offset
+ * with representable sums.
+ * @param[in] is_strip Nonzero for strip wording in diagnostics, zero for tile
+ * wording.
+ * @param[in] strip_or_tile Strile index, used only in diagnostics.
+ * @param[in] module Borrowed diagnostic context string.
+ * @return One after all bytes read, zero on size/allocation/short-read
+ * failure.
+ */
 
 /* Read 'size' bytes in tif_rawdata buffer starting at offset 'rawdata_offset'
  * Returns 1 in case of success, 0 otherwise. */
@@ -159,6 +222,32 @@ static int TIFFReadAndRealloc(TIFF *tif, tmsize_t size, tmsize_t rawdata_offset,
     }
     return 1;
 }
+/**
+ * @brief Refill a partial raw strip while retaining unconsumed bytes.
+ * @ingroup libtiff_private_image_transfers
+ *
+ * Requires a representable nonnegative int strip index, non-mapped raw buffer,
+ * valid read-ahead arithmetic, and coherent cursor/loaded counts. Moves unread
+ * bytes, grows owned storage, reads the next extent, optionally reverses bits,
+ * and restarts decoding when requested. A multi-scan JPEG restart can require a
+ * whole-strip fallback. Borrowed undersized buffers fail instead of growing.
+ * May grow the handle-owned raw buffer, load deferred strile metadata, seek and
+ * read through the client procedures, and invoke codec and diagnostic
+ * callbacks; it never writes to the file. Failure is not transactional:
+ * buffers, codec progress, indices, flags, or file position can already have
+ * changed. No errno contract. See @ref image_transfers.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching current geometry
+ * and codec methods; serialise access externally.
+ * @param[in] strip Valid zero-based strip index; the parameter is int, so
+ * the index must be representable by int.
+ * @param[in] read_ahead Nonnegative desired ahead extent with representable
+ * cursor arithmetic.
+ * @param[in] restart Nonzero to reset partial-strip decoding; zero to
+ * retain unread bytes.
+ * @return One after refill/start, zero on detected buffer/seek/read/start
+ * failure.
+ */
 
 static int TIFFFillStripPartial(TIFF *tif, int strip, tmsize_t read_ahead,
                                 int restart)
@@ -314,6 +403,28 @@ static int TIFFFillStripPartial(TIFF *tif, int strip, tmsize_t read_ahead,
         return 1;
     }
 }
+/**
+ * @brief Position strip decoding at a requested scanline.
+ * @ingroup libtiff_private_image_transfers
+ *
+ * Validates row, RowsPerStrip and separate sample, computes strip, fills
+ * whole/partial raw input, restarts for backward access, and uses the codec
+ * seek callback to skip forward. Backward/random access may be unsupported by
+ * the codec. May grow or replace the handle-owned raw buffer, load deferred
+ * strile metadata, seek and read through the client procedures, and invoke
+ * codec and diagnostic callbacks; it never writes to the file. Failure is not
+ * transactional: buffers, codec progress, indices, flags, or file position can
+ * already have changed. No errno contract. See @ref image_transfers.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching current geometry
+ * and codec methods; serialise access externally.
+ * @param[in] row Requested row; values not below ImageLength are diagnosed
+ * and rejected.
+ * @param[in] sample Sample plane for separate planar images (range-checked
+ * against SamplesPerPixel); ignored where contiguous.
+ * @return One on positioned decode state, zero on detected
+ * bounds/fill/start/codec-seek failure.
+ */
 
 /*
  * Seek to a random row+sample in a file.
@@ -515,6 +626,25 @@ int TIFFReadScanline(TIFF *tif, void *buf, uint32_t row, uint16_t sample)
     }
     return (e > 0 ? 1 : -1);
 }
+/**
+ * @brief Validate a strip and compute its effective decoded extent.
+ * @ingroup libtiff_private_image_transfers
+ *
+ * Checks readable strip organisation/index and nonzero row geometry,
+ * computes truncated last-strip rows and optional plane, and calls the
+ * layout calculator. Does not load/decode pixels or acquire output storage;
+ * diagnostics can occur.
+ *
+ * @param[in] tif Non-NULL live handle whose mode, organisation and geometry
+ * are read; serialise access externally.
+ * @param[in] strip Zero-based strip index; values not below td_nstrips are
+ * diagnosed and rejected.
+ * @param[out] pplane Optional plane-number output; written once the strip
+ * index and RowsPerStrip checks pass, before the size computation, so it can
+ * be set even when -1 is returned.
+ * @return Positive effective decoded byte size, or minus one on rejected
+ * state/geometry.
+ */
 
 /*
  * Calculate the strip size according to the number of
@@ -674,6 +804,29 @@ tmsize_t _TIFFReadEncodedStripAndAllocBuffer(TIFF *tif, uint32_t strip,
     (*tif->tif_postdecode)(tif, (uint8_t *)*buf, this_stripsize);
     return (this_stripsize);
 }
+/**
+ * @brief Read an exact raw-strip byte extent into caller storage.
+ * @ingroup libtiff_private_image_transfers
+ *
+ * Caller validates organisation/index/raw access and positive destination
+ * extent. Copies mapped bytes after range checks or seeks/reads exact client
+ * bytes. Does not bit-reverse/decode/own the destination; partial stream reads
+ * can modify it before failure. Loading the strile offset may read deferred
+ * metadata. Allocates nothing, never writes to the file, and leaves the raw
+ * buffer and codec state alone; a failed stream read can leave the file
+ * position moved. Failures report through TIFFErrorExtR(); no errno contract.
+ * See @ref image_transfers.
+ *
+ * @param[in,out] tif Non-NULL live handle; deferred strile offsets can be
+ * loaded and the client file position moves; serialise access externally.
+ * @param[in] strip Valid zero-based strip index; not range-checked here.
+ * @param[out] buf Borrowed writable caller buffer large enough for size
+ * bytes.
+ * @param[in] size Positive number of raw bytes to copy into buf.
+ * @param[in] module Borrowed diagnostic context string.
+ * @return Requested size on complete copy, minus one on seek/range/short
+ * read.
+ */
 
 static tmsize_t TIFFReadRawStrip1(TIFF *tif, uint32_t strip, void *buf,
                                   tmsize_t size, const char *module)
@@ -735,6 +888,30 @@ static tmsize_t TIFFReadRawStrip1(TIFF *tif, uint32_t strip, void *buf,
     }
     return (size);
 }
+/**
+ * @brief Seek to a strile and read bytes into the expandable raw cache.
+ * @ingroup libtiff_private_image_transfers
+ *
+ * Requires non-mapped raw access and valid metadata/index. Delegates
+ * allocation/read to TIFFReadAndRealloc(); old owned cache can be lost on
+ * failure. Moves file position and reports contextual strip/tile failures.
+ * Loading the strile offset may read deferred metadata. Never writes to the
+ * file and invokes no codec callbacks; tif_rawcp is not updated. No errno
+ * contract. See @ref image_transfers.
+ *
+ * @param[in,out] tif Non-NULL live handle whose raw buffer can be grown or
+ * freed, deferred strile offsets loaded and file position moved; serialise
+ * access externally.
+ * @param[in] strip_or_tile Valid strile index whose offset is sought to; not
+ * range-checked here.
+ * @param[in] is_strip Nonzero for strip wording in diagnostics, zero for tile
+ * wording.
+ * @param[in] size Nonnegative number of raw bytes to read into the raw
+ * buffer from its start.
+ * @param[in] module Borrowed diagnostic context string.
+ * @return Requested size on success, minus one on seek/allocation/read
+ * failure.
+ */
 
 static tmsize_t TIFFReadRawStripOrTile2(TIFF *tif, uint32_t strip_or_tile,
                                         int is_strip, tmsize_t size,
@@ -806,9 +983,43 @@ tmsize_t TIFFReadRawStrip(TIFF *tif, uint32_t strip, void *buf, tmsize_t size)
     }
     return (TIFFReadRawStrip1(tif, strip, buf, bytecountm, module));
 }
+/**
+ * @brief Subtract unsigned offsets with intentional modular arithmetic.
+ * @ingroup libtiff_private_image_transfers
+ *
+ * Pure modulo-2^64 subtraction, without overflow rejection, diagnostics,
+ * allocation, state, or ownership effects; unsigned-overflow
+ * instrumentation is disabled for this helper.
+ *
+ * @param[in] a Unsigned minuend.
+ * @param[in] b Unsigned subtrahend.
+ * @return Wrapped unsigned difference.
+ */
 
 TIFF_NOSANITIZE_UNSIGNED_INT_OVERFLOW
 static uint64_t NoSanitizeSubUInt64(uint64_t a, uint64_t b) { return a - b; }
+/**
+ * @brief Load raw strip bytes and initialise codec decoding.
+ * @ingroup libtiff_private_image_transfers
+ *
+ * Caller supplies valid strip metadata/index. Validates byte-count bounds,
+ * applies recovery size/ratio heuristics, uses mapped bytes when fill order
+ * allows or replaces/grows raw storage, reverses bits when needed, and calls
+ * TIFFStartStrip(). Non-raw codecs skip loading. Borrowed raw data can be
+ * detached but is not freed as owned storage. Mapping/cache/codec state can
+ * change on failure. May allocate or replace the handle-owned raw buffer, load
+ * deferred strile metadata, seek and read through the client procedures, and
+ * invoke codec and diagnostic callbacks; it never writes to the file. No handle
+ * or caller-buffer ownership transfers. Failure is not transactional: buffers,
+ * codec progress, indices, flags, or file position can already have changed. No
+ * errno contract. See @ref image_transfers.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching current geometry
+ * and codec methods; serialise access externally.
+ * @param[in] strip Valid zero-based strip index; not range-checked here.
+ * @return One after load/start, zero on detected byte-count, buffer,
+ * allocation, I/O, or codec failure.
+ */
 
 /*
  * Read the specified strip and setup for decoding. The data buffer is
@@ -1198,6 +1409,29 @@ tmsize_t _TIFFReadEncodedTileAndAllocBuffer(TIFF *tif, uint32_t tile,
     else
         return ((tmsize_t)(-1));
 }
+/**
+ * @brief Read an exact raw-tile byte extent into caller storage.
+ * @ingroup libtiff_private_image_transfers
+ *
+ * Caller validates organisation/index/raw access and positive destination
+ * extent. Copies mapped bytes after range checks or seeks/reads exact client
+ * bytes. Does not bit-reverse/decode/own the destination; partial stream reads
+ * can modify it before failure. Loading the strile offset may read deferred
+ * metadata. Allocates nothing, never writes to the file, and leaves the raw
+ * buffer and codec state alone; a failed stream read can leave the file
+ * position moved. Failures report through TIFFErrorExtR(); no errno contract.
+ * See @ref image_transfers.
+ *
+ * @param[in,out] tif Non-NULL live handle; deferred strile offsets can be
+ * loaded and the client file position moves; serialise access externally.
+ * @param[in] tile Valid zero-based tile index; not range-checked here.
+ * @param[out] buf Borrowed writable caller buffer large enough for size
+ * bytes.
+ * @param[in] size Positive number of raw bytes to copy into buf.
+ * @param[in] module Borrowed diagnostic context string.
+ * @return Requested size on complete copy, minus one on seek/range/short
+ * read.
+ */
 
 static tmsize_t TIFFReadRawTile1(TIFF *tif, uint32_t tile, void *buf,
                                  tmsize_t size, const char *module)
@@ -1299,6 +1533,27 @@ tmsize_t TIFFReadRawTile(TIFF *tif, uint32_t tile, void *buf, tmsize_t size)
     }
     return (TIFFReadRawTile1(tif, tile, buf, bytecountm, module));
 }
+/**
+ * @brief Load raw tile bytes and initialise codec decoding.
+ * @ingroup libtiff_private_image_transfers
+ *
+ * Caller supplies valid tile metadata/index. Validates byte-count bounds,
+ * applies recovery size/ratio heuristics, uses mapped bytes when fill order
+ * allows or replaces/grows raw storage, reverses bits when needed, and calls
+ * TIFFStartTile(). Non-raw codecs skip loading. Cache/codec state can change
+ * before failure. May allocate or replace the handle-owned raw buffer, load
+ * deferred strile metadata, seek and read through the client procedures, and
+ * invoke codec and diagnostic callbacks; it never writes to the file. No handle
+ * or caller-buffer ownership transfers. Failure is not transactional: buffers,
+ * codec progress, indices, flags, or file position can already have changed. No
+ * errno contract. See @ref image_transfers.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching current geometry
+ * and codec methods; serialise access externally.
+ * @param[in] tile Valid zero-based tile index; not range-checked here.
+ * @return One after load/start, zero on detected byte-count, buffer,
+ * allocation, I/O, or codec failure.
+ */
 
 /*
  * Read the specified tile and setup for decoding. The data buffer is
@@ -1541,6 +1796,25 @@ int TIFFReadBufferSetup(TIFF *tif, void *bp, tmsize_t size)
     }
     return (1);
 }
+/**
+ * @brief Prepare the codec and raw cursor for strip decoding.
+ * @ingroup libtiff_private_image_transfers
+ *
+ * Runs setupdecode once, validates strips-per-plane, sets current strip/row and
+ * raw input state, then calls predecode for its plane. Predecode failure
+ * invalidates current strip; other setup/state changes survive. Reads no strip
+ * payload and allocates no raw buffer itself; when no data is loaded, the raw
+ * byte count comes from TIFFGetStrileByteCount(), which may load deferred
+ * metadata. The setupdecode and predecode callbacks can allocate codec state,
+ * and some codecs (OJPEG) seek and read the file there. No errno contract. See
+ * @ref image_transfers.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching current geometry
+ * and codec methods; serialise access externally.
+ * @param[in] strip Valid zero-based strip index; not range-checked here.
+ * @return One on successful predecode, zero on detected
+ * setup/geometry/predecode failure.
+ */
 
 /*
  * Set state to appear as if a
@@ -1594,6 +1868,26 @@ static int TIFFStartStrip(TIFF *tif, uint32_t strip)
     }
     return 1;
 }
+/**
+ * @brief Prepare the codec and raw cursor for tile decoding.
+ * @ingroup libtiff_private_image_transfers
+ *
+ * Runs setupdecode once, sets current tile and row/column caches using tile
+ * geometry, selects raw input, and invokes predecode. Requires nonzero
+ * strips-per-plane and valid index from the caller. Unlike strip start,
+ * predecode failure does not explicitly invalidate the current tile. Reads no
+ * tile payload and allocates no raw buffer itself; when no data is loaded, the
+ * raw byte count comes from TIFFGetStrileByteCount(), which may load deferred
+ * metadata. The setupdecode and predecode callbacks can allocate codec state,
+ * and some codecs (OJPEG) seek and read the file there. State is not rolled
+ * back; no errno contract. See @ref image_transfers.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching current geometry
+ * and codec methods; serialise access externally.
+ * @param[in] tile Valid zero-based tile index; not range-checked here.
+ * @return Predecode callback status, or zero for detected setup/geometry
+ * failure.
+ */
 
 /*
  * Set state to appear as if a
@@ -1657,6 +1951,19 @@ static int TIFFStartTile(TIFF *tif, uint32_t tile)
     return (
         (*tif->tif_predecode)(tif, (uint16_t)(tile / td->td_stripsperimage)));
 }
+/**
+ * @brief Check readable mode and expected image organisation.
+ * @ingroup libtiff_private_image_transfers
+ *
+ * Only checks O_WRONLY rejection and whether tiles matches isTiled(). No
+ * allocation, pixel/codec validation, file I/O, or ownership transfer;
+ * errors dispatch diagnostics.
+ *
+ * @param[in] tif Non-NULL live handle whose mode and organisation are read;
+ * serialise access externally.
+ * @param[in] tiles Exactly zero for strips or one for tiles.
+ * @return One for compatible mode/organisation, zero otherwise.
+ */
 
 static int TIFFCheckRead(TIFF *tif, int tiles)
 {

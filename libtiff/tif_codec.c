@@ -27,6 +27,11 @@
  *
  * Builtin Compression Scheme Configuration Support.
  */
+/**
+ * @file tif_codec.c
+ * @brief Define the built-in codec table and unconfigured-codec stubs.
+ */
+
 #include "tiffiop.h"
 
 static int NotConfigured(TIFF *, int);
@@ -107,6 +112,17 @@ const TIFFCodec _TIFFBuiltinCODECS[] = {
     {"LERC", COMPRESSION_LERC, TIFFInitLERC},
     {NULL, 0, NULL}};
 
+/**
+ * @brief Report that the current compression support was not built.
+ * @ingroup libtiff_private_codecs
+ *
+ * Looks up a display name and dispatches handle diagnostics; no allocation,
+ * pixel I/O, or buffer ownership transfer.
+ *
+ * @param[in] tif Non-NULL live handle; td_compression and tif_name are read
+ * for the diagnostic and codec state is unchanged.
+ * @return Zero unconditionally.
+ */
 static int _notConfigured(TIFF *tif)
 {
     const TIFFCodec *c = TIFFFindCODEC(tif->tif_dir.td_compression);
@@ -120,6 +136,20 @@ static int _notConfigured(TIFF *tif)
     return (0);
 }
 
+/**
+ * @brief Install unavailable-codec setup methods while accepting metadata
+ * access.
+ * @ingroup libtiff_private_codecs
+ *
+ * Sets fixup/setup callbacks to _notConfigured and clears encode/decode
+ * status. Does not allocate state, access payload, or diagnose until
+ * callbacks are used.
+ *
+ * @param[in,out] tif Non-NULL live handle whose fixup/setup callbacks and
+ * encode/decode status flags are replaced; serialise access externally.
+ * @param[in] scheme Unused compression identifier.
+ * @return One unconditionally.
+ */
 static int NotConfigured(TIFF *tif, int scheme)
 {
     (void)scheme;
@@ -136,12 +166,7 @@ static int NotConfigured(TIFF *tif, int scheme)
 /*                       TIFFIsCODECConfigured()                        */
 /************************************************************************/
 
-/**
- * Check whether we have working codec for the specific coding scheme.
- *
- * @return returns 1 if the codec is configured and working. Otherwise
- * 0 will be returned.
- */
+/* The public contract is documented with the declaration in tiffio.h. */
 
 int TIFFIsCODECConfigured(uint16_t scheme)
 {
@@ -161,3 +186,110 @@ int TIFFIsCODECConfigured(uint16_t scheme)
     }
     return 0;
 }
+
+/**
+ * @def TIFFInitLZW
+ * @brief When LZW_SUPPORT is not defined, alias TIFFInitLZW to NotConfigured().
+ * @ingroup libtiff_private_codecs
+ */
+/**
+ * @def TIFFInitPackBits
+ * @brief When PACKBITS_SUPPORT is not defined, alias TIFFInitPackBits to
+ * NotConfigured().
+ * @ingroup libtiff_private_codecs
+ */
+/**
+ * @def TIFFInitThunderScan
+ * @brief When THUNDER_SUPPORT is not defined, alias TIFFInitThunderScan to
+ * NotConfigured().
+ * @ingroup libtiff_private_codecs
+ */
+/**
+ * @def TIFFInitNeXT
+ * @brief When NEXT_SUPPORT is not defined, alias TIFFInitNeXT to
+ * NotConfigured().
+ * @ingroup libtiff_private_codecs
+ */
+/**
+ * @def TIFFInitJPEG
+ * @brief When JPEG_SUPPORT is not defined, alias TIFFInitJPEG to
+ * NotConfigured().
+ * @ingroup libtiff_private_codecs
+ */
+/**
+ * @def TIFFInitOJPEG
+ * @brief When OJPEG_SUPPORT is not defined, alias TIFFInitOJPEG to
+ * NotConfigured().
+ * @ingroup libtiff_private_codecs
+ */
+/**
+ * @def TIFFInitCCITTRLE
+ * @brief When CCITT_SUPPORT is not defined, alias TIFFInitCCITTRLE to
+ * NotConfigured().
+ * @ingroup libtiff_private_codecs
+ */
+/**
+ * @def TIFFInitCCITTRLEW
+ * @brief When CCITT_SUPPORT is not defined, alias TIFFInitCCITTRLEW to
+ * NotConfigured().
+ * @ingroup libtiff_private_codecs
+ */
+/**
+ * @def TIFFInitCCITTFax3
+ * @brief When CCITT_SUPPORT is not defined, alias TIFFInitCCITTFax3 to
+ * NotConfigured().
+ * @ingroup libtiff_private_codecs
+ */
+/**
+ * @def TIFFInitCCITTFax4
+ * @brief When CCITT_SUPPORT is not defined, alias TIFFInitCCITTFax4 to
+ * NotConfigured().
+ * @ingroup libtiff_private_codecs
+ */
+/**
+ * @def TIFFInitJBIG
+ * @brief When JBIG_SUPPORT is not defined, alias TIFFInitJBIG to
+ * NotConfigured().
+ * @ingroup libtiff_private_codecs
+ */
+/**
+ * @def TIFFInitZIP
+ * @brief When ZIP_SUPPORT is not defined, alias TIFFInitZIP to NotConfigured().
+ * @ingroup libtiff_private_codecs
+ */
+/**
+ * @def TIFFInitPixarLog
+ * @brief When PIXARLOG_SUPPORT is not defined, alias TIFFInitPixarLog to
+ * NotConfigured().
+ * @ingroup libtiff_private_codecs
+ */
+/**
+ * @def TIFFInitSGILog
+ * @brief When LOGLUV_SUPPORT is not defined, alias TIFFInitSGILog to
+ * NotConfigured().
+ * @ingroup libtiff_private_codecs
+ */
+/**
+ * @def TIFFInitLERC
+ * @brief When LERC_SUPPORT is not defined, alias TIFFInitLERC to
+ * NotConfigured().
+ * @ingroup libtiff_private_codecs
+ */
+/**
+ * @def TIFFInitLZMA
+ * @brief When LZMA_SUPPORT is not defined, alias TIFFInitLZMA to
+ * NotConfigured().
+ * @ingroup libtiff_private_codecs
+ */
+/**
+ * @def TIFFInitZSTD
+ * @brief When ZSTD_SUPPORT is not defined, alias TIFFInitZSTD to
+ * NotConfigured().
+ * @ingroup libtiff_private_codecs
+ */
+/**
+ * @def TIFFInitWebP
+ * @brief When WEBP_SUPPORT is not defined, alias TIFFInitWebP to
+ * NotConfigured().
+ * @ingroup libtiff_private_codecs
+ */

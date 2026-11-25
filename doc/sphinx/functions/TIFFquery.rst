@@ -58,7 +58,7 @@ There are :ref:`IFDs <ImageFileDirectory>` in the file and an "active"
 :ref:`IFD <ImageFileDirectory>`  in memory, from which fields
 are "set" and "get". The index of the current directory returned is:
 
-a) 65535 (non-existing directory) if there is no IFD in the file after opening,
+a) ``(tdir_t)UINT_MAX`` (non-existing directory) if there is no IFD in the file after opening,
    or the state is unknown,
    or the last read (i.e. TIFFFetchDirectory()) failed,
    or a custom directory was written.

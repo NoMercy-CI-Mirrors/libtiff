@@ -11,8 +11,16 @@ in your submission, and that you have the right to contribute it under
 the libtiff license. Please disclose the AI tool and model used (in an
 `Assisted-by:` commit trailer, the merge request description, or at the
 end of issue text). Please read the
-[AI policy](doc/project/ai-policy.rst) before using AI tools to prepare
+[AI policy](doc/sphinx/project/ai-policy.rst) before using AI tools to prepare
 a merge request, issue or security report.
+
+API documentation
+-----------------
+
+Library API and implementation documentation uses Doxygen. See
+[the documentation guide](doc/doxygen/guide.md) for comment conventions,
+module organisation, build instructions, and downstream cross-references.
+The existing Sphinx manual and man pages remain maintained alongside it.
 
 Code formatting
 ---------------

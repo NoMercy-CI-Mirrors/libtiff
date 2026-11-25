@@ -22,6 +22,11 @@
  * OF THIS SOFTWARE.
  */
 
+/**
+ * @file tif_luv.c
+ * @brief Implement SGILog luminance and LogLuv row compression and translation.
+ */
+
 #include "tiffiop.h"
 #ifdef LOGLUV_SUPPORT
 
@@ -155,21 +160,66 @@
  * State block for each open TIFF
  * file using LogLuv compression/decompression.
  */
+/**
+ * @brief Name the SGILog codec-owned translation state.
+ * @ingroup libtiff_private_sgilog
+ */
 typedef struct logLuvState LogLuvState;
 
+/**
+ * @brief Own SGILog translation pixels and selected format conversion.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Keep state and saved callback code live until cleanup. tbuf belongs to
+ * the codec; caller pixel buffers remain borrowed and are not retained.
+ */
 struct logLuvState
 {
-    int encoder_state; /* 1 if encoder correctly initialized */
-    int user_datafmt;  /* user data format */
-    int encode_meth;   /* encoding method */
-    int pixel_size;    /* bytes per pixel */
+    /**
+     * @brief One after successful encoder setup, controlling close-time
+     * metadata changes.
+     */
+    int encoder_state;
+    /**
+     * @brief Cached application format, initially UNKNOWN; rejected assignments
+     * can remain cached.
+     */
+    int user_datafmt;
+    /**
+     * @brief Cached no-dither/random-dither mode; invalid attempts can remain
+     * after rejection.
+     */
+    int encode_meth;
+    /** @brief Positive bytes per application-facing pixel after setup. */
+    int pixel_size;
 
-    uint8_t *tbuf;    /* translation buffer */
-    tmsize_t tbuflen; /* buffer length */
+    /**
+     * @brief Owned Ext aligned translation storage, released during cleanup.
+     */
+    uint8_t *tbuf;
+    /** @brief Translation capacity in pixels, not bytes. */
+    tmsize_t tbuflen;
+    /**
+     * @brief Translate pixels between caller bytes and packed codec staging.
+     * @ingroup libtiff_private_sgilog
+     *
+     * Invoked synchronously. First argument [in,out] is borrowed LogLuvState,
+     * second [in,out] is borrowed caller pixel storage (input for encoding,
+     * output for decoding), third [in] is a nonnegative pixel count within both
+     * capacities. Wide caller bytes may be unaligned; tbuf is allocator
+     * aligned. No pointer retention or ownership transfer. Encoding can mutate
+     * shared dither/perimeter state; there is no return status. The selected
+     * concrete converter states its representation and direction.
+     */
     void (*tfunc)(LogLuvState *, uint8_t *, tmsize_t);
 
-    TIFFVSetMethod vgetparent; /* super-class method */
-    TIFFVSetMethod vsetparent; /* super-class method */
+    /**
+     * @brief Borrowed saved parent getter under the declared compatible method
+     * type.
+     */
+    TIFFVSetMethod vgetparent;
+    /** @brief Borrowed saved parent setter restored during cleanup. */
+    TIFFVSetMethod vsetparent;
 };
 
 #define DecoderState(tif) ((LogLuvState *)(tif)->tif_data)
@@ -186,6 +236,30 @@ static void LuvRawFromRaw(LogLuvState *sp, uint8_t *op, tmsize_t n);
 
 /*
  * Decode a string of 16-bit gray pixels.
+ */
+/**
+ * @brief Decode two compressed luminance byte planes and translate one row.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Requires successful setup, sample zero, positive pixel_size and a complete
+ * nonnegative pixel extent; a translation buffer shorter than the row is
+ * diagnosed and rejected. Reconstructs staging from two run-length coded
+ * byte planes, then copies encoded values or invokes tfunc. Compressed runs
+ * are clipped to the requested pixel count. Short input diagnoses and
+ * commits consumed raw cursors without clearing caller output; output
+ * conversion is deferred until staging succeeds. State/tbuf/raw progress can
+ * change on failure. No allocation, direct client I/O, shared-state access
+ * or caller ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live SGILog handle with valid current
+ * geometry/state; serialise handle operations.
+ * @param[out] op Caller output for occ/pixel_size pixels in the selected
+ * user format.
+ * @param[in] occ Nonnegative whole-pixel output byte count.
+ * @param[in] s Sample zero; row methods assert this for contiguous/gray
+ * coding.
+ * @return One after reconstructed output, zero on translation-capacity or
+ * short-input rejection.
  */
 static int LogL16Decode(TIFF *tif, uint8_t *op, tmsize_t occ, uint16_t s)
 {
@@ -261,6 +335,29 @@ static int LogL16Decode(TIFF *tif, uint8_t *op, tmsize_t occ, uint16_t s)
 /*
  * Decode a string of 24-bit pixels.
  */
+/**
+ * @brief Decode three stored bytes per packed colour pixel and translate one
+ * row.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Requires successful setup, sample zero, positive pixel_size and a complete
+ * nonnegative pixel extent; a translation buffer shorter than the row is
+ * diagnosed and rejected. Unpacks fixed three-byte pixels into staging
+ * (there is no run coding), then copies raw values or invokes tfunc. Short
+ * input diagnoses and commits consumed raw cursors without touching caller
+ * output. State/tbuf/raw progress can change on failure. No allocation,
+ * direct client I/O, shared-state access or caller ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live SGILog handle with valid current
+ * geometry/state; serialise handle operations.
+ * @param[out] op Caller output for occ/pixel_size pixels in the selected
+ * user format.
+ * @param[in] occ Nonnegative whole-pixel output byte count.
+ * @param[in] s Sample zero; row methods assert this for contiguous/gray
+ * coding.
+ * @return One after reconstructed output, zero on translation-capacity or
+ * short-input rejection.
+ */
 static int LogLuvDecode24(TIFF *tif, uint8_t *op, tmsize_t occ, uint16_t s)
 {
     static const char module[] = "LogLuvDecode24";
@@ -311,6 +408,30 @@ static int LogLuvDecode24(TIFF *tif, uint8_t *op, tmsize_t occ, uint16_t s)
 
 /*
  * Decode a string of 32-bit pixels.
+ */
+/**
+ * @brief Decode four compressed colour byte planes and translate one row.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Requires successful setup, sample zero, positive pixel_size and a complete
+ * nonnegative pixel extent; a translation buffer shorter than the row is
+ * diagnosed and rejected. Reconstructs staging from four run-length coded
+ * byte planes, then copies raw values or invokes tfunc. Compressed runs are
+ * clipped to the requested pixel count. Short input diagnoses and commits
+ * consumed raw cursors without clearing caller output; output conversion is
+ * deferred until staging succeeds. State/tbuf/raw progress can change on
+ * failure. No allocation, direct client I/O, shared-state access or caller
+ * ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live SGILog handle with valid current
+ * geometry/state; serialise handle operations.
+ * @param[out] op Caller output for occ/pixel_size pixels in the selected
+ * user format.
+ * @param[in] occ Nonnegative whole-pixel output byte count.
+ * @param[in] s Sample zero; row methods assert this for contiguous/gray
+ * coding.
+ * @return One after reconstructed output, zero on translation-capacity or
+ * short-input rejection.
  */
 static int LogLuvDecode32(TIFF *tif, uint8_t *op, tmsize_t occ, uint16_t s)
 {
@@ -389,6 +510,26 @@ static int LogLuvDecode32(TIFF *tif, uint8_t *op, tmsize_t occ, uint16_t s)
  * maintain synchrony with the encode algorithm, which
  * is row by row.
  */
+/**
+ * @brief Decode complete SGILog strip rows through the selected row callback.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Queries the positive decoded scanline byte size, rejects fractional
+ * requests and dispatches one row at a time. Requires nonnegative
+ * complete-row extent and a selected callback. Continues for nonzero row
+ * status; installed SGILog row decoders use zero/one. Earlier rows, raw
+ * state and codec/file progress remain on failure. No result allocation or
+ * ownership transfer; row decoder effects apply.
+ *
+ * @param[in,out] tif Non-NULL live SGILog handle with valid current
+ * geometry/state; serialise handle operations.
+ * @param[out] bp Caller output of cc bytes.
+ * @param[in] cc Byte count; a nonnegative multiple of TIFFScanlineSize.
+ * @param[in] s Sample zero; row methods assert this for contiguous/gray
+ * coding.
+ * @return One when all bytes processed, zero on zero-row-size, fractional
+ * extent or row failure.
+ */
 static int LogLuvDecodeStrip(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
 {
     tmsize_t rowlen = TIFFScanlineSize(tif);
@@ -415,6 +556,26 @@ static int LogLuvDecodeStrip(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
  * maintain synchrony with the encode algorithm, which
  * is row by row.
  */
+/**
+ * @brief Decode complete SGILog tile rows through the selected row callback.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Queries the positive decoded tile-row byte size, rejects fractional
+ * requests and dispatches one row at a time. Requires nonnegative
+ * complete-row extent and a selected callback. Continues for nonzero row
+ * status; installed SGILog row decoders use zero/one. Earlier rows, raw
+ * state and codec/file progress remain on failure. No result allocation or
+ * ownership transfer; row decoder effects apply.
+ *
+ * @param[in,out] tif Non-NULL live SGILog handle with valid current
+ * geometry/state; serialise handle operations.
+ * @param[out] bp Caller output of cc bytes.
+ * @param[in] cc Byte count; a nonnegative multiple of TIFFTileRowSize.
+ * @param[in] s Sample zero; row methods assert this for contiguous/gray
+ * coding.
+ * @return One when all bytes processed, zero on zero-row-size, fractional
+ * extent or row failure.
+ */
 static int LogLuvDecodeTile(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
 {
     tmsize_t rowlen = TIFFTileRowSize(tif);
@@ -438,6 +599,29 @@ static int LogLuvDecodeTile(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
 
 /*
  * Encode a row of 16-bit pixels.
+ */
+/**
+ * @brief Translate one input row and emit luminance byte-plane runs.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Requires successful setup, sample zero, positive pixel_size and complete
+ * nonnegative pixel input; a translation buffer shorter than the row is
+ * diagnosed and rejected. Copies native encoded/raw input or invokes tfunc,
+ * then writes cached output and flushes as needed. Raw capacity must
+ * accommodate the largest literal packet and code headroom (at least 130
+ * bytes). Input remains caller-owned and unchanged; translation may mutate
+ * shared dithering state, requiring cross-thread serialisation. Flush errors
+ * diagnose where detected and can leave partial stream/file progress. No
+ * rollback or ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live SGILog handle with valid current
+ * geometry/state; serialise handle and shared dithering operations.
+ * @param[in] bp Caller input of cc bytes.
+ * @param[in] cc Nonnegative byte count of whole user pixels.
+ * @param[in] s Sample zero; row methods assert this for contiguous/gray
+ * coding.
+ * @return One after row bytes buffered, zero on capacity validation or
+ * flush failure.
  */
 static int LogL16Encode(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
 {
@@ -550,6 +734,29 @@ static int LogL16Encode(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
 /*
  * Encode a row of 24-bit pixels.
  */
+/**
+ * @brief Translate one input row and emit three-byte packed colour pixels.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Requires successful setup, sample zero, positive pixel_size and complete
+ * nonnegative pixel input; a translation buffer shorter than the row is
+ * diagnosed and rejected. Copies native encoded/raw input or invokes tfunc,
+ * then writes cached output and flushes as needed. Raw capacity must hold at
+ * least three bytes after a flush. Input remains caller-owned and unchanged;
+ * translation may mutate the shared _TIFFRand dithering state and lazily fill
+ * the shared oog_encode table, requiring cross-thread serialisation. Flush
+ * errors diagnose where detected and can leave partial stream/file progress. No
+ * rollback or ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live SGILog handle with valid current
+ * geometry/state; serialise handle and shared dithering operations.
+ * @param[in] bp Caller input of cc bytes.
+ * @param[in] cc Nonnegative byte count of whole user pixels.
+ * @param[in] s Sample zero; row methods assert this for contiguous/gray
+ * coding.
+ * @return One after row bytes buffered, zero on capacity validation or
+ * flush failure.
+ */
 static int LogLuvEncode24(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
 {
     static const char module[] = "LogLuvEncode24";
@@ -602,6 +809,29 @@ static int LogLuvEncode24(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
 
 /*
  * Encode a row of 32-bit pixels.
+ */
+/**
+ * @brief Translate one input row and emit colour byte-plane runs.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Requires successful setup, sample zero, positive pixel_size and complete
+ * nonnegative pixel input; a translation buffer shorter than the row is
+ * diagnosed and rejected. Copies native encoded/raw input or invokes tfunc,
+ * then writes cached output and flushes as needed. Raw capacity must
+ * accommodate the largest literal packet and code headroom (at least 130
+ * bytes). Input remains caller-owned and unchanged; translation may mutate
+ * shared dithering state, requiring cross-thread serialisation. Flush errors
+ * diagnose where detected and can leave partial stream/file progress. No
+ * rollback or ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live SGILog handle with valid current
+ * geometry/state; serialise handle and shared dithering operations.
+ * @param[in] bp Caller input of cc bytes.
+ * @param[in] cc Nonnegative byte count of whole user pixels.
+ * @param[in] s Sample zero; row methods assert this for contiguous/gray
+ * coding.
+ * @return One after row bytes buffered, zero on capacity validation or
+ * flush failure.
  */
 static int LogLuvEncode32(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
 {
@@ -716,6 +946,26 @@ static int LogLuvEncode32(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
  * Encode a strip of pixels.  We break it into rows to
  * avoid encoding runs across row boundaries.
  */
+/**
+ * @brief Encode complete SGILog strip rows through the selected row callback.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Queries the positive decoded scanline byte size, rejects fractional
+ * requests and dispatches one row at a time. Requires nonnegative
+ * complete-row extent and a selected callback. Continues only for callback
+ * status exactly one. Earlier rows, raw state and codec/file progress
+ * remain on failure. No result allocation or ownership transfer; row
+ * converter/dither/I/O effects apply.
+ *
+ * @param[in,out] tif Non-NULL live SGILog handle with valid current
+ * geometry/state; serialise handle and shared dithering operations.
+ * @param[in] bp Caller input of cc bytes.
+ * @param[in] cc Byte count; a nonnegative multiple of TIFFScanlineSize.
+ * @param[in] s Sample zero; row methods assert this for contiguous/gray
+ * coding.
+ * @return One when all bytes processed, zero on zero-row-size, fractional
+ * extent or row failure.
+ */
 static int LogLuvEncodeStrip(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
 {
     tmsize_t rowlen = TIFFScanlineSize(tif);
@@ -740,6 +990,26 @@ static int LogLuvEncodeStrip(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
 /*
  * Encode a tile of pixels.  We break it into rows to
  * avoid encoding runs across row boundaries.
+ */
+/**
+ * @brief Encode complete SGILog tile rows through the selected row callback.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Queries the positive decoded tile-row byte size, rejects fractional
+ * requests and dispatches one row at a time. Requires nonnegative
+ * complete-row extent and a selected callback. Continues only for callback
+ * status exactly one. Earlier rows, raw state and codec/file progress
+ * remain on failure. No result allocation or ownership transfer; row
+ * converter/dither/I/O effects apply.
+ *
+ * @param[in,out] tif Non-NULL live SGILog handle with valid current
+ * geometry/state; serialise handle and shared dithering operations.
+ * @param[in] bp Caller input of cc bytes.
+ * @param[in] cc Byte count; a nonnegative multiple of TIFFTileRowSize.
+ * @param[in] s Sample zero; row methods assert this for contiguous/gray
+ * coding.
+ * @return One when all bytes processed, zero on zero-row-size, fractional
+ * extent or row failure.
  */
 static int LogLuvEncodeTile(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
 {
@@ -784,6 +1054,18 @@ static int LogLuvEncodeTile(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
 #define TIFF_RAND_MAX 32767
 
 // From POSIX.1-2001 as an example of an implementation of rand()
+/**
+ * @brief Advance the shared SGILog pseudo-random dither generator.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Seeds a static counter from time when zero, advances a fixed
+ * linear-congruential recurrence and returns fifteen output bits. State is
+ * process-global and unsynchronised; serialise all calls/dithered
+ * conversions across threads. No heap allocation, TIFF diagnostics, client
+ * I/O, returned storage or ownership transfer.
+ *
+ * @return Pseudo-random integer from zero through TIFF_RAND_MAX.
+ */
 static uint32_t _TIFFRand(void)
 {
     static uint32_t nCounter = 0;
@@ -796,6 +1078,20 @@ static uint32_t _TIFFRand(void)
     return (nCounterLocal / 65536U) % (TIFF_RAND_MAX + 1);
 }
 
+/**
+ * @brief Quantise a finite value with optional shared random dithering.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Requires the input and dithered result to fit int. NODITHER casts
+ * directly, otherwise adds uniform approximate half-unit noise from
+ * _TIFFRand before truncation. Serialise shared random-state access. No
+ * heap allocation, client I/O, diagnostics or ownership transfer.
+ *
+ * @param[in] x Finite value whose quantisation and dithered result fit int.
+ * @param[in] m NODITHER for direct truncation, otherwise shared random
+ * dithering.
+ * @return Truncated or dithered integer; no error sentinel.
+ */
 static int tiff_itrunc(double x, int m)
 {
     if (m == SGILOGENCODE_NODITHER)
@@ -841,6 +1137,17 @@ static
  * them in these per-pixel paths.  _TIFFmemcpy() is an out-of-line wrapper in
  * non-LTO builds.
  */
+/**
+ * @brief Read one native-order float through unaligned bytes.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Uses fixed-size memcpy on sufficient live byte storage. No byte-order
+ * conversion, allocation, I/O, diagnostics, retained pointer or ownership
+ * transfer.
+ *
+ * @param[in] cp Readable bytes for one native value; unaligned allowed.
+ * @return Loaded native value.
+ */
 static float LogLuvLoadFloatNativeUnaligned(const uint8_t *cp)
 {
     float v;
@@ -848,11 +1155,34 @@ static float LogLuvLoadFloatNativeUnaligned(const uint8_t *cp)
     return v;
 }
 
+/**
+ * @brief Write one native-order float through unaligned bytes.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Uses fixed-size memcpy on sufficient live byte storage. No byte-order
+ * conversion, allocation, I/O, diagnostics, retained pointer or ownership
+ * transfer.
+ *
+ * @param[out] cp Writable bytes for one native value; unaligned allowed.
+ * @param[in] v Value to store.
+ */
 static void LogLuvStoreFloatNativeUnaligned(uint8_t *cp, float v)
 {
     memcpy(cp, &v, sizeof(v));
 }
 
+/**
+ * @brief Read one native-order signed sixteen-bit value through unaligned
+ * bytes.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Uses fixed-size memcpy on sufficient live byte storage. No byte-order
+ * conversion, allocation, I/O, diagnostics, retained pointer or ownership
+ * transfer.
+ *
+ * @param[in] cp Readable bytes for one native value; unaligned allowed.
+ * @return Loaded native value.
+ */
 static int16_t LogLuvLoad16NativeUnaligned(const uint8_t *cp)
 {
     int16_t v;
@@ -860,11 +1190,35 @@ static int16_t LogLuvLoad16NativeUnaligned(const uint8_t *cp)
     return v;
 }
 
+/**
+ * @brief Write one native-order signed sixteen-bit value through unaligned
+ * bytes.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Uses fixed-size memcpy on sufficient live byte storage. No byte-order
+ * conversion, allocation, I/O, diagnostics, retained pointer or ownership
+ * transfer.
+ *
+ * @param[out] cp Writable bytes for one native value; unaligned allowed.
+ * @param[in] v Value to store.
+ */
 static void LogLuvStore16NativeUnaligned(uint8_t *cp, int16_t v)
 {
     memcpy(cp, &v, sizeof(v));
 }
 
+/**
+ * @brief Read one native-order unsigned thirty-two-bit value through unaligned
+ * bytes.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Uses fixed-size memcpy on sufficient live byte storage. No byte-order
+ * conversion, allocation, I/O, diagnostics, retained pointer or ownership
+ * transfer.
+ *
+ * @param[in] cp Readable bytes for one native value; unaligned allowed.
+ * @return Loaded native value.
+ */
 static uint32_t LogLuvLoad32NativeUnaligned(const uint8_t *cp)
 {
     uint32_t v;
@@ -872,11 +1226,39 @@ static uint32_t LogLuvLoad32NativeUnaligned(const uint8_t *cp)
     return v;
 }
 
+/**
+ * @brief Write one native-order unsigned thirty-two-bit value through unaligned
+ * bytes.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Uses fixed-size memcpy on sufficient live byte storage. No byte-order
+ * conversion, allocation, I/O, diagnostics, retained pointer or ownership
+ * transfer.
+ *
+ * @param[out] cp Writable bytes for one native value; unaligned allowed.
+ * @param[in] v Value to store.
+ */
 static void LogLuvStore32NativeUnaligned(uint8_t *cp, uint32_t v)
 {
     memcpy(cp, &v, sizeof(v));
 }
 
+/**
+ * @brief Copy encoded luminance words from staging to native caller bytes.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Requires n complete pixels of aligned codec staging and disjoint caller
+ * storage for n pixels in the selected native format. Copies n native
+ * int16_t words one at a time through the unaligned store helper; no
+ * conversion, dithering or shared state. No allocation, I/O, diagnostics or
+ * status result.
+ *
+ * @param[in] sp Borrowed live codec state whose aligned translation storage
+ * holds n staged pixels; encode_meth is not used.
+ * @param[out] op Caller output of n pixels in the selected native format.
+ * @param[in] n Nonnegative pixel count, not bytes, within translation
+ * capacity.
+ */
 static void L16toL16(LogLuvState *sp, uint8_t *op, tmsize_t n)
 {
     int16_t *l16 = (int16_t *)sp->tbuf;
@@ -888,6 +1270,22 @@ static void L16toL16(LogLuvState *sp, uint8_t *op, tmsize_t n)
     }
 }
 
+/**
+ * @brief Copy native caller luminance words into staging.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Requires n complete pixels of aligned codec staging and disjoint caller
+ * storage for n pixels in the selected native format. Copies n native
+ * int16_t words one at a time through the unaligned load helper; no
+ * conversion, dithering or shared state. No allocation, I/O, diagnostics or
+ * status result.
+ *
+ * @param[in,out] sp Borrowed live codec state whose aligned translation
+ * storage receives n staged pixels; encode_meth is not used.
+ * @param[in] op Caller input of n pixels in the selected native format.
+ * @param[in] n Nonnegative pixel count, not bytes, within translation
+ * capacity.
+ */
 static void L16fromL16(LogLuvState *sp, uint8_t *op, tmsize_t n)
 {
     int16_t *l16 = (int16_t *)sp->tbuf;
@@ -899,6 +1297,22 @@ static void L16fromL16(LogLuvState *sp, uint8_t *op, tmsize_t n)
     }
 }
 
+/**
+ * @brief Copy packed LogLuv words from staging to native caller bytes.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Requires n complete pixels of aligned codec staging and disjoint caller
+ * storage for n pixels in the selected native format. Copies n native
+ * uint32_t words one at a time through the unaligned store helper; no
+ * conversion, dithering or shared state. No allocation, I/O, diagnostics or
+ * status result.
+ *
+ * @param[in] sp Borrowed live codec state whose aligned translation storage
+ * holds n staged pixels; encode_meth is not used.
+ * @param[out] op Caller output of n pixels in the selected native format.
+ * @param[in] n Nonnegative pixel count, not bytes, within translation
+ * capacity.
+ */
 static void LuvRawToRaw(LogLuvState *sp, uint8_t *op, tmsize_t n)
 {
     uint32_t *luv = (uint32_t *)sp->tbuf;
@@ -910,6 +1324,22 @@ static void LuvRawToRaw(LogLuvState *sp, uint8_t *op, tmsize_t n)
     }
 }
 
+/**
+ * @brief Copy native caller LogLuv words into staging.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Requires n complete pixels of aligned codec staging and disjoint caller
+ * storage for n pixels in the selected native format. Copies n native
+ * uint32_t words one at a time through the unaligned load helper; no
+ * conversion, dithering or shared state. No allocation, I/O, diagnostics or
+ * status result.
+ *
+ * @param[in,out] sp Borrowed live codec state whose aligned translation
+ * storage receives n staged pixels; encode_meth is not used.
+ * @param[in] op Caller input of n pixels in the selected native format.
+ * @param[in] n Nonnegative pixel count, not bytes, within translation
+ * capacity.
+ */
 static void LuvRawFromRaw(LogLuvState *sp, uint8_t *op, tmsize_t n)
 {
     uint32_t *luv = (uint32_t *)sp->tbuf;
@@ -921,6 +1351,22 @@ static void LuvRawFromRaw(LogLuvState *sp, uint8_t *op, tmsize_t n)
     }
 }
 
+/**
+ * @brief Convert staged LogL16 values to native float luminance.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Requires n complete pixels of aligned codec staging and disjoint caller
+ * storage for n pixels in the selected native format. Decodes each code with
+ * LogL16toY and stores one native float per pixel; unaligned output is
+ * allowed. Touches no shared state. No allocation, I/O, diagnostics or
+ * status result.
+ *
+ * @param[in] sp Borrowed live codec state whose aligned translation storage
+ * holds n staged pixels; encode_meth is not used.
+ * @param[out] op Caller output of n pixels in the selected native format.
+ * @param[in] n Nonnegative pixel count, not bytes, within translation
+ * capacity.
+ */
 static void L16toY(LogLuvState *sp, uint8_t *op, tmsize_t n)
 {
     int16_t *l16 = (int16_t *)sp->tbuf;
@@ -932,6 +1378,21 @@ static void L16toY(LogLuvState *sp, uint8_t *op, tmsize_t n)
     }
 }
 
+/**
+ * @brief Convert staged LogL16 values to clipped gamma-two grayscale bytes.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Requires n complete pixels of aligned codec staging and disjoint caller
+ * storage for n pixels in the selected native format. Decodes each code with
+ * LogL16toY and writes one byte per pixel as 256*sqrt(Y), clipped to 0..255.
+ * Touches no shared state. No allocation, I/O, diagnostics or status result.
+ *
+ * @param[in] sp Borrowed live codec state whose aligned translation storage
+ * holds n staged pixels; encode_meth is not used.
+ * @param[out] op Caller output of n pixels in the selected native format.
+ * @param[in] n Nonnegative pixel count, not bytes, within translation
+ * capacity.
+ */
 static void L16toGry(LogLuvState *sp, uint8_t *op, tmsize_t n)
 {
     int16_t *l16 = (int16_t *)sp->tbuf;
@@ -946,6 +1407,24 @@ static void L16toGry(LogLuvState *sp, uint8_t *op, tmsize_t n)
     }
 }
 
+/**
+ * @brief Quantise native float luminance into staged LogL16 codes.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Requires n complete pixels of aligned codec staging and disjoint caller
+ * storage for n pixels in the selected native format. Encodes one native
+ * float per pixel (unaligned input allowed) with LogL16fromY. When
+ * encode_meth is SGILOGENCODE_RANDITHER, dithering advances the
+ * process-global, unsynchronised _TIFFRand state; serialise such calls
+ * across threads. No allocation, I/O, diagnostics or status result.
+ *
+ * @param[in,out] sp Borrowed live codec state whose aligned translation
+ * storage receives n staged pixels; encode_meth selects truncation or
+ * random dithering.
+ * @param[in] op Caller input of n pixels in the selected native format.
+ * @param[in] n Nonnegative pixel count, not bytes, within translation
+ * capacity.
+ */
 static void L16fromY(LogLuvState *sp, uint8_t *op, tmsize_t n)
 {
     int16_t *l16 = (int16_t *)sp->tbuf;
@@ -1006,6 +1485,20 @@ static
     ((NANGLES * .499999999 / M_PI) * atan2((v) - V_NEU, (u) - U_NEU) +         \
      .5 * NANGLES)
 
+/**
+ * @brief Map out-of-gamut chromaticity to a hue-matched boundary bin.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Requires finite coordinates with a representable hue index. Lazily fills
+ * a static perimeter lookup from immutable uv_row geometry and nearest
+ * populated angles, then indexes it by atan2 hue. First-use initialisation
+ * is unsynchronised and must be serialised across threads. No heap
+ * allocation, I/O, diagnostics or ownership transfer.
+ *
+ * @param[in] u Finite u-prime chromaticity coordinate.
+ * @param[in] v Finite v-prime chromaticity coordinate.
+ * @return Selected chromaticity table index; no independent error status.
+ */
 static int oog_encode(double u, double v) /* encode out-of-gamut chroma */
 {
     static int oog_table[NANGLES];
@@ -1185,6 +1678,22 @@ static
     return (uint32_t)Le << 14 | (uint32_t)Ce;
 }
 
+/**
+ * @brief Convert staged LogLuv24 codes to native float XYZ triplets.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Requires n complete pixels of aligned codec staging and disjoint caller
+ * storage for n pixels in the selected native format. Decodes each code with
+ * LogLuv24toXYZ and stores three native floats per pixel; unaligned output
+ * is allowed. Invalid chromaticity indices decode as the neutral point.
+ * Touches no shared state. No allocation, I/O, diagnostics or status result.
+ *
+ * @param[in] sp Borrowed live codec state whose aligned translation storage
+ * holds n staged pixels; encode_meth is not used.
+ * @param[out] op Caller output of n pixels in the selected native format.
+ * @param[in] n Nonnegative pixel count, not bytes, within translation
+ * capacity.
+ */
 static void Luv24toXYZ(LogLuvState *sp, uint8_t *op, tmsize_t n)
 {
     uint32_t *luv = (uint32_t *)sp->tbuf;
@@ -1201,6 +1710,23 @@ static void Luv24toXYZ(LogLuvState *sp, uint8_t *op, tmsize_t n)
     }
 }
 
+/**
+ * @brief Convert staged LogLuv24 codes to native signed Luv triplets.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Requires n complete pixels of aligned codec staging and disjoint caller
+ * storage for n pixels in the selected native format. Expands each code into
+ * three native int16_t values: L rebased from the 10-bit log luminance, and
+ * u and v as u' and v' scaled by 2^15. Invalid chromaticity indices decode
+ * as the neutral point. Unaligned output is allowed. Touches no shared
+ * state. No allocation, I/O, diagnostics or status result.
+ *
+ * @param[in] sp Borrowed live codec state whose aligned translation storage
+ * holds n staged pixels; encode_meth is not used.
+ * @param[out] op Caller output of n pixels in the selected native format.
+ * @param[in] n Nonnegative pixel count, not bytes, within translation
+ * capacity.
+ */
 static void Luv24toLuv48(LogLuvState *sp, uint8_t *op, tmsize_t n)
 {
     uint32_t *luv = (uint32_t *)sp->tbuf;
@@ -1228,6 +1754,22 @@ static void Luv24toLuv48(LogLuvState *sp, uint8_t *op, tmsize_t n)
     }
 }
 
+/**
+ * @brief Convert staged LogLuv24 codes to clipped gamma-two RGB bytes.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Requires n complete pixels of aligned codec staging and disjoint caller
+ * storage for n pixels in the selected native format. Decodes each code with
+ * LogLuv24toXYZ and XYZtoRGB24, writing three bytes per pixel (CCIR-709
+ * primaries, gamma 2, clipped to 0..255). Touches no shared state. No
+ * allocation, I/O, diagnostics or status result.
+ *
+ * @param[in] sp Borrowed live codec state whose aligned translation storage
+ * holds n staged pixels; encode_meth is not used.
+ * @param[out] op Caller output of n pixels in the selected native format.
+ * @param[in] n Nonnegative pixel count, not bytes, within translation
+ * capacity.
+ */
 static void Luv24toRGB(LogLuvState *sp, uint8_t *op, tmsize_t n)
 {
     uint32_t *luv = (uint32_t *)sp->tbuf;
@@ -1243,6 +1785,26 @@ static void Luv24toRGB(LogLuvState *sp, uint8_t *op, tmsize_t n)
     }
 }
 
+/**
+ * @brief Quantise native float XYZ triplets into LogLuv24 staging.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Requires n complete pixels of aligned codec staging and disjoint caller
+ * storage for n pixels in the selected native format. Encodes three native
+ * floats per pixel (unaligned input allowed) with LogLuv24fromXYZ. When
+ * encode_meth is SGILOGENCODE_RANDITHER, dithering advances the process-global,
+ * unsynchronised _TIFFRand state. With either method, out-of-gamut chromaticity
+ * may lazily initialise the process-global, unsynchronised oog_encode table.
+ * Serialise such calls across threads. No allocation, I/O, diagnostics or
+ * status result.
+ *
+ * @param[in,out] sp Borrowed live codec state whose aligned translation
+ * storage receives n staged pixels; encode_meth selects truncation or
+ * random dithering.
+ * @param[in] op Caller input of n pixels in the selected native format.
+ * @param[in] n Nonnegative pixel count, not bytes, within translation
+ * capacity.
+ */
 static void Luv24fromXYZ(LogLuvState *sp, uint8_t *op, tmsize_t n)
 {
     uint32_t *luv = (uint32_t *)sp->tbuf;
@@ -1258,6 +1820,27 @@ static void Luv24fromXYZ(LogLuvState *sp, uint8_t *op, tmsize_t n)
     }
 }
 
+/**
+ * @brief Quantise native signed Luv triplets into LogLuv24 staging.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Requires n complete pixels of aligned codec staging and disjoint caller
+ * storage for n pixels in the selected native format. Encodes three native
+ * int16_t values per pixel (unaligned input allowed): L is clamped to the
+ * 10-bit range and u, v (scaled by 2^15) are encoded with uv_encode. When
+ * encode_meth is SGILOGENCODE_RANDITHER, dithering advances the process-global,
+ * unsynchronised _TIFFRand state. With either method, out-of-gamut chromaticity
+ * may lazily initialise the process-global, unsynchronised oog_encode table.
+ * Serialise such calls across threads. No allocation, I/O, diagnostics or
+ * status result.
+ *
+ * @param[in,out] sp Borrowed live codec state whose aligned translation
+ * storage receives n staged pixels; encode_meth selects truncation or
+ * random dithering.
+ * @param[in] op Caller input of n pixels in the selected native format.
+ * @param[in] n Nonnegative pixel count, not bytes, within translation
+ * capacity.
+ */
 static void Luv24fromLuv48(LogLuvState *sp, uint8_t *op, tmsize_t n)
 {
     uint32_t *luv = (uint32_t *)sp->tbuf;
@@ -1349,6 +1932,22 @@ static
     return (Le << 16 | ue << 8 | ve);
 }
 
+/**
+ * @brief Convert staged LogLuv32 codes to native float XYZ triplets.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Requires n complete pixels of aligned codec staging and disjoint caller
+ * storage for n pixels in the selected native format. Decodes each code with
+ * LogLuv32toXYZ and stores three native floats per pixel; unaligned output
+ * is allowed. Touches no shared state. No allocation, I/O, diagnostics or
+ * status result.
+ *
+ * @param[in] sp Borrowed live codec state whose aligned translation storage
+ * holds n staged pixels; encode_meth is not used.
+ * @param[out] op Caller output of n pixels in the selected native format.
+ * @param[in] n Nonnegative pixel count, not bytes, within translation
+ * capacity.
+ */
 static void Luv32toXYZ(LogLuvState *sp, uint8_t *op, tmsize_t n)
 {
     uint32_t *luv = (uint32_t *)sp->tbuf;
@@ -1364,6 +1963,23 @@ static void Luv32toXYZ(LogLuvState *sp, uint8_t *op, tmsize_t n)
     }
 }
 
+/**
+ * @brief Convert staged LogLuv32 codes to native signed Luv triplets.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Requires n complete pixels of aligned codec staging and disjoint caller
+ * storage for n pixels in the selected native format. Splits each code into
+ * three native int16_t values: L copied from the upper 16 bits, and u and v
+ * rescaled from the 8-bit fields to u' and v' times 2^15. Unaligned output
+ * is allowed. Touches no shared state. No allocation, I/O, diagnostics or
+ * status result.
+ *
+ * @param[in] sp Borrowed live codec state whose aligned translation storage
+ * holds n staged pixels; encode_meth is not used.
+ * @param[out] op Caller output of n pixels in the selected native format.
+ * @param[in] n Nonnegative pixel count, not bytes, within translation
+ * capacity.
+ */
 static void Luv32toLuv48(LogLuvState *sp, uint8_t *op, tmsize_t n)
 {
     uint32_t *luv = (uint32_t *)sp->tbuf;
@@ -1387,6 +2003,22 @@ static void Luv32toLuv48(LogLuvState *sp, uint8_t *op, tmsize_t n)
     }
 }
 
+/**
+ * @brief Convert staged LogLuv32 codes to clipped gamma-two RGB bytes.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Requires n complete pixels of aligned codec staging and disjoint caller
+ * storage for n pixels in the selected native format. Decodes each code with
+ * LogLuv32toXYZ and XYZtoRGB24, writing three bytes per pixel (CCIR-709
+ * primaries, gamma 2, clipped to 0..255). Touches no shared state. No
+ * allocation, I/O, diagnostics or status result.
+ *
+ * @param[in] sp Borrowed live codec state whose aligned translation storage
+ * holds n staged pixels; encode_meth is not used.
+ * @param[out] op Caller output of n pixels in the selected native format.
+ * @param[in] n Nonnegative pixel count, not bytes, within translation
+ * capacity.
+ */
 static void Luv32toRGB(LogLuvState *sp, uint8_t *op, tmsize_t n)
 {
     uint32_t *luv = (uint32_t *)sp->tbuf;
@@ -1402,6 +2034,25 @@ static void Luv32toRGB(LogLuvState *sp, uint8_t *op, tmsize_t n)
     }
 }
 
+/**
+ * @brief Quantise native float XYZ triplets into LogLuv32 staging.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Requires n complete pixels of aligned codec staging and disjoint caller
+ * storage for n pixels in the selected native format. Encodes three native
+ * floats per pixel (unaligned input allowed) with LogLuv32fromXYZ; u and v
+ * are clipped to 0..255. When encode_meth is SGILOGENCODE_RANDITHER,
+ * dithering advances the process-global, unsynchronised _TIFFRand state;
+ * serialise such calls across threads. No allocation, I/O, diagnostics or
+ * status result.
+ *
+ * @param[in,out] sp Borrowed live codec state whose aligned translation
+ * storage receives n staged pixels; encode_meth selects truncation or
+ * random dithering.
+ * @param[in] op Caller input of n pixels in the selected native format.
+ * @param[in] n Nonnegative pixel count, not bytes, within translation
+ * capacity.
+ */
 static void Luv32fromXYZ(LogLuvState *sp, uint8_t *op, tmsize_t n)
 {
     uint32_t *luv = (uint32_t *)sp->tbuf;
@@ -1417,6 +2068,26 @@ static void Luv32fromXYZ(LogLuvState *sp, uint8_t *op, tmsize_t n)
     }
 }
 
+/**
+ * @brief Quantise native signed Luv triplets into LogLuv32 staging.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Requires n complete pixels of aligned codec staging and disjoint caller
+ * storage for n pixels in the selected native format. Packs three native
+ * int16_t values per pixel (unaligned input allowed): L is stored unchanged
+ * in the upper 16 bits and u, v are rescaled by UVSCALE/2^15 and masked (not
+ * clipped) to 8 bits. With SGILOGENCODE_NODITHER this uses integer
+ * arithmetic; otherwise each component is dithered through the
+ * process-global, unsynchronised _TIFFRand state, so serialise such calls
+ * across threads. No allocation, I/O, diagnostics or status result.
+ *
+ * @param[in,out] sp Borrowed live codec state whose aligned translation
+ * storage receives n staged pixels; encode_meth selects truncation or
+ * random dithering.
+ * @param[in] op Caller input of n pixels in the selected native format.
+ * @param[in] n Nonnegative pixel count, not bytes, within translation
+ * capacity.
+ */
 static void Luv32fromLuv48(LogLuvState *sp, uint8_t *op, tmsize_t n)
 {
     uint32_t *luv = (uint32_t *)sp->tbuf;
@@ -1453,6 +2124,20 @@ static void Luv32fromLuv48(LogLuvState *sp, uint8_t *op, tmsize_t n)
     }
 }
 
+/**
+ * @brief Perform no SGILog pixel translation.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Ignores all arguments without touching buffers or state. Installed as the
+ * default tfunc by TIFFInitSGILog; decode/encode setup replaces it with a
+ * converter for any user format other than the native ones
+ * (SGILOGDATAFMT_16BIT for LogL, SGILOGDATAFMT_RAW for LogLuv), which the
+ * coders copy directly. No status result.
+ *
+ * @param[in] sp Unused codec state.
+ * @param[in] op Unused caller pixel bytes.
+ * @param[in] n Unused pixel count.
+ */
 static void _logLuvNop(LogLuvState *sp, uint8_t *op, tmsize_t n)
 {
     (void)sp;
@@ -1460,6 +2145,17 @@ static void _logLuvNop(LogLuvState *sp, uint8_t *op, tmsize_t n)
     (void)n;
 }
 
+/**
+ * @brief Infer grayscale SGILog input format from directory fields.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Recognises one-sample native float32, sixteen-bit encoded luminance and
+ * byte grayscale under the supported sample formats. Pure directory read
+ * with no allocation, I/O, diagnostics, mutation or ownership transfer.
+ *
+ * @param[in] td Borrowed directory metadata.
+ * @return SGILOGDATAFMT value or UNKNOWN for an unsupported combination.
+ */
 static int LogL16GuessDataFmt(TIFFDirectory *td)
 {
 #define PACK(s, b, f) (((b) << 6) | ((s) << 3) | (f))
@@ -1482,11 +2178,37 @@ static int LogL16GuessDataFmt(TIFFDirectory *td)
     return (SGILOGDATAFMT_UNKNOWN);
 }
 
+/**
+ * @brief Multiply translation-buffer extents with signed-size checking.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Delegates to _TIFFMultiplySSize with no handle/label. No allocation, I/O,
+ * diagnostics, state or ownership effects.
+ *
+ * @param[in] m1 Nonnegative first buffer extent.
+ * @param[in] m2 Nonnegative second buffer extent.
+ * @return Positive product, or zero for zero/rejected/overflowed operands.
+ */
 static tmsize_t multiply_ms(tmsize_t m1, tmsize_t m2)
 {
     return _TIFFMultiplySSize(NULL, m1, m2, NULL);
 }
 
+/**
+ * @brief Validate grayscale SGILog format and allocate translation pixels.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Requires PHOTOMETRIC_LOGL and fresh/released translation storage.
+ * Validates one sample, infers format if needed, sets pixel_size and
+ * chooses tile or bounded-strip pixel capacity. Checked multiplication
+ * guards allocation extent; Ext allocation becomes codec-owned. Failure
+ * diagnoses after cached state can change. Repeated success can overwrite
+ * an unreleased tbuf. No payload I/O or caller ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live SGILog handle with valid current
+ * geometry/state; serialise handle operations.
+ * @return One after allocation, zero on format/geometry/allocation failure.
+ */
 static int LogL16InitState(TIFF *tif)
 {
     static const char module[] = "LogL16InitState";
@@ -1539,6 +2261,18 @@ static int LogL16InitState(TIFF *tif)
     return (1);
 }
 
+/**
+ * @brief Infer colour SGILog input format from directory fields.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Recognises float XYZ, sixteen-bit Luv triples, byte RGB or one-sample
+ * packed raw words, checking the relevant sample-count combinations. Pure
+ * directory read with no allocation, I/O, diagnostics, mutation or
+ * ownership transfer.
+ *
+ * @param[in] td Borrowed directory metadata.
+ * @return SGILOGDATAFMT value or UNKNOWN for an unsupported combination.
+ */
 static int LogLuvGuessDataFmt(TIFFDirectory *td)
 {
     int guess;
@@ -1592,6 +2326,22 @@ static int LogLuvGuessDataFmt(TIFFDirectory *td)
     return (guess);
 }
 
+/**
+ * @brief Validate contiguous LogLuv format and allocate packed translation
+ * pixels.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Requires PHOTOMETRIC_LOGLUV, contiguous layout and fresh/released
+ * translation storage. Infers supported XYZ/Luv48/raw/RGB format, caches
+ * pixel bytes and allocates checked tile/bounded-strip uint32_t staging.
+ * Failure diagnoses after state can change; repeated setup can overwrite
+ * unreleased storage. No payload I/O or caller ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live SGILog handle with valid current
+ * geometry/state; serialise handle operations.
+ * @return One after allocation, zero on layout/format/geometry/allocation
+ * failure.
+ */
 static int LogLuvInitState(TIFF *tif)
 {
     static const char module[] = "LogLuvInitState";
@@ -1646,12 +2396,38 @@ static int LogLuvInitState(TIFF *tif)
     return (1);
 }
 
+/**
+ * @brief Accept SGILog tag fixup without changes.
+ * @ingroup libtiff_private_sgilog
+ *
+ * No allocation, I/O, diagnostics, state or ownership effects.
+ *
+ * @param[in] tif Unused SGILog handle.
+ * @return One unconditionally.
+ */
 static int LogLuvFixupTags(TIFF *tif)
 {
     (void)tif;
     return (1);
 }
 
+/**
+ * @brief Select SGILog row decoding and application-format conversion.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Disables ordinary postdecode swapping, validates LogL/LogLuv photometric
+ * and allocates translation state through its initialiser. Selects 16-bit
+ * luminance, 24-bit raw-packed or 32-bit byte-plane row decoding and the
+ * appropriate conversion callback. Raw/encoded-luminance paths use explicit
+ * copies; some converter slots remain no-op. Failure can retain allocations
+ * and changed methods/postdecode for cleanup. No pixel I/O or caller
+ * ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live SGILog handle with valid current
+ * geometry/state; serialise handle operations.
+ * @return One after selection, zero on unsupported photometric or state
+ * setup failure.
+ */
 static int LogLuvSetupDecode(TIFF *tif)
 {
     static const char module[] = "LogLuvSetupDecode";
@@ -1727,6 +2503,21 @@ static int LogLuvSetupDecode(TIFF *tif)
     return (0);
 }
 
+/**
+ * @brief Select SGILog row encoding and input conversion.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Initialises LogL/LogLuv translation storage, chooses 16/24/32-bit row
+ * coding and supported float/encoded/raw input conversion, then marks
+ * encoder_state. Byte display input is not encodable here. Failure can
+ * retain allocation/method changes; diagnoses unsupported
+ * format/photometric. No pixel I/O or caller ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live SGILog handle with valid current
+ * geometry/state; serialise handle operations.
+ * @return One after selection, zero on unsupported input or state setup
+ * failure.
+ */
 static int LogLuvSetupEncode(TIFF *tif)
 {
     static const char module[] = "LogLuvSetupEncode";
@@ -1804,6 +2595,19 @@ notsupported:
     return (0);
 }
 
+/**
+ * @brief Normalise encoded SGILog directory sample metadata before writing.
+ * @ingroup libtiff_private_sgilog
+ *
+ * If encoder_state is set, directly changes SamplesPerPixel to one for LogL
+ * or three for LogLuv, BitsPerSample to sixteen and SampleFormat to signed.
+ * This affects advertised directory representation regardless of user
+ * format. Does not free state, flush payload, close the handle or return
+ * status; no ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live SGILog handle with valid current
+ * geometry/state; serialise handle operations.
+ */
 static void LogLuvClose(TIFF *tif)
 {
     LogLuvState *sp = (LogLuvState *)tif->tif_data;
@@ -1829,6 +2633,18 @@ static void LogLuvClose(TIFF *tif)
     }
 }
 
+/**
+ * @brief Restore SGILog tag methods and release translation/codec state.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Frees owned tbuf and outer Ext allocation, clears tif_data, restores
+ * saved tag hooks and installs default compression methods. Invalidates
+ * codec-owned views. Does not normalise metadata, finish/flush payload,
+ * close the handle or return status.
+ *
+ * @param[in,out] tif Non-NULL live SGILog handle with valid current
+ * geometry/state; serialise handle operations.
+ */
 static void LogLuvCleanup(TIFF *tif)
 {
     LogLuvState *sp = (LogLuvState *)tif->tif_data;
@@ -1846,6 +2662,27 @@ static void LogLuvCleanup(TIFF *tif)
     _TIFFSetDefaultCompressionState(tif);
 }
 
+/**
+ * @brief Set SGILog user format or dithering and update representation
+ * metadata.
+ * @ingroup libtiff_private_sgilog
+ *
+ * SGILOGDATAFMT consumes int and stores before validation; supported values
+ * change depth/sample format through nested TIFFSetField calls whose
+ * statuses are ignored, with RAW additionally setting SamplesPerPixel one.
+ * Recalculates tile/scanline caches. SGILOGENCODE consumes int and stores
+ * before rejecting values other than NODITHER/RANDITHER. Failed assignments
+ * can retain changed values/metadata; other tags delegate. No ownership
+ * transfer.
+ *
+ * @param[in,out] tif Non-NULL live SGILog handle with valid current
+ * geometry/state; serialise handle operations.
+ * @param[in] tag Codec pseudo-tag or delegated identifier.
+ * @param[in,out] ap Live tag-specific va_list, consumed synchronously
+ * without retention.
+ * @return One on supported pseudo-tag handling, zero on explicit validation
+ * rejection, otherwise parent setter status.
+ */
 static int LogLuvVSetField(TIFF *tif, uint32_t tag, va_list ap)
 {
     static const char module[] = "LogLuvVSetField";
@@ -1913,6 +2750,22 @@ static int LogLuvVSetField(TIFF *tif, uint32_t tag, va_list ap)
     }
 }
 
+/**
+ * @brief Retrieve SGILog user format or delegate another tag query.
+ * @ingroup libtiff_private_sgilog
+ *
+ * SGILOGDATAFMT consumes non-NULL int* and writes the cached format.
+ * SGILOGENCODE is not handled here and follows the parent getter contract,
+ * which can reject it. No output allocation or ownership transfer for the
+ * format.
+ *
+ * @param[in,out] tif Non-NULL live SGILog handle with valid current
+ * geometry/state; serialise handle operations.
+ * @param[in] tag Codec pseudo-tag or delegated identifier.
+ * @param[in,out] ap Live tag-specific va_list, consumed synchronously
+ * without retention.
+ * @return One for format retrieval, otherwise parent getter status.
+ */
 static int LogLuvVGetField(TIFF *tif, uint32_t tag, va_list ap)
 {
     LogLuvState *sp = (LogLuvState *)tif->tif_data;
@@ -1927,6 +2780,13 @@ static int LogLuvVGetField(TIFF *tif, uint32_t tag, va_list ap)
     }
 }
 
+/**
+ * @brief Define SGILog user format and encoding-method pseudo-tags.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Immutable library-lifetime metadata merged into a handle; no caller
+ * ownership transfer.
+ */
 static const TIFFField LogLuvFields[] = {
     {TIFFTAG_SGILOGDATAFMT, 0, 0, TIFF_SHORT, 0, TIFF_SETGET_INT, FIELD_PSEUDO,
      TRUE, FALSE, "SGILogDataFmt", NULL},
@@ -1992,3 +2852,138 @@ bad:
     return (0);
 }
 #endif /* LOGLUV_SUPPORT */
+
+/**
+ * @def DecoderState(tif)
+ * @brief Borrow handle-owned SGILog decode state.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Expands to a cast of tif->tif_data to LogLuvState *, evaluating tif once.
+ * The state is not checked; it is valid only after TIFFInitSGILog.
+ *
+ * @param[in] tif TIFF handle whose codec state is borrowed.
+ */
+
+/**
+ * @def EncoderState(tif)
+ * @brief Borrow handle-owned SGILog encode state.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Expands to a cast of tif->tif_data to LogLuvState *, evaluating tif once.
+ * The state is not checked; it is valid only after TIFFInitSGILog.
+ *
+ * @param[in] tif TIFF handle whose codec state is borrowed.
+ */
+
+/**
+ * @def SGILOGDATAFMT_UNKNOWN
+ * @brief Mark a user representation not yet inferred.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Value -1 in LogLuvState::user_datafmt. Set by TIFFInitSGILog and
+ * returned by the format guessers; setup then infers the format from the
+ * directory and fails if none matches.
+ */
+
+/**
+ * @def MINRUN
+ * @brief Choose four pixels as the minimum byte-plane run.
+ * @ingroup libtiff_private_sgilog
+ *
+ * The run-length encoders emit a run code only for at least MINRUN (4)
+ * equal bytes in a byte plane; shorter repeats are written as literals.
+ */
+
+/**
+ * @def U_NEU
+ * @brief Select neutral u-prime chromaticity.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Value 4/19 (0.210526316), the CIE 1976 u' of the equal-energy white
+ * point. Substituted for chromaticity of zero-luminance or invalid input.
+ * Defined here only if UVSCALE is not already defined by tiffio.h.
+ */
+
+/**
+ * @def V_NEU
+ * @brief Select neutral v-prime chromaticity.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Value 9/19 (0.473684211), the CIE 1976 v' of the equal-energy white
+ * point. Substituted for chromaticity of zero-luminance or invalid input.
+ * Defined here only if UVSCALE is not already defined by tiffio.h.
+ */
+
+/**
+ * @def UVSCALE
+ * @brief Scale uniform eight-bit chromaticity for LogLuv32.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Value 410: multiplies u' and v' into the 8-bit fields of a LogLuv32
+ * pixel (u' and v' are below 0.62, so the product fits in 8 bits).
+ * Defined here only if not already defined by tiffio.h.
+ */
+
+/**
+ * @def M_LN2
+ * @brief Supply the natural logarithm of two when absent.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Fallback definition of ln 2 for platforms whose <math.h> lacks it; used
+ * by the log-luminance decoders.
+ */
+
+/**
+ * @def M_PI
+ * @brief Supply pi when absent.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Fallback definition of pi for platforms whose <math.h> lacks it; used by
+ * uv2ang.
+ */
+
+/**
+ * @def TIFF_RAND_MAX
+ * @brief Limit SGILog pseudo-random output to fifteen bits.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Value 32767, the largest value returned by _TIFFRand; tiff_itrunc divides
+ * by it to scale dither noise to one unit.
+ */
+
+/**
+ * @def NANGLES
+ * @brief Partition the gamut perimeter into one hundred hue angles.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Value 100: the number of hue bins in the static oog_encode lookup table.
+ * Undefined again after oog_encode.
+ */
+
+/**
+ * @def uv2ang(u, v)
+ * @brief Map finite chromaticity to a bounded hue lookup angle.
+ * @ingroup libtiff_private_sgilog
+ *
+ * Evaluates u and v once each and returns the atan2 hue around the neutral
+ * point (U_NEU, V_NEU), scaled to a double in [0, NANGLES). Undefined
+ * again after oog_encode.
+ *
+ * @param[in] u Finite u-prime chromaticity coordinate.
+ * @param[in] v Finite v-prime chromaticity coordinate.
+ */
+
+/**
+ * @def PACK
+ * @brief Combine directory format fields for a local inference switch.
+ * @ingroup libtiff_private_sgilog
+ *
+ * The grayscale three-argument form takes [in] s sample count, [in] b
+ * bit depth, and [in] f sample format. The colour two-argument form takes
+ * [in] a bit depth and [in] b sample format. These function-local macros
+ * share a name; the reference displays the last parsed argument shape.
+ * Each argument is evaluated once; each macro is undefined at the end of its
+ * function.
+ *
+ * @return Integer switch key under the enclosing format-inference layout.
+ */

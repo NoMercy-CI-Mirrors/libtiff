@@ -133,10 +133,26 @@ routines passed as parameters to :c:func:`TIFFClientOpen`.
 
 .. note::
   In contrast to the return values of :c:func:`mmap` (2) and :c:func:`munmap` (2),
-  the return values of *mapproc* and *unmapproc* must be:
-  TRUE for success and FALSE to indicate an error.
+  *mapproc* returns TRUE for success and FALSE if mapping is unavailable or
+  fails. It supplies the view address and byte length through its output
+  arguments. *unmapproc* returns void and has no status result.
+  During early read-open failure cleanup, the current implementation may invoke
+  *unmapproc* with a NULL base and zero length before any mapping call. Custom
+  unmapping callbacks must tolerate that no-view case.
   ``libtiff`` built in functions :c:func:`_tiffMapProc` and :c:func:`_tiffUnmapProc`
   can be found in tif_unix.c as well as in tif_win32.c.
+
+On a NULL return from :c:func:`TIFFClientOpen` or
+:c:func:`TIFFClientOpenExt`, *closeproc* is not invoked. The caller remains
+responsible for releasing its resource and context, although opening may have
+changed file position/content or released an acquired mapping. On success,
+:c:func:`TIFFClose` invokes *closeproc* after releasing the TIFF handle;
+:c:func:`TIFFCleanup` alone does not invoke it. All non-mapping callbacks must
+be non-NULL even in read-only mode. A mapper that acquires resources must be
+paired with a suitable unmapper.
+
+Unlike pathname opening, descriptor and client opening do not perform OS
+truncation. Prepare the resource yourself if physical truncation is required.
 
 :c:func:`TIFFClientOpenExt` (added in libtiff 4.5) is like :c:func:`TIFFClientOpen`,
 but options argument *opts* like for :c:func:`TIFFOpenExt` can be passed.
@@ -199,9 +215,8 @@ for some of its functions.
 
 ``H``:
 
-  Force image data that is read or written to be treated with
-  bits filled in the same order as the native
-  CPU.
+  Deprecated since libtiff 4.5.1. Emits a warning and behaves as ``B``
+  (Most Significant Bit to Least Significant Bit), independently of CPU order.
 
 ``M``:
 

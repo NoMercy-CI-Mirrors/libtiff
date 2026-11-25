@@ -122,6 +122,11 @@
    restarting of LibJpeg decoding session.
 */
 
+/**
+ * @file tif_ojpeg.c
+ * @brief Decode legacy TIFF JPEG by reconstructing a dependency input stream.
+ */
+
 #include "tiffiop.h"
 #ifdef OJPEG_SUPPORT
 
@@ -149,33 +154,217 @@
  */
 
 /* define LIBJPEG_ENCAP_EXTERNAL */
+/**
+ * @brief Save the calling environment for a later LONGJMP (plain setjmp).
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Expands to setjmp(jbuf), evaluating jbuf once. Used as the controlling
+ * expression of an if in each jpeg_*_encap wrapper on sp->exit_jmpbuf;
+ * the saved frame is valid only until that wrapper returns.
+ *
+ * @param[out] jbuf JMP_BUF lvalue that receives the saved environment.
+ * @return 0 when called directly; the nonzero LONGJMP code (always 1 in
+ * this file) when control returns here through LONGJMP.
+ */
 #define SETJMP(jbuf) setjmp(jbuf)
+/**
+ * @brief Jump back to the frame saved by SETJMP (plain longjmp); never
+ * returns.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Expands to longjmp(jbuf, code). Used only by jpeg_encap_unwind(), with
+ * sp->exit_jmpbuf and code 1; control resumes in the jpeg_*_encap wrapper
+ * that filled the buffer, which then returns 0. The behaviour is undefined
+ * if that wrapper has already returned.
+ *
+ * @param[in] jbuf JMP_BUF filled by a still-active SETJMP.
+ * @param[in] code Value SETJMP returns after the jump (0 is turned into 1
+ * by longjmp).
+ */
 #define LONGJMP(jbuf, code) longjmp(jbuf, code)
+/**
+ * @brief Type used to store the libjpeg error jump frame.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Expands to jmp_buf; used for OJPEGState::exit_jmpbuf, which SETJMP fills
+ * and LONGJMP unwinds to. Not used when LIBJPEG_ENCAP_EXTERNAL is defined.
+ */
 #define JMP_BUF jmp_buf
+/**
+ * @brief Capacity in bytes of the embedded input and synthetic marker buffers.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Sizes OJPEGState::in_buffer and OJPEGState::out_buffer. Must be at most
+ * 65535 because buffer counters are uint16_t, and at least as large as the
+ * largest synthetic marker (checked by asserts in the OJPEGWrite* routines).
+ */
 #define OJPEG_BUFFER 2048
 /* define EGYPTIANWALK */
 
+/**
+ * @brief JPEG SOF0 (baseline DCT start-of-frame) marker code.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Marker code byte following 0xFF. Parsed by OJPEGReadHeaderInfoSecStreamSof
+ * and used as the SOF marker of the synthetic stream when the stream has no
+ * SOF marker.
+ */
 #define JPEG_MARKER_SOF0 0xC0
+/**
+ * @brief JPEG SOF1 (extended sequential DCT start-of-frame) marker code.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Marker code byte following 0xFF; parsed by
+ * OJPEGReadHeaderInfoSecStreamSof.
+ */
 #define JPEG_MARKER_SOF1 0xC1
+/**
+ * @brief JPEG SOF3 (lossless start-of-frame) marker code.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Marker code byte following 0xFF; passed to
+ * OJPEGReadHeaderInfoSecStreamSof.
+ */
 #define JPEG_MARKER_SOF3 0xC3
+/**
+ * @brief JPEG DHT (define Huffman table) marker code.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Marker code byte following 0xFF; parsed from the stream and used as the
+ * marker of the stored Huffman tables, whether taken from the stream or
+ * from the JpegDcTables/JpegAcTables tags.
+ */
 #define JPEG_MARKER_DHT 0xC4
+/**
+ * @brief JPEG RST0 (restart) marker code.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Marker code byte following 0xFF. RST0..RST7 are written as
+ * JPEG_MARKER_RST0 + restart_index by OJPEGWriteStreamRst.
+ */
 #define JPEG_MARKER_RST0 0XD0
+/**
+ * @brief JPEG SOI (start of image) marker code.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Marker code byte following 0xFF; skipped when parsing and written by
+ * OJPEGWriteStreamSoi.
+ */
 #define JPEG_MARKER_SOI 0xD8
+/**
+ * @brief JPEG EOI (end of image) marker code.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Marker code byte following 0xFF; written by OJPEGWriteStreamEoi.
+ */
 #define JPEG_MARKER_EOI 0xD9
+/**
+ * @brief JPEG SOS (start of scan) marker code.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Marker code byte following 0xFF. Ends header parsing and is written by
+ * OJPEGWriteStreamSos.
+ */
 #define JPEG_MARKER_SOS 0xDA
+/**
+ * @brief JPEG DQT (define quantization table) marker code.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Marker code byte following 0xFF; parsed from the stream and used as the
+ * marker of the stored quantization tables, whether taken from the stream
+ * or from the JpegQTables tag.
+ */
 #define JPEG_MARKER_DQT 0xDB
+/**
+ * @brief JPEG DRI (define restart interval) marker code.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Marker code byte following 0xFF; parsed from the stream and written by
+ * OJPEGWriteStreamDri.
+ */
 #define JPEG_MARKER_DRI 0xDD
+/**
+ * @brief JPEG APP0 marker code; APP0..APP15 are this value plus 0..15.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Marker code byte following 0xFF. Application segments are skipped when
+ * parsing.
+ */
 #define JPEG_MARKER_APP0 0xE0
+/**
+ * @brief JPEG COM (comment) marker code.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Marker code byte following 0xFF. Comment segments are skipped when
+ * parsing.
+ */
 #define JPEG_MARKER_COM 0xFE
 
+/**
+ * @brief TIFFField field bit for the codec-private JpegInterchangeFormat tag.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Set by OJPEGVSetField when the tag is stored; tested with TIFFFieldSet
+ * by OJPEGPrintDir.
+ */
 #define FIELD_OJPEG_JPEGINTERCHANGEFORMAT (FIELD_CODEC + 0)
+/**
+ * @brief TIFFField field bit for the codec-private JpegInterchangeFormatLength
+ * tag.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Set by OJPEGVSetField when the tag is stored; tested with TIFFFieldSet
+ * by OJPEGPrintDir.
+ */
 #define FIELD_OJPEG_JPEGINTERCHANGEFORMATLENGTH (FIELD_CODEC + 1)
+/**
+ * @brief TIFFField field bit for the codec-private JpegQTables tag.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Set by OJPEGVSetField when the tag is stored; tested with TIFFFieldSet
+ * by OJPEGPrintDir.
+ */
 #define FIELD_OJPEG_JPEGQTABLES (FIELD_CODEC + 2)
+/**
+ * @brief TIFFField field bit for the codec-private JpegDcTables tag.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Set by OJPEGVSetField when the tag is stored; tested with TIFFFieldSet
+ * by OJPEGPrintDir.
+ */
 #define FIELD_OJPEG_JPEGDCTABLES (FIELD_CODEC + 3)
+/**
+ * @brief TIFFField field bit for the codec-private JpegAcTables tag.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Set by OJPEGVSetField when the tag is stored; tested with TIFFFieldSet
+ * by OJPEGPrintDir.
+ */
 #define FIELD_OJPEG_JPEGACTABLES (FIELD_CODEC + 4)
+/**
+ * @brief TIFFField field bit for the codec-private JpegProc tag.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Set by OJPEGVSetField when the tag is stored; tested with TIFFFieldSet
+ * by OJPEGPrintDir.
+ */
 #define FIELD_OJPEG_JPEGPROC (FIELD_CODEC + 5)
+/**
+ * @brief TIFFField field bit for the codec-private JpegRestartInterval tag.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Set by OJPEGVSetField when the tag is stored; tested with TIFFFieldSet
+ * by OJPEGPrintDir.
+ */
 #define FIELD_OJPEG_JPEGRESTARTINTERVAL (FIELD_CODEC + 6)
 
+/**
+ * @brief Describe legacy JPEG tags merged into the handle.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Immutable library-lifetime metadata merged into a handle; no caller
+ * ownership transfer.
+ */
 static const TIFFField ojpegFields[] = {
     {TIFFTAG_JPEGIFOFFSET, 1, 1, TIFF_LONG8, 0, TIFF_SETGET_UINT64,
      FIELD_OJPEG_JPEGINTERCHANGEFORMAT, TRUE, FALSE, "JpegInterchangeFormat",
@@ -206,141 +395,311 @@ static const TIFFField ojpegFields[] = {
 #include "jerror.h"
 #include "jpeglib.h"
 
+/**
+ * @brief Alias for the libjpeg source-manager structure.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Embedded in OJPEGState as libjpeg_jpeg_source_mgr; its callbacks feed
+ * libjpeg the reconstructed stream produced by OJPEGWriteStream.
+ */
 typedef struct jpeg_source_mgr tiff_ojpeg_source_mgr;
 
+/**
+ * @brief Alias for the libjpeg error-manager structure.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Embedded in OJPEGState as libjpeg_jpeg_error_mgr.
+ */
 typedef struct jpeg_error_mgr tiff_ojpeg_error_mgr;
 
+/**
+ * @brief Alias for the libjpeg common context structure.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Parameter type of the error-manager callbacks; its client_data points to
+ * the owning TIFF handle.
+ */
 typedef struct jpeg_common_struct tiff_ojpeg_common_struct;
+/**
+ * @brief Alias for the libjpeg decompressor context structure.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Embedded in OJPEGState as libjpeg_jpeg_decompress_struct; the libjpeg
+ * session it holds is destroyed by OJPEGLibjpegSessionAbort.
+ */
 typedef struct jpeg_decompress_struct tiff_ojpeg_decompress_struct;
 
+/**
+ * @brief Source of the bytes currently read into the input buffer.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Stored in OJPEGState::in_buffer_source and advanced by
+ * OJPEGReadBufferFill from the interchange-format extent to the striles.
+ */
 typedef enum
 {
+    /** @brief No input extent selected yet. */
     osibsNotSetYet,
+    /** @brief Read bytes from the interchange-format extent. */
     osibsJpegInterchangeFormat,
+    /** @brief Read bytes from the current strip or tile extent. */
     osibsStrile,
+    /** @brief No further input extents remain. */
     osibsEof
 } OJPEGStateInBufferSource;
 
+/**
+ * @brief Next item to emit in the reconstructed JPEG stream.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Stored in OJPEGState::out_state. OJPEGWriteStream emits items in
+ * declaration order, skipping absent tables.
+ */
 typedef enum
 {
+    /** @brief Emit the synthetic start-of-image marker. */
     ososSoi,
+    /** @brief Emit quantisation table slot 0 when present. */
     ososQTable0,
+    /** @brief Emit quantisation table slot 1 when present. */
     ososQTable1,
+    /** @brief Emit quantisation table slot 2 when present. */
     ososQTable2,
+    /** @brief Emit quantisation table slot 3 when present. */
     ososQTable3,
+    /** @brief Emit DC Huffman table slot 0 when present. */
     ososDcTable0,
+    /** @brief Emit DC Huffman table slot 1 when present. */
     ososDcTable1,
+    /** @brief Emit DC Huffman table slot 2 when present. */
     ososDcTable2,
+    /** @brief Emit DC Huffman table slot 3 when present. */
     ososDcTable3,
+    /** @brief Emit AC Huffman table slot 0 when present. */
     ososAcTable0,
+    /** @brief Emit AC Huffman table slot 1 when present. */
     ososAcTable1,
+    /** @brief Emit AC Huffman table slot 2 when present. */
     ososAcTable2,
+    /** @brief Emit AC Huffman table slot 3 when present. */
     ososAcTable3,
+    /** @brief Emit the cached restart interval. */
     ososDri,
+    /** @brief Emit the reconstructed frame header. */
     ososSof,
+    /** @brief Emit the current scan header. */
     ososSos,
+    /** @brief Borrow the next compressed input chunk. */
     ososCompressed,
+    /** @brief Emit the next cyclic restart marker. */
     ososRst,
+    /** @brief Emit the synthetic end-of-image marker. */
     ososEoi
 } OJPEGStateOutState;
 
+/**
+ * @brief Own old-style JPEG reconstruction tables buffers and dependency
+ * sessions.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Allocated by TIFFInitOJPEG and freed by cleanup. All parent
+ * methods/handle references and interior buffer views are borrowed; table
+ * blobs, combined samples, row pointers and skip storage use Ext
+ * allocation. Serialize access; failures can retain partial state.
+ */
 typedef struct
 {
+    /** @brief Borrowed owning TIFF handle. */
     TIFF *tif;
+    /**
+     * @brief Latched nonzero by the first successful predecode; never cleared.
+     */
     int decoder_ok;
+    /** @brief Latched raw decode error until reset. */
     int error_in_raw_data_decoding;
 #ifndef LIBJPEG_ENCAP_EXTERNAL
+    /** @brief Active synchronous dependency error frame. */
     JMP_BUF exit_jmpbuf;
 #endif
+    /** @brief Borrowed saved parent getter. */
     TIFFVGetMethod vgetparent;
+    /** @brief Borrowed saved parent setter. */
     TIFFVSetMethod vsetparent;
+    /** @brief Borrowed saved parent printer. */
     TIFFPrintMethod printdir;
+    /** @brief Cached client file extent. */
     uint64_t file_size;
+    /** @brief Cached image width in samples. */
     uint32_t image_width;
+    /** @brief Cached image height in rows. */
     uint32_t image_length;
+    /** @brief Cached strile width. */
     uint32_t strile_width;
+    /** @brief Cached strile height. */
     uint32_t strile_length;
+    /** @brief Height of reconstructed strile stream. */
     uint32_t strile_length_total;
+    /** @brief Cached component count, at most three. */
     uint8_t samples_per_pixel;
+    /** @brief First component of the selected scan/plane. */
     uint8_t plane_sample_offset;
+    /** @brief Components in the current scan. */
     uint8_t samples_per_pixel_per_plane;
+    /** @brief Cached interchange stream offset. */
     uint64_t jpeg_interchange_format;
+    /** @brief Normalized interchange byte extent. */
     uint64_t jpeg_interchange_format_length;
+    /** @brief Cached JPEG process tag. */
     uint8_t jpeg_proc;
+    /** @brief Nonzero during sampling-only header probing. */
     uint8_t subsamplingcorrect;
+    /** @brief Nonzero after the one-shot correction attempt. */
     uint8_t subsamplingcorrect_done;
+    /** @brief Nonzero when sampling was explicitly tagged. */
     uint8_t subsampling_tag;
+    /** @brief Cached horizontal Y sampling factor. */
     uint8_t subsampling_hor;
+    /** @brief Cached vertical Y sampling factor. */
     uint8_t subsampling_ver;
+    /** @brief Nonzero requests ordinary dependency upsampling. */
     uint8_t subsampling_force_desubsampling_inside_decompression;
+    /** @brief Number of stored quantisation offsets. */
     uint8_t qtable_offset_count;
+    /** @brief Number of stored DC Huffman offsets. */
     uint8_t dctable_offset_count;
+    /** @brief Number of stored AC Huffman offsets. */
     uint8_t actable_offset_count;
+    /** @brief Embedded quantisation offsets, borrowed by tag getters. */
     uint64_t qtable_offset[3];
+    /** @brief Embedded DC Huffman offsets, borrowed by getters. */
     uint64_t dctable_offset[3];
+    /** @brief Embedded AC Huffman offsets, borrowed by getters. */
     uint64_t actable_offset[3];
+    /** @brief Owned Ext length-prefixed quantisation marker blobs. */
     uint8_t *qtable[4];
+    /** @brief Owned Ext length-prefixed DC Huffman marker blobs. */
     uint8_t *dctable[4];
+    /** @brief Owned Ext length-prefixed AC Huffman marker blobs. */
     uint8_t *actable[4];
+    /** @brief Cached restart MCU interval. */
     uint16_t restart_interval;
+    /** @brief Next cyclic restart marker index. */
     uint8_t restart_index;
+    /** @brief Nonzero when frame details are cached. */
     uint8_t sof_log;
+    /** @brief Cached SOF marker type. */
     uint8_t sof_marker_id;
+    /** @brief Cached frame width. */
     uint32_t sof_x;
+    /** @brief Cached frame height. */
     uint32_t sof_y;
+    /** @brief Frame component identifiers. */
     uint8_t sof_c[3];
+    /** @brief Packed per-component sampling factors. */
     uint8_t sof_hv[3];
+    /** @brief Frame quantisation selectors. */
     uint8_t sof_tq[3];
+    /** @brief Scan component selectors. */
     uint8_t sos_cs[3];
+    /** @brief Packed scan DC/AC table selectors. */
     uint8_t sos_tda[3];
+    /** @brief Save the input position following one plane scan header. */
     struct
     {
+        /** @brief Nonzero when this scan snapshot is valid. */
         uint8_t log;
+        /** @brief Current/snapshotted interchange or strile input source. */
         OJPEGStateInBufferSource in_buffer_source;
+        /** @brief Next/snapshotted strile input index. */
         uint32_t in_buffer_next_strile;
+        /** @brief Current/snapshotted next refill offset. */
         uint64_t in_buffer_file_pos;
+        /** @brief Current/snapshotted remaining bounded extent. */
         uint64_t in_buffer_file_togo;
     } sos_end[3];
+    /**< @brief Embedded per-plane snapshots of input state after SOS. */
+    /** @brief Nonzero after initial header caching. */
     uint8_t readheader_done;
+    /** @brief Nonzero after reconstructed decoder session setup. */
     uint8_t writeheader_done;
+    /** @brief Current reconstructed separate-plane sample. */
     uint16_t write_cursample;
+    /** @brief Current reconstructed strile counter. */
     uint32_t write_curstrile;
+    /** @brief Nonzero while dependency context needs destruction. */
     uint8_t libjpeg_session_active;
+    /** @brief Zero for raw planes, one for scanlines. */
     uint8_t libjpeg_jpeg_query_style;
+    /** @brief Embedded dependency diagnostic callbacks. */
     tiff_ojpeg_error_mgr libjpeg_jpeg_error_mgr;
+    /** @brief Embedded context owning dependency session resources. */
     tiff_ojpeg_decompress_struct libjpeg_jpeg_decompress_struct;
+    /** @brief Embedded source manager borrowing reconstruction chunks. */
     tiff_ojpeg_source_mgr libjpeg_jpeg_source_mgr;
+    /** @brief Nonzero after conversion geometry/storage setup. */
     uint8_t subsampling_convert_log;
+    /** @brief Allocated Y-plane bytes per padded row. */
     uint32_t subsampling_convert_ylinelen;
+    /** @brief Y rows per raw MCU group. */
     uint32_t subsampling_convert_ylines;
+    /** @brief Allocated chroma-plane bytes per row. */
     uint32_t subsampling_convert_clinelen;
+    /** @brief Chroma rows per raw MCU group. */
     uint32_t subsampling_convert_clines;
+    /** @brief Y-plane byte capacity. */
     uint32_t subsampling_convert_ybuflen;
+    /** @brief Each chroma-plane byte capacity. */
     uint32_t subsampling_convert_cbuflen;
+    /** @brief Combined sample allocation byte capacity. */
     uint32_t subsampling_convert_ycbcrbuflen;
+    /** @brief Owned Ext combined Y/Cb/Cr sample allocation. */
     uint8_t *subsampling_convert_ycbcrbuf;
+    /** @brief Borrowed Y view into the combined allocation. */
     uint8_t *subsampling_convert_ybuf;
+    /** @brief Borrowed Cb view into the combined allocation. */
     uint8_t *subsampling_convert_cbbuf;
+    /** @brief Borrowed Cr view into the combined allocation. */
     uint8_t *subsampling_convert_crbuf;
+    /** @brief Owned pointer-array entry count. */
     uint32_t subsampling_convert_ycbcrimagelen;
+    /**
+     * @brief Owned Ext dependency plane/row pointer allocation, borrowing
+     * sample storage.
+     */
     uint8_t **subsampling_convert_ycbcrimage;
+    /** @brief Output chroma samples per clump row. */
     uint32_t subsampling_convert_clinelenout;
+    /** @brief Next chroma row in the current MCU group. */
     uint32_t subsampling_convert_state;
-    uint32_t bytes_per_line;   /* if the codec outputs subsampled data, a 'line'
-                                  in bytes_per_line */
-    uint32_t lines_per_strile; /* and lines_per_strile means subsampling_ver
-                                  desubsampled rows     */
+    /**
+     * @brief Output bytes per ordinary row or subsampling_ver-row clump unit.
+     */
+    uint32_t bytes_per_line;
+    /** @brief Output ordinary rows or clump units per strile. */
+    uint32_t lines_per_strile;
+    /** @brief Current/snapshotted interchange or strile input source. */
     OJPEGStateInBufferSource in_buffer_source;
+    /** @brief Next/snapshotted strile input index. */
     uint32_t in_buffer_next_strile;
+    /** @brief Total input strile count. */
     uint32_t in_buffer_strile_count;
+    /** @brief Current/snapshotted next refill offset. */
     uint64_t in_buffer_file_pos;
+    /** @brief Nonzero when client position matches refill offset. */
     uint8_t in_buffer_file_pos_log;
+    /** @brief Current/snapshotted remaining bounded extent. */
     uint64_t in_buffer_file_togo;
+    /** @brief Unread bytes in the embedded input window. */
     uint16_t in_buffer_togo;
+    /** @brief Borrowed cursor into in_buffer. */
     uint8_t *in_buffer_cur;
+    /** @brief Embedded client input window. */
     uint8_t in_buffer[OJPEG_BUFFER];
+    /** @brief Next synthetic output state. */
     OJPEGStateOutState out_state;
+    /** @brief Embedded synthetic marker storage, borrowed by source manager. */
     uint8_t out_buffer[OJPEG_BUFFER];
+    /** @brief Owned Ext discarded-scanline scratch allocation. */
     uint8_t *skip_buffer;
 } OJPEGState;
 
@@ -403,34 +762,242 @@ static void OJPEGWriteStreamRst(TIFF *tif, void **mem, uint32_t *len);
 static void OJPEGWriteStreamEoi(TIFF *tif, void **mem, uint32_t *len);
 
 #ifdef LIBJPEG_ENCAP_EXTERNAL
+/**
+ * @brief Trap dependency fatal errors while attempting to create a
+ * decompressor.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Requires cinfo->err and cinfo->client_data to be set; libjpeg clears the rest
+ * of the context, so the source manager is installed after this call succeeds.
+ * Defined outside this unit; must call jpeg_create_decompress() and return 0 if
+ * libjpeg raises a fatal error through jpeg_encap_unwind. Any state libjpeg
+ * allocated before the error remains in cinfo.
+ *
+ * @param[in,out] sp Codec state for the handle.
+ * @param[in,out] cinfo libjpeg decompressor context, normally
+ * sp->libjpeg_jpeg_decompress_struct.
+ * @return One if the dependency returns normally, zero after a fatal error
+ * jump; not the dependency operation result or row count.
+ */
 extern int jpeg_create_decompress_encap(OJPEGState *sp,
                                         tiff_ojpeg_decompress_struct *cinfo);
+/**
+ * @brief Trap dependency fatal errors while attempting to read a JPEG header.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Requires a context created by jpeg_create_decompress_encap with the source
+ * manager installed. Defined outside this unit; must call jpeg_read_header()
+ * and return 0 if libjpeg raises a fatal error through jpeg_encap_unwind. The
+ * libjpeg return value is discarded. State libjpeg changed before an error
+ * remains in cinfo.
+ *
+ * @param[in,out] sp Codec state for the handle.
+ * @param[in,out] cinfo libjpeg decompressor context, normally
+ * sp->libjpeg_jpeg_decompress_struct.
+ * @param[in] require_image Nonzero requires an image header rather than
+ * tables only.
+ * @return One if the dependency returns normally, zero after a fatal error
+ * jump; not the dependency operation result or row count.
+ */
 extern int jpeg_read_header_encap(OJPEGState *sp,
                                   tiff_ojpeg_decompress_struct *cinfo,
                                   uint8_t require_image);
+/**
+ * @brief Trap dependency fatal errors while attempting to start decompression.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Requires a context created by jpeg_create_decompress_encap with the source
+ * manager installed. Defined outside this unit; must call
+ * jpeg_start_decompress() and return 0 if libjpeg raises a fatal error through
+ * jpeg_encap_unwind. The libjpeg return value is discarded. State libjpeg
+ * changed before an error remains in cinfo.
+ *
+ * @param[in,out] sp Codec state for the handle.
+ * @param[in,out] cinfo libjpeg decompressor context, normally
+ * sp->libjpeg_jpeg_decompress_struct.
+ * @return One if the dependency returns normally, zero after a fatal error
+ * jump; not the dependency operation result or row count.
+ */
 extern int jpeg_start_decompress_encap(OJPEGState *sp,
                                        tiff_ojpeg_decompress_struct *cinfo);
+/**
+ * @brief Trap dependency fatal errors while attempting to read scanlines.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Requires a context created by jpeg_create_decompress_encap with the source
+ * manager installed. Defined outside this unit; must call jpeg_read_scanlines()
+ * and return 0 if libjpeg raises a fatal error through jpeg_encap_unwind. The
+ * libjpeg return value is discarded. State libjpeg changed before an error
+ * remains in cinfo.
+ *
+ * @param[in,out] sp Codec state for the handle.
+ * @param[in,out] cinfo libjpeg decompressor context, normally
+ * sp->libjpeg_jpeg_decompress_struct.
+ * @param[out] scanlines Borrowed dependency-compatible writable row-pointer
+ * array and sample storage for max_lines rows.
+ * @param[in] max_lines Maximum number of rows to read; the codec always
+ * passes 1.
+ * @return One if the dependency returns normally, zero after a fatal error
+ * jump; not the dependency operation result or row count.
+ */
 extern int jpeg_read_scanlines_encap(OJPEGState *sp,
                                      tiff_ojpeg_decompress_struct *cinfo,
                                      void *scanlines, uint32_t max_lines);
+/**
+ * @brief Trap dependency fatal errors while attempting to read component
+ * planes.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Requires a context created by jpeg_create_decompress_encap with the source
+ * manager installed. Defined outside this unit; must call jpeg_read_raw_data()
+ * and return 0 if libjpeg raises a fatal error through jpeg_encap_unwind. The
+ * libjpeg return value is discarded. State libjpeg changed before an error
+ * remains in cinfo.
+ *
+ * @param[in,out] sp Codec state for the handle.
+ * @param[in,out] cinfo libjpeg decompressor context, normally
+ * sp->libjpeg_jpeg_decompress_struct.
+ * @param[out] data Borrowed dependency-compatible writable component/row
+ * arrays and storage for max_lines rows.
+ * @param[in] max_lines Number of rows to read; the codec passes
+ * subsampling_ver * 8 (one MCU row).
+ * @return One if the dependency returns normally, zero after a fatal error
+ * jump; not the dependency operation result or row count.
+ */
 extern int jpeg_read_raw_data_encap(OJPEGState *sp,
                                     tiff_ojpeg_decompress_struct *cinfo,
                                     void *data, uint32_t max_lines);
+/**
+ * @brief Jump to the active old-style JPEG dependency wrapper.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Requires a live synchronous encapsulation jump frame for this handle on
+ * the same thread. Performs a nonlocal return; never returns normally,
+ * frees no state and supplies no additional diagnostic. An external
+ * encapsulation build must provide the corresponding implementation.
+ *
+ * @param[in] tif Handle whose codec state identifies the active wrapper
+ * frame.
+ */
 extern void jpeg_encap_unwind(TIFF *tif);
 #else
+/**
+ * @brief Trap dependency fatal errors while attempting to create a
+ * decompressor.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Requires cinfo->err and cinfo->client_data to be set; libjpeg clears the rest
+ * of the context, so the source manager is installed after this call succeeds.
+ * Sets sp->exit_jmpbuf with SETJMP and calls jpeg_create_decompress(); a
+ * libjpeg fatal error returns here through jpeg_encap_unwind. Any state libjpeg
+ * allocated before the error remains in cinfo.
+ *
+ * @param[in,out] sp Codec state whose exit_jmpbuf holds the jump frame.
+ * @param[in,out] cinfo libjpeg decompressor context, normally
+ * sp->libjpeg_jpeg_decompress_struct.
+ * @return One if the dependency returns normally, zero after a fatal error
+ * jump; not the dependency operation result or row count.
+ */
 static int jpeg_create_decompress_encap(OJPEGState *sp,
-                                        tiff_ojpeg_decompress_struct *j);
+                                        tiff_ojpeg_decompress_struct *cinfo);
+/**
+ * @brief Trap dependency fatal errors while attempting to read a JPEG header.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Requires a context created by jpeg_create_decompress_encap with the source
+ * manager installed. Sets sp->exit_jmpbuf with SETJMP and calls
+ * jpeg_read_header(); a libjpeg fatal error returns here through
+ * jpeg_encap_unwind. The libjpeg return value is discarded. State libjpeg
+ * changed before an error remains in cinfo.
+ *
+ * @param[in,out] sp Codec state whose exit_jmpbuf holds the jump frame.
+ * @param[in,out] cinfo libjpeg decompressor context, normally
+ * sp->libjpeg_jpeg_decompress_struct.
+ * @param[in] require_image Nonzero requires an image header rather than
+ * tables only.
+ * @return One if the dependency returns normally, zero after a fatal error
+ * jump; not the dependency operation result or row count.
+ */
 static int jpeg_read_header_encap(OJPEGState *sp,
                                   tiff_ojpeg_decompress_struct *cinfo,
                                   uint8_t require_image);
+/**
+ * @brief Trap dependency fatal errors while attempting to start decompression.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Requires a context created by jpeg_create_decompress_encap with the source
+ * manager installed. Sets sp->exit_jmpbuf with SETJMP and calls
+ * jpeg_start_decompress(); a libjpeg fatal error returns here through
+ * jpeg_encap_unwind. The libjpeg return value is discarded. State libjpeg
+ * changed before an error remains in cinfo.
+ *
+ * @param[in,out] sp Codec state whose exit_jmpbuf holds the jump frame.
+ * @param[in,out] cinfo libjpeg decompressor context, normally
+ * sp->libjpeg_jpeg_decompress_struct.
+ * @return One if the dependency returns normally, zero after a fatal error
+ * jump; not the dependency operation result or row count.
+ */
 static int jpeg_start_decompress_encap(OJPEGState *sp,
                                        tiff_ojpeg_decompress_struct *cinfo);
+/**
+ * @brief Trap dependency fatal errors while attempting to read scanlines.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Requires a context created by jpeg_create_decompress_encap with the source
+ * manager installed. Sets sp->exit_jmpbuf with SETJMP and calls
+ * jpeg_read_scanlines(); a libjpeg fatal error returns here through
+ * jpeg_encap_unwind. The libjpeg return value is discarded. State libjpeg
+ * changed before an error remains in cinfo.
+ *
+ * @param[in,out] sp Codec state whose exit_jmpbuf holds the jump frame.
+ * @param[in,out] cinfo libjpeg decompressor context, normally
+ * sp->libjpeg_jpeg_decompress_struct.
+ * @param[out] scanlines Borrowed dependency-compatible writable row-pointer
+ * array and sample storage for max_lines rows.
+ * @param[in] max_lines Maximum number of rows to read; the codec always
+ * passes 1.
+ * @return One if the dependency returns normally, zero after a fatal error
+ * jump; not the dependency operation result or row count.
+ */
 static int jpeg_read_scanlines_encap(OJPEGState *sp,
                                      tiff_ojpeg_decompress_struct *cinfo,
                                      void *scanlines, uint32_t max_lines);
+/**
+ * @brief Trap dependency fatal errors while attempting to read component
+ * planes.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Requires a context created by jpeg_create_decompress_encap with the source
+ * manager installed. Sets sp->exit_jmpbuf with SETJMP and calls
+ * jpeg_read_raw_data(); a libjpeg fatal error returns here through
+ * jpeg_encap_unwind. The libjpeg return value is discarded. State libjpeg
+ * changed before an error remains in cinfo.
+ *
+ * @param[in,out] sp Codec state whose exit_jmpbuf holds the jump frame.
+ * @param[in,out] cinfo libjpeg decompressor context, normally
+ * sp->libjpeg_jpeg_decompress_struct.
+ * @param[out] data Borrowed dependency-compatible writable component/row
+ * arrays and storage for max_lines rows.
+ * @param[in] max_lines Number of rows to read; the codec passes
+ * subsampling_ver * 8 (one MCU row).
+ * @return One if the dependency returns normally, zero after a fatal error
+ * jump; not the dependency operation result or row count.
+ */
 static int jpeg_read_raw_data_encap(OJPEGState *sp,
                                     tiff_ojpeg_decompress_struct *cinfo,
                                     void *data, uint32_t max_lines);
+/**
+ * @brief Jump to the active old-style JPEG dependency wrapper.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Requires a live synchronous encapsulation jump frame for this handle on
+ * the same thread. Performs a nonlocal return; never returns normally,
+ * frees no state and supplies no additional diagnostic. An external
+ * encapsulation build must provide the corresponding implementation.
+ *
+ * @param[in] tif Handle whose codec state identifies the active wrapper
+ * frame.
+ */
 static void jpeg_encap_unwind(TIFF *tif);
 #endif
 
@@ -514,6 +1081,27 @@ int TIFFInitOJPEG(TIFF *tif, int scheme)
     return (1);
 }
 
+/**
+ * @brief Retrieve old-style JPEG metadata or delegate to the parent getter.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * IFOFFSET/IFBYTECOUNT consume uint64_t*. YCBCRSUBSAMPLING consumes two
+ * uint16_t*; on the first query it runs OJPEGSubsamplingCorrect, which can
+ * seek and read the stream header, and it returns the codec-cached factors
+ * rather than the directory's td_ycbcrsubsampling, which is not updated.
+ * Q/DC/AC table tags consume uint32_t* count then const void** pointing to
+ * the embedded uint64_t offset arrays in the codec state; the pointer is
+ * valid until the codec state is freed. PROC/RESTART consume uint16_t*.
+ * Other tags are passed to the parent getter.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @param[in] tag Handled old-style JPEG/related tag or parent-delegated
+ * identifier.
+ * @param[in,out] ap Live tag-specific va_list cursor, consumed
+ * synchronously without retention.
+ * @return One for a handled tag, otherwise parent status.
+ */
 static int OJPEGVGetField(TIFF *tif, uint32_t tag, va_list ap)
 {
     OJPEGState *sp = (OJPEGState *)tif->tif_data;
@@ -556,6 +1144,28 @@ static int OJPEGVGetField(TIFF *tif, uint32_t tag, va_list ap)
     return (1);
 }
 
+/**
+ * @brief Cache old-style JPEG tag values or delegate to the parent setter.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * IFOFFSET/IFBYTECOUNT consume uint64_t. SUBSAMPLING consumes two
+ * uint16_vap promoted values, narrows to eight bits and updates directory
+ * sampling. Q/DC/AC table tags consume uint32_t count: nonzero counts must
+ * be at most three, then a borrowed uint64_t* is copied; zero consumes no
+ * pointer and preserves prior count. PROC/RESTART consume uint16_vap and
+ * narrow to eight/sixteen bits. Marks field/dirty after assignment; later
+ * lookup failure need not roll back cached values. Retains no caller
+ * storage.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @param[in] tag Handled old-style JPEG/related tag or parent-delegated
+ * identifier.
+ * @param[in,out] ap Live tag-specific va_list cursor, consumed
+ * synchronously without retention.
+ * @return One after handled tag bookkeeping, zero on rejected count/field
+ * lookup, otherwise parent status.
+ */
 static int OJPEGVSetField(TIFF *tif, uint32_t tag, va_list ap)
 {
     static const char module[] = "OJPEGVSetField";
@@ -645,6 +1255,18 @@ static int OJPEGVSetField(TIFF *tif, uint32_t tag, va_list ap)
     return (1);
 }
 
+/**
+ * @brief Print cached old-style JPEG fields before the optional parent printer.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Writes selected metadata to the borrowed FILE, synchronously invokes the
+ * saved parent and ignores stream error status. No pixel decoding,
+ * allocation or ownership transfer.
+ *
+ * @param[in] tif Handle whose codec state supplies the printed values.
+ * @param[in,out] fd Borrowed writable FILE, retained by caller.
+ * @param[in] flags Print flags forwarded to parent.
+ */
 static void OJPEGPrintDir(TIFF *tif, FILE *fd, long flags)
 {
     OJPEGState *sp = (OJPEGState *)tif->tif_data;
@@ -687,12 +1309,32 @@ static void OJPEGPrintDir(TIFF *tif, FILE *fd, long flags)
         (*sp->printdir)(tif, fd, flags);
 }
 
+/**
+ * @brief Accept the old-style JPEG directory without eager fixups.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * No-op compatibility hook; does not inspect input, allocate or alter
+ * metadata.
+ *
+ * @param[in] tif Unused.
+ * @return One unconditionally.
+ */
 static int OJPEGFixupTags(TIFF *tif)
 {
     (void)tif;
     return (1);
 }
 
+/**
+ * @brief Warn that old-style JPEG compression is deprecated.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Emits a per-handle warning recommending modern JPEG; no dependency
+ * creation, pixel I/O or ownership transfer.
+ *
+ * @param[in] tif Handle used for the warning.
+ * @return One unconditionally.
+ */
 static int OJPEGSetupDecode(TIFF *tif)
 {
     static const char module[] = "OJPEGSetupDecode";
@@ -703,6 +1345,26 @@ static int OJPEGSetupDecode(TIFF *tif)
     return (1);
 }
 
+/**
+ * @brief Position a reconstructed JPEG session at the requested strile and
+ * plane.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Lazily corrects sampling and reads headers, restores cached SOS input
+ * snapshots and restarts a session for backward/plane changes. Requires a
+ * valid sample/strile with at most three components and representable
+ * geometry. Forward positioning decodes/discards intervening striles; this
+ * is sequential reconstruction rather than independent strile decoding. Can
+ * seek/read, allocate and replace dependency state; failures leave partial
+ * state for cleanup. Sets decoder_ok on success.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @param[in] s Sample (plane) index: 0 for contiguous data, 0..2 for
+ * separate planes; selects the cached scan in sos_end.
+ * @return One on completion, zero on detected malformed input, allocation
+ * or dependency/I/O failure; partial state and client effects remain.
+ */
 static int OJPEGPreDecode(TIFF *tif, uint16_t s)
 {
     OJPEGState *sp = (OJPEGState *)tif->tif_data;
@@ -771,6 +1433,21 @@ static int OJPEGPreDecode(TIFF *tif, uint16_t s)
     return (1);
 }
 
+/**
+ * @brief Decode and discard one strile in raw mode.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Consumes complete raw MCU row groups into codec-owned conversion planes,
+ * retaining any partially consumed group. Requires an active raw-mode
+ * session and nonzero conversion geometry. Clears error_in_raw_data_decoding
+ * when it completes a partially consumed group. Does not allocate; a libjpeg
+ * failure is not latched in error_in_raw_data_decoding, and partial
+ * advancement remains.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @return One on completion, zero if libjpeg reports a fatal error.
+ */
 static int OJPEGPreDecodeSkipRaw(TIFF *tif)
 {
     OJPEGState *sp = (OJPEGState *)tif->tif_data;
@@ -808,6 +1485,20 @@ static int OJPEGPreDecodeSkipRaw(TIFF *tif)
     return (1);
 }
 
+/**
+ * @brief Decode and discard one strile in scanlines mode.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Lazily allocates a codec-owned bytes_per_line skip buffer and decodes
+ * lines_per_strile rows into it. Requires an active scanline session.
+ * The skip buffer is kept for later calls; partial advancement remains on
+ * failure.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @return One on completion, zero on allocation failure or if libjpeg
+ * reports a fatal error.
+ */
 static int OJPEGPreDecodeSkipScanlines(TIFF *tif)
 {
     static const char module[] = "OJPEGPreDecodeSkipScanlines";
@@ -831,6 +1522,27 @@ static int OJPEGPreDecodeSkipScanlines(TIFF *tif)
     return (1);
 }
 
+/**
+ * @brief Decode complete output rows from the active old-style JPEG session.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Requires nonnegative cc, a writable cc-byte buffer and valid setup with
+ * nonzero bytes_per_line. Dispatches raw clump or scanline mode. On failed
+ * dispatch, invalid/inactive session or latched raw error, zeroes the
+ * entire requested buffer. Dependency/cursor progress and diagnostics
+ * remain; no caller buffer retention or ownership transfer. A positive
+ * result does not validate discarded dependency row-count results.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @param[out] buf Writable output of cc bytes.
+ * @param[in] cc Number of bytes to decode; unless it is a positive multiple
+ * of bytes_per_line the raw or scanline decoder fails.
+ * @param[in] s Sample index; unused (the plane is selected by
+ * OJPEGPreDecode).
+ * @return One on wrapper completion, zero on detected failure with
+ * requested output cleared.
+ */
 static int OJPEGDecode(TIFF *tif, uint8_t *buf, tmsize_t cc, uint16_t s)
 {
     static const char module[] = "OJPEGDecode";
@@ -881,6 +1593,26 @@ static int OJPEGDecode(TIFF *tif, uint8_t *buf, tmsize_t cc, uint16_t s)
     return (1);
 }
 
+/**
+ * @brief Decode complete subsampled clump rows.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Requires a live raw-mode session. Rejects cc not divisible by
+ * bytes_per_line with an error, and returns 0 without a diagnostic for
+ * cc <= 0. Reads MCU planes as needed and interleaves subsampled Y/Cb/Cr
+ * clumps, advancing conversion state. A trapped dependency failure latches
+ * error_in_raw_data_decoding. Partial output/cursor changes survive failure
+ * here; OJPEGDecode clears output when propagating failure. Borrows caller
+ * output synchronously; no ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @param[out] buf Writable output of cc bytes.
+ * @param[in] cc Number of bytes to decode; zero is returned unless it is
+ * a positive multiple of bytes_per_line.
+ * @return One after decoding cc bytes, zero on an invalid cc or if libjpeg
+ * reports a fatal error; partial output remains.
+ */
 static int OJPEGDecodeRaw(TIFF *tif, uint8_t *buf, tmsize_t cc)
 {
     static const char module[] = "OJPEGDecodeRaw";
@@ -946,6 +1678,26 @@ static int OJPEGDecodeRaw(TIFF *tif, uint8_t *buf, tmsize_t cc)
     return (1);
 }
 
+/**
+ * @brief Decode complete ordinary sample rows.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Requires a live scanline session. Rejects cc not divisible by
+ * bytes_per_line with an error, and returns 0 without a diagnostic for
+ * cc <= 0. Requests one row at a time and advances output by
+ * bytes_per_line; the encapsulation discards dependency row counts. Partial
+ * output/cursor changes survive failure here; OJPEGDecode clears output
+ * when propagating failure. Borrows caller output synchronously; no
+ * ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @param[out] buf Writable output of cc bytes.
+ * @param[in] cc Number of bytes to decode; zero is returned unless it is
+ * a positive multiple of bytes_per_line.
+ * @return One after decoding cc bytes, zero on an invalid cc or if libjpeg
+ * reports a fatal error; partial output remains.
+ */
 static int OJPEGDecodeScanlines(TIFF *tif, uint8_t *buf, tmsize_t cc)
 {
     static const char module[] = "OJPEGDecodeScanlines";
@@ -972,6 +1724,22 @@ static int OJPEGDecodeScanlines(TIFF *tif, uint8_t *buf, tmsize_t cc)
     return (1);
 }
 
+/**
+ * @brief Advance the cached strile count and end a completed plane session.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Ignores buf and cc and assumes each call completed a whole strile.
+ * Requires nonzero stripsperimage and a live session when reaching the
+ * plane boundary; destroys that session and clears writeheader_done. This
+ * existing assumption is invalid for scanline-by-scanline calls and can
+ * abort decoding prematurely (issue 337). No caller buffer access or
+ * ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @param[in] buf Unused.
+ * @param[in] cc Unused.
+ */
 static void OJPEGPostDecode(TIFF *tif, uint8_t *buf, tmsize_t cc)
 {
     OJPEGState *sp = (OJPEGState *)tif->tif_data;
@@ -994,6 +1762,15 @@ static void OJPEGPostDecode(TIFF *tif, uint8_t *buf, tmsize_t cc)
     }
 }
 
+/**
+ * @brief Reject unsupported old-style JPEG encoding.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Always reports an error recommending new-style JPEG compression.
+ *
+ * @param[in] tif Handle used for the error report.
+ * @return Zero unconditionally.
+ */
 static int OJPEGSetupEncode(TIFF *tif)
 {
     static const char module[] = "OJPEGSetupEncode";
@@ -1003,6 +1780,16 @@ static int OJPEGSetupEncode(TIFF *tif)
     return (0);
 }
 
+/**
+ * @brief Reject unsupported old-style JPEG encoding.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Always reports an error recommending new-style JPEG compression.
+ *
+ * @param[in] tif Handle used for the error report.
+ * @param[in] s Unused.
+ * @return Zero unconditionally.
+ */
 static int OJPEGPreEncode(TIFF *tif, uint16_t s)
 {
     static const char module[] = "OJPEGPreEncode";
@@ -1013,6 +1800,18 @@ static int OJPEGPreEncode(TIFF *tif, uint16_t s)
     return (0);
 }
 
+/**
+ * @brief Reject unsupported old-style JPEG encoding.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Always reports an error recommending new-style JPEG compression.
+ *
+ * @param[in] tif Handle used for the error report.
+ * @param[in] buf Unused.
+ * @param[in] cc Unused.
+ * @param[in] s Unused.
+ * @return Zero unconditionally.
+ */
 static int OJPEGEncode(TIFF *tif, uint8_t *buf, tmsize_t cc, uint16_t s)
 {
     static const char module[] = "OJPEGEncode";
@@ -1025,6 +1824,15 @@ static int OJPEGEncode(TIFF *tif, uint8_t *buf, tmsize_t cc, uint16_t s)
     return (0);
 }
 
+/**
+ * @brief Reject unsupported old-style JPEG encoding.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Always reports an error recommending new-style JPEG compression.
+ *
+ * @param[in] tif Handle used for the error report.
+ * @return Zero unconditionally.
+ */
 static int OJPEGPostEncode(TIFF *tif)
 {
     static const char module[] = "OJPEGPostEncode";
@@ -1034,6 +1842,20 @@ static int OJPEGPostEncode(TIFF *tif)
     return (0);
 }
 
+/**
+ * @brief Release old-style JPEG state and restore parent methods.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Restores saved tag/print hooks and default compression methods, aborts an
+ * active dependency session, frees all owned table blobs, combined
+ * conversion storage, pointer arrays and skip buffer, then clears tif_data.
+ * Interior component views borrow the combined buffer and are not freed
+ * separately. Invalidates every borrowed table/state view; caller handle
+ * remains live.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ */
 static void OJPEGCleanup(TIFF *tif)
 {
     OJPEGState *sp = (OJPEGState *)tif->tif_data;
@@ -1080,6 +1902,33 @@ static void OJPEGCleanup(TIFF *tif)
     }
 }
 
+/**
+ * @brief Probe and reconcile old-style JPEG subsampling once.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Called once, from OJPEGVGetField (YCbCrSubsampling) or OJPEGPreDecode, and
+ * sets subsamplingcorrect_done. Only the codec-cached values
+ * sp->subsampling_hor, sp->subsampling_ver and
+ * sp->subsampling_force_desubsampling_inside_decompression change;
+ * td_ycbcrsubsampling in the directory is not modified.
+ *
+ * If SamplesPerPixel is not 3 or Photometric is neither YCbCr nor ITULAB, no
+ * input is read: the factors are set to 1x1 and the force flag is cleared,
+ * with a warning if the YCbCrSubsampling tag was set. Otherwise the stream
+ * header is parsed once by OJPEGReadHeaderInfoSec in sampling-only mode
+ * (sp->subsamplingcorrect set), which stops at the first SOF or SOS marker
+ * and suppresses most diagnostics; its result is ignored. The first SOF
+ * component's factors replace the cached ones, and factors other than 1, 2
+ * or 4, or chroma factors other than 1x1, set the force flag, in which case
+ * the cached factors become 1x1 and libjpeg upsamples. Warns when the stream
+ * factors differ from the tag (or the 2x2 default) and when horizontal is
+ * less than vertical. The probe seeks and reads the file and leaves the
+ * input cursor wherever it stopped (a DRI marker before the SOF also sets
+ * restart_interval); OJPEGReadHeaderInfo parses the header again later.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ */
 static void OJPEGSubsamplingCorrect(TIFF *tif)
 {
     static const char module[] = "OJPEGSubsamplingCorrect";
@@ -1165,6 +2014,26 @@ static void OJPEGSubsamplingCorrect(TIFF *tif)
     sp->subsamplingcorrect_done = 1;
 }
 
+/**
+ * @brief Validate geometry and cache the first old-style JPEG scan position.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Accepts SamplesPerPixel 1 or 3 and contiguous/separate planes; sample
+ * precision is checked only when the stream has an SOF marker. For
+ * multi-strile images, validates sampling factors (1, 2 or 4) and
+ * strile/MCU alignment, and replaces the cached restart interval (including
+ * a JpegRestartInterval tag value) with the per-strile MCU count, which a
+ * stream DRI marker may override. Reads stream or offset-tag tables, caches
+ * SOS state and marks readheader_done. Requires valid nonzero strile
+ * geometry. Allocated tables remain codec-owned;
+ * client position and partial caches persist on failure.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @return One on completion, zero on unsupported SamplesPerPixel or
+ * sampling/strile geometry, malformed header data, allocation or read
+ * failure; partial state and file position changes remain.
+ */
 static int OJPEGReadHeaderInfo(TIFF *tif)
 {
     static const char module[] = "OJPEGReadHeaderInfo";
@@ -1268,6 +2137,21 @@ static int OJPEGReadHeaderInfo(TIFF *tif)
     return (1);
 }
 
+/**
+ * @brief Locate and cache a later separate-plane scan header.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Requires sample s in 1..2 and valid preceding snapshots. Restores nearest
+ * known scan, scans markers and caches each subsequent SOS stream position;
+ * can seek/read and change plane offsets. Cached positions and partial
+ * progress persist on failure; no caller ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @param[in] s Separate-plane sample index in 1..2 (asserted).
+ * @return One on success, zero on a short read or a malformed SOS marker;
+ * does not allocate.
+ */
 static int OJPEGReadSecondarySos(TIFF *tif, uint16_t s)
 {
     OJPEGState *sp = (OJPEGState *)tif->tif_data;
@@ -1325,6 +2209,25 @@ static int OJPEGReadSecondarySos(TIFF *tif, uint16_t s)
     return (1);
 }
 
+/**
+ * @brief Start libjpeg with a synthesized old-style JPEG input header.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * This builds decoder input, not a TIFF output stream. Rejects a previously
+ * active failed session, installs managers, creates the dependency
+ * decompressor and chooses raw subsampled or ordinary scanlines. Allocates
+ * checked conversion storage and row-pointer views in raw mode, validates
+ * dependency width/sampling, and starts decoding. Tiny malformed tile
+ * layouts retain existing conversion limitations; failed setup can retain
+ * an active session/owned buffers for cleanup. No caller storage retention.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @return One once decompression has started; zero if a session from an
+ * earlier attempt is still active, on allocation failure or size overflow,
+ * on a libjpeg fatal error, or when libjpeg reports a width or sampling
+ * mismatch. An active session and buffers are left for cleanup.
+ */
 static int OJPEGWriteHeaderInfo(TIFF *tif)
 {
     static const char module[] = "OJPEGWriteHeaderInfo";
@@ -1525,6 +2428,17 @@ static int OJPEGWriteHeaderInfo(TIFF *tif)
     return (1);
 }
 
+/**
+ * @brief Destroy the active old-style JPEG dependency session.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Requires an active session, calls jpeg_destroy and clears the active
+ * flag. Invalidates dependency-owned views; retains outer codec
+ * tables/buffers for reuse or cleanup. No independent error status.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ */
 static void OJPEGLibjpegSessionAbort(TIFF *tif)
 {
     OJPEGState *sp = (OJPEGState *)tif->tif_data;
@@ -1534,6 +2448,24 @@ static void OJPEGLibjpegSessionAbort(TIFF *tif)
     sp->libjpeg_session_active = 0;
 }
 
+/**
+ * @brief Parse a bounded interchange/strile JPEG header or synthesize it from
+ * tags.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Normalizes invalid/out-of-file interchange extents, initializes input
+ * traversal, dispatches marker parsers and skips APP/COM payloads. Probe
+ * mode may stop after SOF/SOS without full parsing. Missing SOF falls back
+ * to offset-tag tables and synthesized baseline component headers. Can
+ * allocate, read/seek and replace cached tables; no position restore or
+ * rollback on failure.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @return One on completion (in sampling-only mode, once an SOF or SOS
+ * marker is reached), zero on a malformed or unknown marker, allocation or
+ * read failure; partial state and file position changes remain.
+ */
 static int OJPEGReadHeaderInfoSec(TIFF *tif)
 {
     static const char module[] = "OJPEGReadHeaderInfoSec";
@@ -1673,6 +2605,19 @@ static int OJPEGReadHeaderInfoSec(TIFF *tif)
     return (1);
 }
 
+/**
+ * @brief Parse and cache a JPEG restart interval.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Consumes a big-endian length and interval, requires marker length four,
+ * diagnoses a bad length and stores the interval after both reads. A short
+ * read fails without a codec diagnostic. No allocation; input progress
+ * remains on failure.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @return One on success, zero on a bad marker length or a short read.
+ */
 static int OJPEGReadHeaderInfoSecStreamDri(TIFF *tif)
 {
     /* This could easily cause trouble in some cases... but no such cases have
@@ -1693,6 +2638,22 @@ static int OJPEGReadHeaderInfoSecStreamDri(TIFF *tif)
     return (1);
 }
 
+/**
+ * @brief Capture eight-bit JPEG quantisation table markers.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Validates marker length and table slot 0..3, allocates owned
+ * length-prefixed marker blobs and replaces each previous slot only after
+ * reading that table. Probe mode skips payload instead. Earlier table
+ * replacements and input progress remain if a later table fails; temporary
+ * failed blobs are freed. No caller ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @return One on completion, zero on a malformed marker, allocation
+ * failure or short read; earlier table replacements and input progress
+ * remain.
+ */
 static int OJPEGReadHeaderInfoSecStreamDqt(TIFF *tif)
 {
     /* this is a table marker, and it is to be saved as a whole for exact
@@ -1756,6 +2717,22 @@ static int OJPEGReadHeaderInfoSecStreamDqt(TIFF *tif)
     return (1);
 }
 
+/**
+ * @brief Capture a JPEG Huffman marker in its selected table slot.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Copies the complete marker into an owned length-prefixed blob, validates
+ * the first class/slot and replaces the old DC/AC slot. Retains the
+ * existing assumption that one marker describes one table. Probe mode skips
+ * the payload. Failure frees the new temporary blob but preserves consumed
+ * input and earlier changes.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @return One on completion, zero on a malformed marker, allocation
+ * failure or short read; earlier table replacements and input progress
+ * remain.
+ */
 static int OJPEGReadHeaderInfoSecStreamDht(TIFF *tif)
 {
     /* this is a table marker, and it is to be saved as a whole for exact
@@ -1836,6 +2813,23 @@ static int OJPEGReadHeaderInfoSecStreamDht(TIFF *tif)
     return (1);
 }
 
+/**
+ * @brief Validate a JPEG frame and cache its component selectors.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Requires supported marker_id and bounded component count consistent with
+ * the image outside probe mode. Validates eight-bit precision, dimensions
+ * and sampling; probe mode instead discovers factors and can force
+ * dependency desubsampling. Reads/cache assignments are incremental, with
+ * selected diagnostics suppressed during probing. No allocation or
+ * ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @param[in] marker_id Supported SOF marker code.
+ * @return One on success, zero on an invalid or unsupported frame header or
+ * a short read.
+ */
 static int OJPEGReadHeaderInfoSecStreamSof(TIFF *tif, uint8_t marker_id)
 {
     /* this marker needs to be checked, and part of its data needs to be saved
@@ -2006,6 +3000,21 @@ static int OJPEGReadHeaderInfoSecStreamSof(TIFF *tif, uint8_t marker_id)
     return (1);
 }
 
+/**
+ * @brief Validate and cache a JPEG scan component header.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Requires non-probe mode, a parsed frame and valid plane/component bounds
+ * at most three. Validates scan length/count, stores component/table
+ * selectors and skips the final three spectral/approximation bytes without
+ * validating them. Partial cache/input changes survive failure; no
+ * allocation.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @return One on success, zero on a malformed SOS marker (diagnosed) or a
+ * short read (no codec diagnostic).
+ */
 static int OJPEGReadHeaderInfoSecStreamSos(TIFF *tif)
 {
     /* this marker needs to be checked, and part of its data needs to be saved
@@ -2055,6 +3064,23 @@ static int OJPEGReadHeaderInfoSecStreamSos(TIFF *tif)
     return (1);
 }
 
+/**
+ * @brief Build quantisation markers from TIFF table-offset tags.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Requires one to three valid components. Reports a missing first offset
+ * with an error. Reads client data directly at offsets, builds owned
+ * length-prefixed marker blobs and caches selectors, reusing adjacent
+ * equal/omitted offsets. Non-adjacent duplicates can be rejected. Seek return
+ * status is not checked separately; a short read fails without a codec
+ * diagnostic. Frees a failed temporary blob, retains earlier replacements and
+ * leaves file position changed.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @return One on success; zero on a missing or duplicated offset or
+ * allocation failure (diagnosed), or on a short read (not diagnosed).
+ */
 static int OJPEGReadHeaderInfoSecTablesQTable(TIFF *tif)
 {
     static const char module[] = "OJPEGReadHeaderInfoSecTablesQTable";
@@ -2114,6 +3140,23 @@ static int OJPEGReadHeaderInfoSecTablesQTable(TIFF *tif)
     return (1);
 }
 
+/**
+ * @brief Build DC Huffman markers from TIFF table-offset tags.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Requires one to three valid components. Reports a missing first offset
+ * with an error. Reads client data directly at offsets, builds owned
+ * length-prefixed marker blobs and caches selectors, reusing adjacent
+ * equal/omitted offsets. Non-adjacent duplicates can be rejected. Seek return
+ * status is not checked separately; a short read fails without a codec
+ * diagnostic. Frees a failed temporary blob, retains earlier replacements and
+ * leaves file position changed.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @return One on success; zero on a missing or duplicated offset or
+ * allocation failure (diagnosed), or on a short read (not diagnosed).
+ */
 static int OJPEGReadHeaderInfoSecTablesDcTable(TIFF *tif)
 {
     static const char module[] = "OJPEGReadHeaderInfoSecTablesDcTable";
@@ -2184,6 +3227,23 @@ static int OJPEGReadHeaderInfoSecTablesDcTable(TIFF *tif)
     return (1);
 }
 
+/**
+ * @brief Build AC Huffman markers from TIFF table-offset tags.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Requires one to three valid components. Reports a missing first offset
+ * with an error. Reads client data directly at offsets, builds owned
+ * length-prefixed marker blobs and caches selectors, reusing adjacent
+ * equal/omitted offsets. Non-adjacent duplicates can be rejected. Seek return
+ * status is not checked separately; a short read fails without a codec
+ * diagnostic. Frees a failed temporary blob, retains earlier replacements and
+ * leaves file position changed.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @return One on success; zero on a missing or duplicated offset or
+ * allocation failure (diagnosed), or on a short read (not diagnosed).
+ */
 static int OJPEGReadHeaderInfoSecTablesAcTable(TIFF *tif)
 {
     static const char module[] = "OJPEGReadHeaderInfoSecTablesAcTable";
@@ -2254,6 +3314,23 @@ static int OJPEGReadHeaderInfoSecTablesAcTable(TIFF *tif)
     return (1);
 }
 
+/**
+ * @brief Refill the old-style JPEG input window across interchange and strile
+ * extents.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Requires no unread bytes. Traverses normalized interchange data then
+ * bounded strile offsets/counts, skipping empty offsets and clamping
+ * lengths to file size. Zero bytecount uses remaining file extent. Can
+ * fetch strile metadata, seek and read; seek status is not checked
+ * separately and positive short reads are accepted. Maintains embedded
+ * storage/cursors without transferring ownership.
+ *
+ * @param[in,out] sp Codec state whose input window, source and extent
+ * cursors are updated.
+ * @return One with nonempty input, zero at EOF or detected read/metadata
+ * failure.
+ */
 static int OJPEGReadBufferFill(OJPEGState *sp)
 {
     uint16_t m;
@@ -2348,6 +3425,19 @@ static int OJPEGReadBufferFill(OJPEGState *sp)
     return (1);
 }
 
+/**
+ * @brief Consume one buffered byte.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Refills as needed and advances input; assigns byte only after success.
+ * Caller owns result storage; no retained caller pointer. Read failures may
+ * be diagnosed by lower layers; no rollback.
+ *
+ * @param[in,out] sp Codec state whose input window is consumed and
+ * refilled as needed.
+ * @param[out] byte Non-NULL caller-owned byte result.
+ * @return One after complete output, zero on refill/read failure.
+ */
 static int OJPEGReadByte(OJPEGState *sp, uint8_t *byte)
 {
     if (sp->in_buffer_togo == 0)
@@ -2362,6 +3452,20 @@ static int OJPEGReadByte(OJPEGState *sp, uint8_t *byte)
     return (1);
 }
 
+/**
+ * @brief Peek at the next buffered byte.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * May refill and perform client I/O but leaves the returned byte
+ * unconsumed; assigns byte only after success. Caller owns result storage;
+ * no retained caller pointer. Read failures may be diagnosed by lower
+ * layers; no rollback.
+ *
+ * @param[in,out] sp Codec state whose input window may be refilled; the
+ * cursor is not advanced.
+ * @param[out] byte Non-NULL caller-owned byte result.
+ * @return One after complete output, zero on refill/read failure.
+ */
 static int OJPEGReadBytePeek(OJPEGState *sp, uint8_t *byte)
 {
     if (sp->in_buffer_togo == 0)
@@ -2374,6 +3478,17 @@ static int OJPEGReadBytePeek(OJPEGState *sp, uint8_t *byte)
     return (1);
 }
 
+/**
+ * @brief Consume one already buffered byte.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Requires in_buffer_togo greater than zero, asserted in debug builds.
+ * Advances the embedded cursor/count without refilling, allocation,
+ * diagnostics or ownership transfer.
+ *
+ * @param[in,out] sp Codec state whose input cursor and count are
+ * advanced.
+ */
 static void OJPEGReadByteAdvance(OJPEGState *sp)
 {
     assert(sp->in_buffer_togo > 0);
@@ -2381,6 +3496,21 @@ static void OJPEGReadByteAdvance(OJPEGState *sp)
     sp->in_buffer_togo--;
 }
 
+/**
+ * @brief Consume a big-endian sixteen-bit word.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Reads two bytes; after the first succeeds, word already contains its high
+ * byte, so second-byte failure leaves a partial result. Caller owns result
+ * storage; no retained caller pointer. Read failures may be diagnosed by
+ * lower layers; no rollback.
+ *
+ * @param[in,out] sp Codec state whose input window is consumed and
+ * refilled as needed.
+ * @param[out] word Non-NULL caller-owned word result; can be partial on
+ * failure.
+ * @return One after complete output, zero on refill/read failure.
+ */
 static int OJPEGReadWord(OJPEGState *sp, uint16_t *word)
 {
     uint8_t m;
@@ -2393,6 +3523,21 @@ static int OJPEGReadWord(OJPEGState *sp, uint16_t *word)
     return (1);
 }
 
+/**
+ * @brief Copy a positive byte block from the input stream.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Requires len greater than zero and mem writable for len bytes. Can refill
+ * repeatedly; failure retains partial output and consumed bytes. Caller
+ * owns result storage; no retained caller pointer. Read failures may be
+ * diagnosed by lower layers; no rollback.
+ *
+ * @param[in,out] sp Codec state whose input window is consumed and
+ * refilled as needed.
+ * @param[in] len Number of bytes to copy; must be positive (asserted).
+ * @param[out] mem Destination of at least len writable bytes.
+ * @return One after complete output, zero on refill/read failure.
+ */
 static int OJPEGReadBlock(OJPEGState *sp, uint16_t len, void *mem)
 {
     uint16_t mlen;
@@ -2421,6 +3566,19 @@ static int OJPEGReadBlock(OJPEGState *sp, uint16_t len, void *mem)
     return (1);
 }
 
+/**
+ * @brief Skip up to a bounded input extent without fetching skipped bytes.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Consumes buffered data first, then advances file-window offsets and marks
+ * repositioning required. An oversized skip silently exhausts the available
+ * extent. No immediate client read, allocation, status result or ownership
+ * transfer.
+ *
+ * @param[in,out] sp Codec state whose input window and file extent
+ * cursors are advanced.
+ * @param[in] len Number of bytes to skip; clamped to the remaining extent.
+ */
 static void OJPEGReadSkip(OJPEGState *sp, uint16_t len)
 {
     uint16_t m;
@@ -2450,6 +3608,24 @@ static void OJPEGReadSkip(OJPEGState *sp, uint16_t len)
     }
 }
 
+/**
+ * @brief Produce the next borrowed chunk of reconstructed decoder input.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Advances the output state through synthetic markers, owned table blobs
+ * and client compressed input. Skips absent tables internally. Can
+ * read/seek and diagnose through refill. Returns pointers into embedded
+ * buffers or owned tables, valid until next producer/refill, table
+ * replacement or cleanup; consume synchronously and never free them. Does
+ * not write TIFF output. Outputs need not be assigned on failure.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @param[out] mem Set to the start of the produced chunk on success.
+ * @param[out] len Set to 0 on entry, then to the nonzero chunk length on
+ * success; not preserved on failure.
+ * @return One after producing a chunk, zero on compressed-input failure.
+ */
 static int OJPEGWriteStream(TIFF *tif, void **mem, uint32_t *len)
 {
     OJPEGState *sp = (OJPEGState *)tif->tif_data;
@@ -2524,6 +3700,18 @@ static int OJPEGWriteStream(TIFF *tif, void **mem, uint32_t *len)
     return (1);
 }
 
+/**
+ * @brief Produce a Soi reconstruction chunk.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Writes SOI into out_buffer and advances to the quantisation tables. The
+ * chunk is valid until the next producer overwrites out_buffer.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @param[out] mem Set to sp->out_buffer, which holds the marker.
+ * @param[out] len Set to the marker length in bytes.
+ */
 static void OJPEGWriteStreamSoi(TIFF *tif, void **mem, uint32_t *len)
 {
     OJPEGState *sp = (OJPEGState *)tif->tif_data;
@@ -2535,6 +3723,23 @@ static void OJPEGWriteStreamSoi(TIFF *tif, void **mem, uint32_t *len)
     sp->out_state = (OJPEGStateOutState)(sp->out_state + 1);
 }
 
+/**
+ * @brief Produce a QTable reconstruction chunk.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Borrows the selected quantisation marker blob, omitting its stored length
+ * prefix. An absent table advances state without assigning outputs.
+ * Requires table_index in 0..3. The chunk points into the stored table and
+ * is valid until the table is replaced or the codec is cleaned up.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @param[in] table_index Table slot in 0..3.
+ * @param[out] mem Set to the stored marker when the table is present;
+ * otherwise unchanged.
+ * @param[out] len Set to the marker length when the table is present;
+ * otherwise unchanged.
+ */
 static void OJPEGWriteStreamQTable(TIFF *tif, uint8_t table_index, void **mem,
                                    uint32_t *len)
 {
@@ -2548,6 +3753,23 @@ static void OJPEGWriteStreamQTable(TIFF *tif, uint8_t table_index, void **mem,
     sp->out_state = (OJPEGStateOutState)(sp->out_state + 1);
 }
 
+/**
+ * @brief Produce a DcTable reconstruction chunk.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Borrows the selected DC Huffman marker blob, omitting its stored length
+ * prefix. An absent table advances state without assigning outputs.
+ * Requires table_index in 0..3. The chunk points into the stored table and
+ * is valid until the table is replaced or the codec is cleaned up.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @param[in] table_index Table slot in 0..3.
+ * @param[out] mem Set to the stored marker when the table is present;
+ * otherwise unchanged.
+ * @param[out] len Set to the marker length when the table is present;
+ * otherwise unchanged.
+ */
 static void OJPEGWriteStreamDcTable(TIFF *tif, uint8_t table_index, void **mem,
                                     uint32_t *len)
 {
@@ -2561,6 +3783,23 @@ static void OJPEGWriteStreamDcTable(TIFF *tif, uint8_t table_index, void **mem,
     sp->out_state = (OJPEGStateOutState)(sp->out_state + 1);
 }
 
+/**
+ * @brief Produce a AcTable reconstruction chunk.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Borrows the selected AC Huffman marker blob, omitting its stored length
+ * prefix. An absent table advances state without assigning outputs.
+ * Requires table_index in 0..3. The chunk points into the stored table and
+ * is valid until the table is replaced or the codec is cleaned up.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @param[in] table_index Table slot in 0..3.
+ * @param[out] mem Set to the stored marker when the table is present;
+ * otherwise unchanged.
+ * @param[out] len Set to the marker length when the table is present;
+ * otherwise unchanged.
+ */
 static void OJPEGWriteStreamAcTable(TIFF *tif, uint8_t table_index, void **mem,
                                     uint32_t *len)
 {
@@ -2574,6 +3813,21 @@ static void OJPEGWriteStreamAcTable(TIFF *tif, uint8_t table_index, void **mem,
     sp->out_state = (OJPEGStateOutState)(sp->out_state + 1);
 }
 
+/**
+ * @brief Produce a Dri reconstruction chunk.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Writes a DRI marker for the cached restart interval into out_buffer, or
+ * emits nothing when the interval is 0, and advances to frame output. The
+ * chunk is valid until the next producer overwrites out_buffer.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @param[out] mem Set to sp->out_buffer when a DRI marker is emitted;
+ * otherwise unchanged.
+ * @param[out] len Set to 6 when a DRI marker is emitted; otherwise
+ * unchanged.
+ */
 static void OJPEGWriteStreamDri(TIFF *tif, void **mem, uint32_t *len)
 {
     OJPEGState *sp = (OJPEGState *)tif->tif_data;
@@ -2592,6 +3846,20 @@ static void OJPEGWriteStreamDri(TIFF *tif, void **mem, uint32_t *len)
     sp->out_state = (OJPEGStateOutState)(sp->out_state + 1);
 }
 
+/**
+ * @brief Produce a Sof reconstruction chunk.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Emits cached eight-bit frame/component geometry with representable marker
+ * dimensions and at most three components into out_buffer, then advances
+ * to SOS. The chunk is valid until the next producer overwrites
+ * out_buffer.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @param[out] mem Set to sp->out_buffer, which holds the marker.
+ * @param[out] len Set to the marker length in bytes.
+ */
 static void OJPEGWriteStreamSof(TIFF *tif, void **mem, uint32_t *len)
 {
     OJPEGState *sp = (OJPEGState *)tif->tif_data;
@@ -2629,6 +3897,20 @@ static void OJPEGWriteStreamSof(TIFF *tif, void **mem, uint32_t *len)
     sp->out_state = (OJPEGStateOutState)(sp->out_state + 1);
 }
 
+/**
+ * @brief Produce a Sos reconstruction chunk.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Writes an SOS marker with the current plane scan selectors into
+ * out_buffer, requiring valid plane/component bounds, then advances to
+ * compressed input. The chunk is valid until the next producer overwrites
+ * out_buffer.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @param[out] mem Set to sp->out_buffer, which holds the marker.
+ * @param[out] len Set to the marker length in bytes.
+ */
 static void OJPEGWriteStreamSos(TIFF *tif, void **mem, uint32_t *len)
 {
     OJPEGState *sp = (OJPEGState *)tif->tif_data;
@@ -2661,6 +3943,23 @@ static void OJPEGWriteStreamSos(TIFF *tif, void **mem, uint32_t *len)
     sp->out_state = (OJPEGStateOutState)(sp->out_state + 1);
 }
 
+/**
+ * @brief Produce a Compressed reconstruction chunk.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Refills input if needed, exposes the unread window and consumes it
+ * logically. At strile boundaries selects restart or EOI output. Can
+ * seek/read and fail; output arguments are not assigned on failure. The
+ * chunk points into in_buffer and is valid until the next refill. Does not
+ * allocate.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @param[out] mem Set to the unread part of in_buffer on success.
+ * @param[out] len Set to the number of unread bytes on success.
+ * @return One on success, zero if refilling the input buffer fails (seek or
+ * read failure, or no more input), with no codec diagnostic.
+ */
 static int OJPEGWriteStreamCompressed(TIFF *tif, void **mem, uint32_t *len)
 {
     OJPEGState *sp = (OJPEGState *)tif->tif_data;
@@ -2695,6 +3994,19 @@ static int OJPEGWriteStreamCompressed(TIFF *tif, void **mem, uint32_t *len)
     return (1);
 }
 
+/**
+ * @brief Produce a Rst reconstruction chunk.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Writes the next cyclic RST0..RST7 marker into out_buffer and returns to
+ * compressed input. The chunk is valid until the next producer overwrites
+ * out_buffer.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @param[out] mem Set to sp->out_buffer, which holds the marker.
+ * @param[out] len Set to the marker length in bytes.
+ */
 static void OJPEGWriteStreamRst(TIFF *tif, void **mem, uint32_t *len)
 {
     OJPEGState *sp = (OJPEGState *)tif->tif_data;
@@ -2709,6 +4021,18 @@ static void OJPEGWriteStreamRst(TIFF *tif, void **mem, uint32_t *len)
     sp->out_state = ososCompressed;
 }
 
+/**
+ * @brief Produce a Eoi reconstruction chunk.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Writes EOI into out_buffer without advancing to a further state. The
+ * chunk is valid until the next producer overwrites out_buffer.
+ *
+ * @param[in,out] tif Non-NULL live handle with compatible old-style JPEG
+ * state and directory; serialise access.
+ * @param[out] mem Set to sp->out_buffer, which holds the marker.
+ * @param[out] len Set to the marker length in bytes.
+ */
 static void OJPEGWriteStreamEoi(TIFF *tif, void **mem, uint32_t *len)
 {
     OJPEGState *sp = (OJPEGState *)tif->tif_data;
@@ -2800,6 +4124,17 @@ static void jpeg_encap_unwind(TIFF *tif)
 }
 #endif
 
+/**
+ * @brief Route a dependency message through the handle warning handler.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Requires cinfo->client_data to borrow the live TIFF handle. Formats into
+ * temporary stack storage and synchronously emits a warning. No retained
+ * string, ownership transfer or status result.
+ *
+ * @param[in] cinfo libjpeg context whose error manager formats the
+ * message and whose client_data is the TIFF handle.
+ */
 static void
 OJPEGLibjpegJpegErrorMgrOutputMessage(tiff_ojpeg_common_struct *cinfo)
 {
@@ -2808,6 +4143,17 @@ OJPEGLibjpegJpegErrorMgrOutputMessage(tiff_ojpeg_common_struct *cinfo)
     TIFFWarningExtR(((TIFF *)(cinfo->client_data)), "LibJpeg", "%s", buffer);
 }
 
+/**
+ * @brief Report a fatal dependency error and unwind the active wrapper.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Formats a stack message, diagnoses through the borrowed handle and calls
+ * jpeg_encap_unwind. Requires an active wrapper frame; no ordinary return
+ * or automatic codec cleanup.
+ *
+ * @param[in] cinfo libjpeg context whose error manager formats the
+ * message and whose client_data is the TIFF handle.
+ */
 static void OJPEGLibjpegJpegErrorMgrErrorExit(tiff_ojpeg_common_struct *cinfo)
 {
     char buffer[JMSG_LENGTH_MAX];
@@ -2816,12 +4162,35 @@ static void OJPEGLibjpegJpegErrorMgrErrorExit(tiff_ojpeg_common_struct *cinfo)
     jpeg_encap_unwind((TIFF *)(cinfo->client_data));
 }
 
+/**
+ * @brief Accept the dependency source initialization.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * No-op callback; cinfo is unused. Does not allocate, perform I/O, free
+ * borrowed input or transfer ownership.
+ *
+ * @param[in] cinfo Unused.
+ */
 static void
 OJPEGLibjpegJpegSourceMgrInitSource(tiff_ojpeg_decompress_struct *cinfo)
 {
     (void)cinfo;
 }
 
+/**
+ * @brief Supply the next reconstructed JPEG chunk to libjpeg.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Calls OJPEGWriteStream and assigns its borrowed storage to the source
+ * manager. On failure diagnoses premature input and unwinds the active
+ * wrapper. Can read/seek; dependency must consume the chunk before the next
+ * refill/cleanup. Does not allocate a caller-owned result.
+ *
+ * @param[in,out] cinfo libjpeg context whose client_data is the TIFF
+ * handle; its source manager (sp->libjpeg_jpeg_source_mgr) receives the
+ * chunk.
+ * @return One after assigning input; failure leaves by nonlocal jump.
+ */
 static boolean
 OJPEGLibjpegJpegSourceMgrFillInputBuffer(tiff_ojpeg_decompress_struct *cinfo)
 {
@@ -2839,6 +4208,17 @@ OJPEGLibjpegJpegSourceMgrFillInputBuffer(tiff_ojpeg_decompress_struct *cinfo)
     return (1);
 }
 
+/**
+ * @brief Reject an unexpected dependency skip request.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Ignores the requested count/marker, diagnoses an unexpected error and
+ * unwinds the active wrapper. Performs no recovery or ownership transfer;
+ * requires a live wrapper frame.
+ *
+ * @param[in] cinfo libjpeg context whose client_data is the TIFF handle.
+ * @param[in] num_bytes Unused dependency skip request.
+ */
 static void
 OJPEGLibjpegJpegSourceMgrSkipInputData(tiff_ojpeg_decompress_struct *cinfo,
                                        long num_bytes)
@@ -2853,6 +4233,19 @@ OJPEGLibjpegJpegSourceMgrSkipInputData(tiff_ojpeg_decompress_struct *cinfo,
 #pragma warning(push)
 #pragma warning(disable : 4702) /* unreachable code */
 #endif
+/**
+ * @brief Reject an unexpected dependency restart resynchronization request.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * Ignores the requested count/marker, diagnoses an unexpected error and
+ * unwinds the active wrapper. Performs no recovery or ownership transfer;
+ * requires a live wrapper frame.
+ *
+ * @param[in] cinfo libjpeg context whose client_data is the TIFF handle.
+ * @param[in] desired Unused desired restart marker.
+ * @return Zero only as an unreachable fallback; ordinary failure leaves by
+ * nonlocal jump.
+ */
 static boolean
 OJPEGLibjpegJpegSourceMgrResyncToRestart(tiff_ojpeg_decompress_struct *cinfo,
                                          int desired)
@@ -2867,6 +4260,15 @@ OJPEGLibjpegJpegSourceMgrResyncToRestart(tiff_ojpeg_decompress_struct *cinfo,
 #pragma warning(pop)
 #endif
 
+/**
+ * @brief Accept the dependency source termination.
+ * @ingroup libtiff_private_ojpeg
+ *
+ * No-op callback; cinfo is unused. Does not allocate, perform I/O, free
+ * borrowed input or transfer ownership.
+ *
+ * @param[in] cinfo Unused.
+ */
 static void
 OJPEGLibjpegJpegSourceMgrTermSource(tiff_ojpeg_decompress_struct *cinfo)
 {

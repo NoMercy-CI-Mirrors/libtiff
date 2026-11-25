@@ -12,7 +12,7 @@ Synopsis
 
 .. c:function:: int TIFFCreateDirectory(TIFF* tif)
 
-.. c:function:: int TIFFFreeDirectory(TIFF* tif)
+.. c:function:: void TIFFFreeDirectory(TIFF* tif)
 
 .. c:function:: int TIFFUnlinkDirectory(TIFF* tif, tdir_t dirn)
 
@@ -25,8 +25,9 @@ The following routines create or release a directory.
 The newly created directory will not exist on the file till
 :c:func:`TIFFWriteDirectory`, :c:func:`TIFFCheckpointDirectory`,
 :c:func:`TIFFFlush` or :c:func:`TIFFClose` is called.
-:c:func:`TIFFWriteDirectory` also creates a new directory,
-frees the ``*tif`` structure and sets up a new one.
+:c:func:`TIFFWriteDirectory` also creates a new directory: it releases the
+current directory state of ``*tif`` and sets up a new one. The TIFF handle
+itself is not freed.
 
 :c:func:`TIFFFreeDirectory` releases allocated storage associated with a
 directory, especially custom-fields.
@@ -59,7 +60,8 @@ Be aware:
   :c:func:`TIFFWriteDirectory`, :c:func:`TIFFCheckpointDirectory`,
   :c:func:`TIFFFlush` or :c:func:`TIFFClose` has been called.
 - that :c:func:`TIFFCreateDirectory` and :c:func:`TIFFWriteDirectory`
-  create a new directory, free the ``*tif`` structure and set up a new one.
+  create a new directory, releasing the current directory state of ``*tif``
+  and setting up a new one; the TIFF handle itself is not freed.
 - that unlike :c:func:`TIFFWriteDirectory`, :c:func:`TIFFCheckpointDirectory`
   does not free up the directory data structures in memory.
 

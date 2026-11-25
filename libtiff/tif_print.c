@@ -27,6 +27,11 @@
  *
  * Directory Printing Support
  */
+/**
+ * @file tif_print.c
+ * @brief Format directory values and private escaped text for stdio output.
+ */
+
 #include "tiffiop.h"
 #include <stdio.h>
 
@@ -34,6 +39,14 @@
 
 static void _TIFFprintAsciiBounded(FILE *fd, const char *cp, size_t max_chars);
 
+/**
+ * @brief Map common photometric identifiers to display names.
+ * @ingroup libtiff_private_directory_printing
+ *
+ * Static borrowed strings indexed by photometric codes zero through ten,
+ * including a numeric reserved-code placeholder. Higher LogL/LogLuv values
+ * are handled explicitly by TIFFPrintDirectory().
+ */
 static const char *const photoNames[] = {
     "min-is-white",                      /* PHOTOMETRIC_MINISWHITE */
     "min-is-black",                      /* PHOTOMETRIC_MINISBLACK */
@@ -47,8 +60,21 @@ static const char *const photoNames[] = {
     "ICC L*a*b*", /* PHOTOMETRIC_ICCLAB */
     "ITU L*a*b*"  /* PHOTOMETRIC_ITULAB */
 };
+/**
+ * @brief Count the entries in photoNames, including the reserved placeholder.
+ * @ingroup libtiff_private_directory_printing
+ *
+ * Photometric values at or above this count are printed numerically.
+ */
 #define NPHOTONAMES (sizeof(photoNames) / sizeof(photoNames[0]))
 
+/**
+ * @brief Map orientation identifiers to display descriptions.
+ * @ingroup libtiff_private_directory_printing
+ *
+ * Static borrowed strings including a numeric zero placeholder; valid TIFF
+ * orientation values occupy indices one through eight.
+ */
 static const char *const orientNames[] = {
     "0 (0x0)",
     "row 0 top, col 0 lhs",    /* ORIENTATION_TOPLEFT */
@@ -60,18 +86,77 @@ static const char *const orientNames[] = {
     "row 0 rhs, col 0 bottom", /* ORIENTATION_RIGHTBOT */
     "row 0 lhs, col 0 bottom", /* ORIENTATION_LEFTBOT */
 };
+/**
+ * @brief Count orientation display entries, including the zero placeholder.
+ * @ingroup libtiff_private_directory_printing
+ *
+ * Orientation values at or above this count are printed numerically.
+ */
 #define NORIENTNAMES (sizeof(orientNames) / sizeof(orientNames[0]))
+
+/**
+ * @var tagnames
+ * @brief Supply display labels for anonymous GDAL metadata and nodata tags.
+ * @ingroup libtiff_private_directory_printing
+ *
+ * Only generic printing consults these static overrides, and only for
+ * anonymous descriptors; no registration or ownership change occurs.
+ */
+
+/**
+ * @struct tagname
+ * @brief Associate an anonymous on-disk tag with a friendly print label.
+ * @ingroup libtiff_private_directory_printing
+ *
+ * Source-local records own no storage; name points to a static literal. The
+ * overrides do not register descriptors or change tag-getter contracts.
+ */
 
 static const struct tagname
 {
+    /** @brief On-disk tag identifier to relabel. */
     uint16_t tag;
+    /** @brief Borrowed static null-terminated display name. */
     const char *name;
 } tagnames[] = {
     {TIFFTAG_GDAL_METADATA, "GDAL Metadata"},
     {TIFFTAG_GDAL_NODATA, "GDAL NoDataValue"},
 };
+/**
+ * @brief Count the anonymous-tag friendly-name overrides.
+ * @ingroup libtiff_private_directory_printing
+ *
+ * Number of entries in tagnames[] searched by the generic field printer.
+ */
 #define NTAGS (sizeof(tagnames) / sizeof(tagnames[0]))
 
+/**
+ * @brief Print a custom field using its generic numeric or string
+ * representation.
+ * @ingroup libtiff_private_directory_printing
+ *
+ * Prints a label, comma-separated values, and a newline; zero count prints
+ * only the label/newline. Anonymous GDAL tags use the local friendly-name
+ * overrides. Integers/IFDs follow field_type widths (IFDs hexadecimal);
+ * rationals use float or double storage according to TIFFFieldSetGetSize().
+ * ASCII with nonzero count uses unbounded `%s`, ignoring the count as a byte
+ * limit and adding no escapes. Requires matching readable storage and a
+ * terminating ASCII string. Other unsupported types print a placeholder.
+ * Does not allocate, mutate input, retain values, or invoke callbacks.
+ * Stream failures are ignored, with no status/diagnostic or flush. Private
+ * schema representations that disagree with the selected file-type width
+ * are not normalised here.
+ *
+ * @param[in,out] fd Non-NULL writable caller-owned stdio stream; not closed
+ * or flushed by this helper.
+ * @param[in] fip Non-NULL borrowed live field descriptor with
+ * representation matching raw_data.
+ * @param[in] value_count Number of readable internal elements; zero permits
+ * raw_data NULL.
+ * @param[in] raw_data Borrowed matching element array; ASCII must terminate
+ * if count is nonzero. Numeric representation must match the selected
+ * formatting path.
+ */
 static void _TIFFPrintField(FILE *fd, const TIFFField *fip,
                             uint32_t value_count, void *raw_data)
 {
@@ -148,6 +233,38 @@ static void _TIFFPrintField(FILE *fd, const TIFFField *fip,
     fprintf(fd, "\n");
 }
 
+/**
+ * @brief Try specialised formatting for selected named custom tags.
+ * @ingroup libtiff_private_directory_printing
+ *
+ * Anonymous fields return zero without output. Handles DotRange,
+ * WhitePoint, XMP, IPTC, Photoshop, ICCProfile, StoNits, and a special
+ * InkSet shape. Shape/type checks differ by tag; WhitePoint explicitly
+ * assumes two float elements even if a private descriptor would use double
+ * rationals. InkSet requires count two and SHORT but reads only the first
+ * element; usual count-one InkSet falls back to generic printing. XMP
+ * writes exactly value_count raw bytes with fputc(), including embedded
+ * NULs; binary summaries label the supplied element count as bytes without
+ * converting it. Does not allocate, change values, retain pointers, or use
+ * tif. Output is locale/stdio formatting, not escaped serialisation; stdio
+ * errors do not affect the handled result.
+ *
+ * @param[in] tif Unused compatibility context; no handle access, may be
+ * NULL.
+ * @param[in] fip Non-NULL borrowed live field descriptor with
+ * representation matching raw_data.
+ * @param[in,out] fd Non-NULL writable caller-owned stdio stream; not closed
+ * or flushed by this helper.
+ * @param[in] tag Tag identifier to select specialised formatting; normally
+ * matches fip.
+ * @param[in] value_count Readable element count; specialised predicates
+ * determine required shape.
+ * @param[in] raw_data Borrowed matching data, including two floats for
+ * WhitePoint; must be readable on any selected output path.
+ * @return One if a specialised output path was selected, zero for
+ * anonymous/unhandled/shape-mismatched tags; one does not indicate
+ * successful stream output.
+ */
 static int _TIFFPrettyPrintField(TIFF *tif, const TIFFField *fip, FILE *fd,
                                  uint32_t tag, uint32_t value_count,
                                  void *raw_data)
@@ -753,6 +870,30 @@ void _TIFFprintAscii(FILE *fd, const char *cp)
     _TIFFprintAsciiBounded(fd, cp, strlen(cp));
 }
 
+/**
+ * @brief Print at most a byte bound using the private ASCII escape convention.
+ * @ingroup libtiff_private_directory_printing
+ *
+ * Writes at the stream's current position without flushing, closing,
+ * allocating, or taking ownership. Printable bytes depend on the current C
+ * locale; quotes and backslashes are written unchanged. Nonprintable tab,
+ * backspace, carriage return, newline, and vertical tab use named backslash
+ * escapes; other bytes use three octal digits. The implementation passes
+ * plain char to isprint(), so portable input is seven-bit ASCII; high-bit
+ * bytes on signed-char hosts are outside the classifier's valid domain
+ * except EOF. Does not check/report stdio failures and returns no status.
+ * Stops at the first NUL or max_chars, whichever comes first, without a
+ * strlen() pre-scan. The bound limits source bytes, not output bytes; one
+ * source byte can expand to four. No quotes/newline are added.
+ *
+ * @param[in,out] fd Non-NULL writable caller-owned stdio stream; not closed
+ * or flushed by this helper.
+ * @param[in] cp Borrowed readable source through the first NUL or max_chars
+ * bytes; may be NULL only when max_chars is zero. Seven-bit ASCII is
+ * portable.
+ * @param[in] max_chars Maximum number of source bytes examined; zero emits
+ * nothing.
+ */
 static void _TIFFprintAsciiBounded(FILE *fd, const char *cp, size_t max_chars)
 {
     for (; max_chars > 0 && *cp != '\0'; cp++, max_chars--)

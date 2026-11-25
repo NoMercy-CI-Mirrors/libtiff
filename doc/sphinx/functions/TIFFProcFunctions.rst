@@ -27,9 +27,12 @@ Synopsis
 Description
 -----------
 
-.. TODO: Explain or link to explanation of procedure handling.
-
-The following routines return ?????? an open TIFF file.
+These routines query the client I/O callbacks installed on a non-NULL live
+TIFF handle. They do not perform I/O, emit diagnostics, or transfer ownership.
+The returned pointer does not retain its client context: manual invocation
+requires the matching context from :c:func:`TIFFClientdata` and the callback
+contract described in :doc:`TIFFOpen`. Mapping/unmapping getters may return
+dummy callbacks when no mapping implementation was supplied.
 
 :c:func:`TIFFGetCloseProc` returns a pointer to file close method.
 

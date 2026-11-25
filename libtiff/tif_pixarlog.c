@@ -22,6 +22,11 @@
  * OF THIS SOFTWARE.
  */
 
+/**
+ * @file tif_pixarlog.c
+ * @brief Compand PixarLog samples and transfer zlib-compressed code streams.
+ */
+
 #include "tiffiop.h"
 #ifdef PIXARLOG_SUPPORT
 
@@ -124,6 +129,17 @@ static float LogK1, LogK2;
  * free to provide unaligned public buffers.  _TIFFmemcpy() is an out-of-line
  * wrapper in non-LTO builds.
  */
+/**
+ * @brief Read one unaligned native-order float.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Uses fixed-size memcpy and requires enough live byte storage. Does not
+ * convert byte order, allocate, do I/O, diagnose, retain pointers or
+ * transfer ownership.
+ *
+ * @param[in] cp Readable bytes for one native value; unaligned allowed.
+ * @return Loaded value.
+ */
 static float PixarLogLoadFloatNativeUnaligned(const uint8_t *cp)
 {
     float v;
@@ -131,11 +147,33 @@ static float PixarLogLoadFloatNativeUnaligned(const uint8_t *cp)
     return v;
 }
 
+/**
+ * @brief Write one unaligned native-order float.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Uses fixed-size memcpy and requires enough live byte storage. Does not
+ * convert byte order, allocate, do I/O, diagnose, retain pointers or
+ * transfer ownership.
+ *
+ * @param[out] cp Writable bytes for one native value; unaligned allowed.
+ * @param[in] v Native value to store.
+ */
 static void PixarLogStoreFloatNativeUnaligned(uint8_t *cp, float v)
 {
     memcpy(cp, &v, sizeof(v));
 }
 
+/**
+ * @brief Read one unaligned native-order sixteen-bit sample.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Uses fixed-size memcpy and requires enough live byte storage. Does not
+ * convert byte order, allocate, do I/O, diagnose, retain pointers or
+ * transfer ownership.
+ *
+ * @param[in] cp Readable bytes for one native value; unaligned allowed.
+ * @return Loaded value.
+ */
 static uint16_t PixarLogLoad16NativeUnaligned(const uint8_t *cp)
 {
     uint16_t v;
@@ -143,11 +181,44 @@ static uint16_t PixarLogLoad16NativeUnaligned(const uint8_t *cp)
     return v;
 }
 
+/**
+ * @brief Write one unaligned native-order sixteen-bit sample.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Uses fixed-size memcpy and requires enough live byte storage. Does not
+ * convert byte order, allocate, do I/O, diagnose, retain pointers or
+ * transfer ownership.
+ *
+ * @param[out] cp Writable bytes for one native value; unaligned allowed.
+ * @param[in] v Native value to store.
+ */
 static void PixarLogStore16NativeUnaligned(uint8_t *cp, uint16_t v)
 {
     memcpy(cp, &v, sizeof(v));
 }
 
+/**
+ * @brief Accumulate PixarLog prediction into float32 linear samples.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Requires positive stride and n complete interleaved samples, with disjoint
+ * code/output storage. Recovers horizontal prediction modulo 2048; generic
+ * stride paths update the input code array in place. Does nothing when n is
+ * less than stride. Maps codes through ToLinearF and stores native floats
+ * through the unaligned store helper. No allocation, I/O, diagnostics,
+ * retained pointers, ownership transfer or independent extent validation;
+ * void result.
+ *
+ * @param[in,out] wp Aligned n-entry uint16_t code input; generic-stride
+ * paths update it in place.
+ * @param[in] n Nonnegative sample count divisible by positive stride;
+ * buffers must cover complete rows.
+ * @param[in] stride Positive samples per interleaved pixel, or one for
+ * separate data.
+ * @param[out] op Writable format-specific output for n samples.
+ * @param[in] ToLinearF Borrowed initialised float decode table of TSIZEP1
+ * entries.
+ */
 static void horizontalAccumulateF(uint16_t *wp, tmsize_t n, int stride,
                                   uint8_t *op, float *ToLinearF)
 {
@@ -223,6 +294,29 @@ static void horizontalAccumulateF(uint16_t *wp, tmsize_t n, int stride,
     }
 }
 
+/**
+ * @brief Accumulate PixarLog prediction into twelve-bit PICIO values scaled by
+ * 2048 and capped at 3071.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Requires positive stride and n complete interleaved samples, with disjoint
+ * code/output storage. Recovers horizontal prediction modulo 2048; generic
+ * stride paths update the input code array in place. Does nothing when n is
+ * less than stride. Maps codes through ToLinearF, scales by SCALE12 and caps
+ * with CLAMP12, storing native 16-bit values through the unaligned store
+ * helper. No allocation, I/O, diagnostics, retained pointers, ownership
+ * transfer or independent extent validation; void result.
+ *
+ * @param[in,out] wp Aligned n-entry uint16_t code input; generic-stride
+ * paths update it in place.
+ * @param[in] n Nonnegative sample count divisible by positive stride;
+ * buffers must cover complete rows.
+ * @param[in] stride Positive samples per interleaved pixel, or one for
+ * separate data.
+ * @param[out] op Writable format-specific output for n samples.
+ * @param[in] ToLinearF Borrowed initialised float decode table of TSIZEP1
+ * entries.
+ */
 static void horizontalAccumulate12(uint16_t *wp, tmsize_t n, int stride,
                                    uint8_t *op, float *ToLinearF)
 {
@@ -312,6 +406,29 @@ static void horizontalAccumulate12(uint16_t *wp, tmsize_t n, int stride,
     }
 }
 
+/**
+ * @brief Accumulate PixarLog prediction into clipped unsigned sixteen-bit
+ * linear samples.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Requires positive stride and n complete interleaved samples, with disjoint
+ * code/output storage. Recovers horizontal prediction modulo 2048; generic
+ * stride paths update the input code array in place. Does nothing when n is
+ * less than stride. Maps codes through ToLinear16 and stores native uint16_t
+ * values through the unaligned store helper. No allocation, I/O,
+ * diagnostics, retained pointers, ownership transfer or independent extent
+ * validation; void result.
+ *
+ * @param[in,out] wp Aligned n-entry uint16_t code input; generic-stride
+ * paths update it in place.
+ * @param[in] n Nonnegative sample count divisible by positive stride;
+ * buffers must cover complete rows.
+ * @param[in] stride Positive samples per interleaved pixel, or one for
+ * separate data.
+ * @param[out] op Writable format-specific output for n samples.
+ * @param[in] ToLinear16 Borrowed initialised uint16_t decode table of
+ * TSIZEP1 entries.
+ */
 static void horizontalAccumulate16(uint16_t *wp, tmsize_t n, int stride,
                                    uint8_t *op, uint16_t *ToLinear16)
 {
@@ -391,6 +508,29 @@ static void horizontalAccumulate16(uint16_t *wp, tmsize_t n, int stride,
  * Returns the log encoded 11-bit values with the horizontal
  * differencing undone.
  */
+/**
+ * @brief Accumulate PixarLog prediction into raw eleven-bit code words in
+ * native uint16_t slots.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Requires positive stride and n complete interleaved samples, with disjoint
+ * code/output storage. Recovers horizontal prediction modulo 2048; generic
+ * stride paths update the input code array in place. Does nothing when n is
+ * less than stride. Stores the accumulated codes themselves (no lookup
+ * table) as native uint16_t values through the unaligned store helper. For
+ * stride 3 and 4 the first pixel's codes are copied unmasked, so output from
+ * malformed streams can exceed 11 bits; later pixels and the generic-stride
+ * path are masked. No allocation, I/O, diagnostics, retained pointers,
+ * ownership transfer or independent extent validation; void result.
+ *
+ * @param[in,out] wp Aligned n-entry uint16_t code input; generic-stride
+ * paths update it in place.
+ * @param[in] n Nonnegative sample count divisible by positive stride;
+ * buffers must cover complete rows.
+ * @param[in] stride Positive samples per interleaved pixel, or one for
+ * separate data.
+ * @param[out] op Writable format-specific output for n samples.
+ */
 static void horizontalAccumulate11(uint16_t *wp, tmsize_t n, int stride,
                                    uint8_t *op)
 {
@@ -468,6 +608,28 @@ static void horizontalAccumulate11(uint16_t *wp, tmsize_t n, int stride,
     }
 }
 
+/**
+ * @brief Accumulate PixarLog prediction into clipped unsigned eight-bit linear
+ * samples.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Requires positive stride and n complete interleaved samples, with disjoint
+ * code/output storage. Recovers horizontal prediction modulo 2048; generic
+ * stride paths update the input code array in place. Does nothing when n is
+ * less than stride. Maps codes through ToLinear8 and writes one byte per
+ * sample. No allocation, I/O, diagnostics, retained pointers, ownership
+ * transfer or independent extent validation; void result.
+ *
+ * @param[in,out] wp Aligned n-entry uint16_t code input; generic-stride
+ * paths update it in place.
+ * @param[in] n Nonnegative sample count divisible by positive stride;
+ * buffers must cover complete rows.
+ * @param[in] stride Positive samples per interleaved pixel, or one for
+ * separate data.
+ * @param[out] op Writable format-specific output for n samples.
+ * @param[in] ToLinear8 Borrowed initialised byte decode table of TSIZEP1
+ * entries.
+ */
 static void horizontalAccumulate8(uint16_t *wp, tmsize_t n, int stride,
                                   unsigned char *op, unsigned char *ToLinear8)
 {
@@ -524,6 +686,30 @@ static void horizontalAccumulate8(uint16_t *wp, tmsize_t n, int stride,
     }
 }
 
+/**
+ * @brief Accumulate PixarLog prediction into eight-bit ABGR bytes.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Requires positive stride and n complete interleaved samples, with disjoint
+ * code/output storage. Recovers horizontal prediction modulo 2048; generic
+ * stride paths update the input code array in place. Does nothing when n is
+ * less than stride. Maps codes through ToLinear8 and writes bytes. Stride
+ * three expands each RGB triplet to four bytes with a leading zero; stride
+ * four reverses RGBA to ABGR; other strides preserve order. No allocation,
+ * I/O, diagnostics, retained pointers, ownership transfer or independent
+ * extent validation; void result.
+ *
+ * @param[in,out] wp Aligned n-entry uint16_t code input; generic-stride
+ * paths update it in place.
+ * @param[in] n Nonnegative sample count divisible by positive stride;
+ * buffers must cover complete rows.
+ * @param[in] stride Positive samples per interleaved pixel, or one for
+ * separate data.
+ * @param[out] op Borrowed writable format-specific output for the requested
+ * complete samples/rows; ABGR stride three requires four bytes per pixel.
+ * @param[in] ToLinear8 Borrowed initialised byte decode table of TSIZEP1
+ * entries.
+ */
 static void horizontalAccumulate8abgr(uint16_t *wp, tmsize_t n, int stride,
                                       unsigned char *op,
                                       unsigned char *ToLinear8)
@@ -602,30 +788,79 @@ static void horizontalAccumulate8abgr(uint16_t *wp, tmsize_t n, int stride,
  * State block for each open TIFF
  * file using PixarLog compression/decompression.
  */
+/**
+ * @brief Own PixarLog companding tables predictor prefix and zlib progress.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Codec-owned state must remain live until cleanup. Internal buffers and
+ * dependency objects have the individual ownership described below;
+ * borrowed parent methods must remain callable.
+ */
 typedef struct
 {
+    /** @brief Predictor prefix, first in codec allocation. */
     TIFFPredictorState predict;
+    /** @brief Zlib stream whose internal allocation ends during cleanup. */
     z_stream stream;
-    tmsize_t tbuf_size; /* only set/used on reading for now */
+    /**
+     * @brief Decode code-staging byte capacity; encoder does not populate this
+     * member.
+     */
+    tmsize_t tbuf_size;
+    /** @brief Owned Ext aligned uint16_t code staging, released by cleanup. */
     uint16_t *tbuf;
+    /** @brief Samples per interleaved pixel or one for separate data. */
     uint16_t stride;
+    /** @brief PLSTATE_INIT after dependency setup. */
     int state;
+    /** @brief Cached application-facing format, initially UNKNOWN. */
     int user_datafmt;
+    /**
+     * @brief Cached zlib quality, applied at setup or active parameter update.
+     */
     int quality;
 #define PLSTATE_INIT 1
 
-    TIFFVSetMethod vgetparent; /* super-class method */
-    TIFFVSetMethod vsetparent; /* super-class method */
+    /**
+     * @brief Borrowed parent getter stored under the declared compatible method
+     * typedef.
+     */
+    TIFFVSetMethod vgetparent;
+    /** @brief Borrowed parent setter restored during cleanup. */
+    TIFFVSetMethod vsetparent;
 
+    /** @brief Owned Ext float decode table, TSIZEP1 entries. */
     float *ToLinearF;
+    /** @brief Owned Ext clipped sixteen-bit decode table. */
     uint16_t *ToLinear16;
+    /** @brief Owned Ext clipped eight-bit decode table. */
     unsigned char *ToLinear8;
+    /** @brief Owned Ext low-range float-to-code mapping. */
     uint16_t *FromLT2;
-    uint16_t *From14; /* Really for 16-bit data, but we shift down 2 */
+    /** @brief Owned Ext 16384-entry lookup for input shifted right two bits. */
+    uint16_t *From14;
+    /** @brief Owned Ext 256-entry byte-to-code lookup. */
     uint16_t *From8;
 
 } PixarLogState;
 
+/**
+ * @brief Build linear/log companding tables for PixarLog sample formats.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Requires fresh NULL table pointers. Allocates six Ext tables, derives
+ * linear low-end and logarithmic high-end mapping, clamps integer decode
+ * outputs and reduces sixteen-bit encode lookup to fourteen significant
+ * bits. Failure frees new tables and clears state pointers. Writes
+ * process-global Fltsize/LogK coefficients; serialise concurrent table
+ * initialisation and float encoding externally. Codec owns tables until
+ * cleanup; no pixel I/O.
+ *
+ * @param[in,out] tif Non-NULL live PixarLog handle whose Ext allocator
+ * receives the table allocations; serialise handle operations.
+ * @param[in,out] sp Borrowed live codec state with fresh table pointers.
+ * @return One after table construction, zero on allocation failure.
+ */
 static int PixarLogMakeTables(TIFF *tif, PixarLogState *sp)
 {
 
@@ -764,6 +999,17 @@ static int PixarLogDecode(TIFF *tif, uint8_t *op, tmsize_t occ, uint16_t s);
 
 #define PIXARLOGDATAFMT_UNKNOWN -1
 
+/**
+ * @brief Infer the PixarLog user format from depth and sample format.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Recognises float32, unsigned/void 8/11/16, and signed/void twelve-bit
+ * combinations. Reads borrowed directory only, without allocation,
+ * diagnostics, I/O or ownership effects.
+ *
+ * @param[in] td Borrowed current directory metadata.
+ * @return Matching PIXARLOGDATAFMT value, or PIXARLOGDATAFMT_UNKNOWN.
+ */
 static int PixarLogGuessDataFmt(TIFFDirectory *td)
 {
     int guess = PIXARLOGDATAFMT_UNKNOWN;
@@ -801,11 +1047,35 @@ static int PixarLogGuessDataFmt(TIFFDirectory *td)
     return guess;
 }
 
+/**
+ * @brief Multiply positive buffer extents with signed-size checking.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Delegates to _TIFFMultiplySSize without a handle or diagnostic label; no
+ * allocation, I/O, state or ownership effects.
+ *
+ * @param[in] m1 Nonnegative first extent.
+ * @param[in] m2 Nonnegative second extent.
+ * @return Positive checked product, or zero for zero/rejected/overflowed
+ * operands.
+ */
 static tmsize_t multiply_ms(tmsize_t m1, tmsize_t m2)
 {
     return _TIFFMultiplySSize(NULL, m1, m2, NULL);
 }
 
+/**
+ * @brief Add positive buffer extents with signed overflow rejection.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Requires nonnegative operands, asserted in debug builds. Treats either
+ * zero as a prior failure sentinel rather than an arithmetic identity. No
+ * allocation, I/O, diagnostics, state or ownership effects.
+ *
+ * @param[in] m1 Nonnegative first extent.
+ * @param[in] m2 Nonnegative second extent.
+ * @return Positive sum, or zero for a zero operand or overflow.
+ */
 static tmsize_t add_ms(tmsize_t m1, tmsize_t m2)
 {
     assert(m1 >= 0 && m2 >= 0);
@@ -818,12 +1088,39 @@ static tmsize_t add_ms(tmsize_t m1, tmsize_t m2)
     return m1 + m2;
 }
 
+/**
+ * @brief Accept PixarLog tag fixup without changes.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * No allocation, I/O, diagnostics, state or ownership effects.
+ *
+ * @param[in] tif Unused PixarLog handle.
+ * @return One unconditionally.
+ */
 static int PixarLogFixupTags(TIFF *tif)
 {
     (void)tif;
     return (1);
 }
 
+/**
+ * @brief Allocate companded row storage and initialise PixarLog inflation.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Returns immediately for initialised state. Disables ordinary postdecode
+ * swapping, derives positive sample stride, sizes tile/strip staging with
+ * an extra stride through checked size helpers, allocates Ext storage,
+ * guesses user format if needed and calls inflateInit. Detected
+ * format/dependency errors diagnose; some extent/allocation rejections have
+ * no explicit diagnostic. Failure can change postdecode/stride and releases
+ * staging on specified format/dependency paths; no rollback or caller
+ * ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live PixarLog handle with valid
+ * state/geometry; serialise handle operations.
+ * @return One after setup/already initialised, zero on
+ * extent/allocation/format/dependency failure.
+ */
 static int PixarLogSetupDecode(TIFF *tif)
 {
     static const char module[] = "PixarLogSetupDecode";
@@ -908,6 +1205,19 @@ static int PixarLogSetupDecode(TIFF *tif)
 /*
  * Setup state for decoding a strip.
  */
+/**
+ * @brief Reset PixarLog inflation over the current raw strile.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Requires successful decode setup. Attaches raw input, rejects a raw
+ * extent that does not round-trip through zlib uInt and calls inflateReset.
+ * Dependency state can change; no direct client I/O or ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live PixarLog handle with valid
+ * state/geometry; serialise handle operations.
+ * @param[in] s Unused sample-plane argument.
+ * @return One on reset success, zero on size/reset rejection.
+ */
 static int PixarLogPreDecode(TIFF *tif, uint16_t s)
 {
     static const char module[] = "PixarLogPreDecode";
@@ -929,6 +1239,31 @@ static int PixarLogPreDecode(TIFF *tif, uint16_t s)
     return (inflateReset(&sp->stream) == Z_OK);
 }
 
+/**
+ * @brief Inflate companded samples and convert complete PixarLog output rows.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Requires successful predecode, positive stride/row width, representable
+ * whole-row extents and adequate format-specific caller storage. Inflates
+ * into bounded tbuf, commits raw cursors on success, swaps code words when
+ * needed, accumulates prediction and converts to the selected output
+ * format. A partial final sample row is warned/truncated and its unproduced
+ * output tail zeroed. Error paths generally clear requested output and
+ * diagnose after dependency state can change. The current three-channel
+ * ABGR size comparison rejects ordinary positive expanded requests; do not
+ * infer usable RGB-to-ABGR support from the format flag alone. No ownership
+ * transfer; dependency allocations can occur, no direct client I/O.
+ *
+ * @param[in,out] tif Non-NULL live PixarLog handle with valid
+ * state/geometry; serialise handle operations.
+ * @param[out] op Borrowed writable format-specific output for the requested
+ * complete samples/rows; ABGR stride three requires four bytes per pixel.
+ * @param[in] occ Nonnegative requested output bytes in the selected user
+ * format.
+ * @param[in] s Unused sample-plane argument.
+ * @return One after accepted conversion including warned truncation, zero
+ * on detected format/extent/inflate failure.
+ */
 static int PixarLogDecode(TIFF *tif, uint8_t *op, tmsize_t occ, uint16_t s)
 {
     static const char module[] = "PixarLogDecode";
@@ -1155,6 +1490,23 @@ static int PixarLogDecode(TIFF *tif, uint8_t *op, tmsize_t occ, uint16_t s)
     return (1);
 }
 
+/**
+ * @brief Allocate PixarLog code staging and initialise zlib deflation.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Requires fresh encoder state, valid positive stride, ImageWidth and
+ * RowsPerStrip; sizing uses strip geometry even for a tiled handle.
+ * Allocates a full-strip uint16_t buffer, guesses user format and calls
+ * deflateInit at cached quality. Failure can retain staging and modified
+ * state for cleanup; repeated setup can replace an unreleased buffer. Some
+ * size/allocation failures are silent. No pixel I/O or caller ownership
+ * transfer.
+ *
+ * @param[in,out] tif Non-NULL live PixarLog handle with valid
+ * state/geometry; serialise handle operations.
+ * @return One after setup, zero on extent/allocation/format/dependency
+ * failure.
+ */
 static int PixarLogSetupEncode(TIFF *tif)
 {
     static const char module[] = "PixarLogSetupEncode";
@@ -1206,6 +1558,20 @@ static int PixarLogSetupEncode(TIFF *tif)
 /*
  * Reset encoding state at the start of a strip.
  */
+/**
+ * @brief Reset PixarLog deflation with the current raw output buffer.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Requires successful encoder setup and positive usable raw capacity.
+ * Attaches raw output, checks uInt round-trip conversion and calls
+ * deflateReset. No payload flush or ownership transfer; dependency state
+ * can change on reset failure.
+ *
+ * @param[in,out] tif Non-NULL live PixarLog handle with valid
+ * state/geometry; serialise handle operations.
+ * @param[in] s Unused sample-plane argument.
+ * @return One on reset success, zero on size/reset rejection.
+ */
 static int PixarLogPreEncode(TIFF *tif, uint16_t s)
 {
     static const char module[] = "PixarLogPreEncode";
@@ -1227,6 +1593,30 @@ static int PixarLogPreEncode(TIFF *tif, uint16_t s)
     return (deflateReset(&sp->stream) == Z_OK);
 }
 
+/**
+ * @brief Compand finite native float32 samples and difference eleven-bit codes.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Requires positive stride and n complete interleaved samples, disjoint
+ * input/code storage and initialised mapping coefficients/tables. Keeps
+ * first-pixel codes then stores horizontal code differences modulo 2048.
+ * Float negatives clamp to zero, values above 24.2 cap at 2047 and
+ * intermediate values use linear/log mapping; NaNs are not safe for casts.
+ * Reads global coefficients that table setup writes. Native memcpy load
+ * helpers allow unaligned public wide input; code output remains uint16_t
+ * aligned. No allocation, I/O, diagnostics, retained pointers, ownership
+ * transfer or status result.
+ *
+ * @param[in] ip Borrowed complete n-sample input, finite when floating
+ * point, native byte order.
+ * @param[in] n Nonnegative sample count divisible by positive stride;
+ * buffers must cover complete rows.
+ * @param[in] stride Positive samples per interleaved pixel, or one for
+ * separate data.
+ * @param[out] wp Aligned n-entry uint16_t code output.
+ * @param[in] FromLT2 Borrowed initialised low-range float companding table
+ * matching global coefficients.
+ */
 static void horizontalDifferenceF(const uint8_t *ip, tmsize_t n, int stride,
                                   uint16_t *wp, uint16_t *FromLT2)
 {
@@ -1327,6 +1717,29 @@ static void horizontalDifferenceF(const uint8_t *ip, tmsize_t n, int stride,
     }
 }
 
+/**
+ * @brief Compand native unsigned sixteen-bit samples and difference eleven-bit
+ * codes.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Requires positive stride and n complete interleaved samples, disjoint
+ * input/code storage and an initialised From14 table. Keeps first-pixel
+ * codes then stores horizontal code differences modulo 2048. Sixteen-bit
+ * input is reduced to fourteen significant lookup bits. Native memcpy load
+ * helpers allow unaligned input; code output remains uint16_t aligned. Does
+ * nothing when n is less than stride. No allocation, I/O, diagnostics,
+ * retained pointers, ownership transfer or status result.
+ *
+ * @param[in] ip Borrowed n native-order uint16_t input samples; unaligned
+ * allowed.
+ * @param[in] n Nonnegative sample count divisible by positive stride;
+ * buffers must cover complete rows.
+ * @param[in] stride Positive samples per interleaved pixel, or one for
+ * separate data.
+ * @param[out] wp Aligned n-entry uint16_t code output.
+ * @param[in] From14 Borrowed initialised 16384-entry high-fourteen-bit
+ * input table.
+ */
 static void horizontalDifference16(const uint8_t *ip, tmsize_t n, int stride,
                                    unsigned short *wp, uint16_t *From14)
 {
@@ -1419,6 +1832,24 @@ static void horizontalDifference16(const uint8_t *ip, tmsize_t n, int stride,
     }
 }
 
+/**
+ * @brief Compand unsigned eight-bit samples and difference eleven-bit codes.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Requires positive stride and n complete interleaved samples, disjoint
+ * input/code storage and an initialised From8 table. Keeps first-pixel codes
+ * then stores horizontal code differences modulo 2048. Uses all eight input
+ * bits for lookup. Does nothing when n is less than stride. No allocation,
+ * I/O, diagnostics, retained pointers, ownership transfer or status result.
+ *
+ * @param[in] ip Borrowed n input bytes.
+ * @param[in] n Nonnegative sample count divisible by positive stride;
+ * buffers must cover complete rows.
+ * @param[in] stride Positive samples per interleaved pixel, or one for
+ * separate data.
+ * @param[out] wp Aligned n-entry uint16_t code output.
+ * @param[in] From8 Borrowed initialised 256-entry input table.
+ */
 static void horizontalDifference8(unsigned char *ip, tmsize_t n, int stride,
                                   unsigned short *wp, uint16_t *From8)
 {
@@ -1496,6 +1927,34 @@ static void horizontalDifference8(unsigned char *ip, tmsize_t n, int stride,
 
 /*
  * Encode a chunk of pixels.
+ */
+/**
+ * @brief Compand and difference complete input rows then deflate their codes.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Requires successful setup/preencode, nonnegative complete ImageWidth-based
+ * row input, and representable sample counts. Explicitly bounds total samples
+ * by RowsPerStrip*row length but does not independently reject a partial final
+ * row before full-row conversion. Only float, sixteen-bit unsigned and
+ * eight-bit conversion cases are implemented. An unknown format is rejected
+ * immediately; PIXARLOGDATAFMT_8BITABGR, 11BITLOG and 12BITPICIO are diagnosed
+ * and rejected when the input holds at least one sample, while shorter input
+ * with them skips conversion and calls deflate with no new input. Writes owned
+ * tbuf, feeds bounded zlib input and flushes full raw buffers. Caller input
+ * remains unchanged; float samples must be finite for companding casts.
+ * Dependency/I/O failure can leave partial cache/file state; no rollback or
+ * ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live PixarLog handle with valid
+ * state/geometry; serialise handle operations. The float path reads the
+ * process-global Fltsize/LogK coefficients written by table initialisation.
+ * @param[in] bp Borrowed readable cc-byte user input, disjoint from codec
+ * storage.
+ * @param[in] cc Nonnegative complete-row input extent in the selected user
+ * format.
+ * @param[in] s Unused sample-plane argument.
+ * @return One after input accepted, zero on detected
+ * format/count/dependency/flush failure.
  */
 static int PixarLogEncode(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
 {
@@ -1608,6 +2067,19 @@ static int PixarLogEncode(TIFF *tif, uint8_t *bp, tmsize_t cc, uint16_t s)
  * string and tacking on an End Of Information code.
  */
 
+/**
+ * @brief Finish PixarLog deflation and flush encoded output.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Requires successful preencode, valid raw output and code state. Runs
+ * Z_FINISH until STREAM_END, flushing nonempty extents. Diagnostics report
+ * dependency errors; output/file progress can remain on failure. Does not
+ * persist IFD or promise durability; no ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live PixarLog handle with valid
+ * state/geometry; serialise handle operations.
+ * @return One on stream completion, zero on dependency/flush failure.
+ */
 static int PixarLogPostEncode(TIFF *tif)
 {
     static const char module[] = "PixarLogPostEncode";
@@ -1645,6 +2117,20 @@ static int PixarLogPostEncode(TIFF *tif)
     return (1);
 }
 
+/**
+ * @brief Present initialised PixarLog directory metadata as unsigned eight-bit
+ * samples.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * When PLSTATE_INIT is set, directly changes BitsPerSample to eight and
+ * SampleFormat to unsigned before lifecycle directory writing. This changes
+ * the advertised format regardless of application input representation.
+ * Does not free state, emit/flush payload, close the handle or return
+ * status; no ownership transfer.
+ *
+ * @param[in,out] tif Non-NULL live PixarLog handle with valid
+ * state/geometry; serialise handle operations.
+ */
 static void PixarLogClose(TIFF *tif)
 {
     PixarLogState *sp = (PixarLogState *)tif->tif_data;
@@ -1675,6 +2161,19 @@ static void PixarLogClose(TIFF *tif)
     }
 }
 
+/**
+ * @brief Restore PixarLog method chains and release companding storage.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Restores predictor and saved tag hooks, frees all six tables, ends zlib
+ * in the mode inferred from the handle open mode, frees tbuf and outer Ext
+ * state, clears tif_data and installs default methods. Invalidates all
+ * codec-owned views. Does not finish/flush pending payload or close the
+ * handle; no status result.
+ *
+ * @param[in,out] tif Non-NULL live PixarLog handle with valid
+ * state/geometry; serialise handle operations.
+ */
 static void PixarLogCleanup(TIFF *tif)
 {
     PixarLogState *sp = (PixarLogState *)tif->tif_data;
@@ -1713,6 +2212,27 @@ static void PixarLogCleanup(TIFF *tif)
     _TIFFSetDefaultCompressionState(tif);
 }
 
+/**
+ * @brief Set PixarLog quality or user data format and update directory sizes.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Both pseudo-tags consume int and cache it without comprehensive
+ * validation. QUALITY can call deflateParams on an initialised writer;
+ * failure diagnoses after storing the value. DATAFMT changes depth/sample
+ * format through nested TIFFSetField calls whose statuses are ignored, then
+ * recomputes tile/scanline sizes and returns success even for unrecognised
+ * values. Changes apply beyond private state and can dirty tags/invoke
+ * callbacks; no rollback or ownership transfer. Other tags follow parent
+ * variadic contracts.
+ *
+ * @param[in,out] tif Non-NULL live PixarLog handle with valid
+ * state/geometry; serialise handle operations.
+ * @param[in] tag Pseudo-tag or delegated identifier.
+ * @param[in,out] ap Live tag-specific va_list, consumed synchronously
+ * without retention.
+ * @return One for accepted pseudo-tag handling, zero on deflateParams
+ * failure, or delegated setter status.
+ */
 static int PixarLogVSetField(TIFF *tif, uint32_t tag, va_list ap)
 {
     static const char module[] = "PixarLogVSetField";
@@ -1782,6 +2302,21 @@ static int PixarLogVSetField(TIFF *tif, uint32_t tag, va_list ap)
     return (result);
 }
 
+/**
+ * @brief Retrieve PixarLog quality or format or delegate another query.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Pseudo-tags consume non-NULL int* outputs for cached values. Other tags
+ * follow saved parent contracts. No output allocation or ownership transfer
+ * for the scalar settings.
+ *
+ * @param[in,out] tif Non-NULL live PixarLog handle with valid
+ * state/geometry; serialise handle operations.
+ * @param[in] tag Pseudo-tag or delegated identifier.
+ * @param[in,out] ap Live tag-specific va_list, consumed synchronously
+ * without retention.
+ * @return One for codec retrieval, otherwise parent getter status.
+ */
 static int PixarLogVGetField(TIFF *tif, uint32_t tag, va_list ap)
 {
     PixarLogState *sp = (PixarLogState *)tif->tif_data;
@@ -1800,12 +2335,29 @@ static int PixarLogVGetField(TIFF *tif, uint32_t tag, va_list ap)
     return (1);
 }
 
+/**
+ * @brief Define PixarLog format and quality pseudo-tags.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Immutable library-lifetime metadata merged into a handle; no caller
+ * ownership transfer.
+ */
 static const TIFFField pixarlogFields[] = {
     {TIFFTAG_PIXARLOGDATAFMT, 0, 0, TIFF_ANY, 0, TIFF_SETGET_INT, FIELD_PSEUDO,
      FALSE, FALSE, "", NULL},
     {TIFFTAG_PIXARLOGQUALITY, 0, 0, TIFF_ANY, 0, TIFF_SETGET_INT, FIELD_PSEUDO,
      FALSE, FALSE, "", NULL}};
 
+/**
+ * @brief Report a conservative PixarLog expansion allocation heuristic.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Ignores the handle; no allocation, I/O, diagnostics, state or ownership
+ * effects. Not a universal bound or successful-decode guarantee.
+ *
+ * @param[in] tif Unused PixarLog handle.
+ * @return 4128, four times the Deflate ratio estimate.
+ */
 static uint64_t PixarLogGetMaxCompressionRatio(TIFF *tif)
 {
     (void)tif;
@@ -1896,3 +2448,174 @@ bad:
     return (0);
 }
 #endif /* PIXARLOG_SUPPORT */
+
+/**
+ * @def TSIZE
+ * @brief Count the 2048 eleven-bit code values.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Value 2048: the number of 11-bit code values. PixarLogMakeTables fills
+ * ToLinearF for codes 0 to TSIZE - 1.
+ */
+
+/**
+ * @def TSIZEP1
+ * @brief Include one repeated endpoint in decode tables.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Value 2049 (TSIZE plus one): the size of the ToLinearF, ToLinear16 and
+ * ToLinear8 decode tables, which repeat the last entry so that index TSIZE
+ * is valid.
+ */
+
+/**
+ * @def ONE
+ * @brief Select code 1250 for linear value one.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Value 1250: the code that maps to linear 1.0. PixarLogMakeTables scales
+ * the logarithmic region so that ToLinearF[ONE] is 1.0.
+ */
+
+/**
+ * @def RATIO
+ * @brief Choose the nominal log-region step ratio.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Value 1.004. PixarLogMakeTables derives nlin = (int)(1 / log(RATIO))
+ * linear codes, and the logarithmic region then steps by exp(1 / nlin),
+ * approximately RATIO, per code.
+ */
+
+/**
+ * @def CODE_MASK
+ * @brief Mask accumulated codes to eleven bits.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Value 0x7ff. The accumulators and differencers apply it so that horizontal
+ * prediction wraps modulo 2048.
+ */
+
+/**
+ * @def REPEAT(n, op)
+ * @brief Repeat a statement n times, and at least once.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Expands to a block that declares a local int i, evaluates n once into it,
+ * and runs op in a do/while loop. op therefore executes max(n, 1) times,
+ * even when n <= 0, and must not refer to an outer variable named i.
+ *
+ * @param[in] n Repeat count, evaluated once.
+ * @param[in] op Statement executed max(n, 1) times.
+ */
+
+/**
+ * @def SCALE12
+ * @brief Scale PICIO output by 2048.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Value 2048.0f: multiplies ToLinearF values into the
+ * PIXARLOGDATAFMT_12BITPICIO range, where linear 1.0 maps to 2048.
+ */
+
+/**
+ * @def CLAMP12(t)
+ * @brief Cap positive PICIO output at 3071.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Evaluates t twice. Values below 3071 are converted to int16_t through
+ * uint16_t; larger values become 3071. Used only by horizontalAccumulate12.
+ *
+ * @param[in] t Scaled float sample value.
+ */
+
+/**
+ * @def PLSTATE_INIT
+ * @brief Mark dependency stream initialised.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Bit in PixarLogState::state, set once setup has initialised the zlib
+ * stream. Checked to avoid repeating setup, to decide whether cleanup ends
+ * the stream, and before applying quality changes or the close-time tag
+ * rewrite.
+ */
+
+/**
+ * @def PixarLogDecoderState(tif)
+ * @brief Borrow the handle-owned PixarLog decoder state.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Expands to a cast of tif->tif_data to PixarLogState *, evaluating tif
+ * once. The state is not checked; it is valid only after TIFFInitPixarLog.
+ *
+ * @param[in] tif TIFF handle whose codec state is borrowed.
+ */
+
+/**
+ * @def PixarLogEncoderState(tif)
+ * @brief Borrow the handle-owned PixarLog encoder state.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Expands to a cast of tif->tif_data to PixarLogState *, evaluating tif
+ * once. The state is not checked; it is valid only after TIFFInitPixarLog.
+ *
+ * @param[in] tif TIFF handle whose codec state is borrowed.
+ */
+
+/**
+ * @def PIXARLOGDATAFMT_UNKNOWN
+ * @brief Mark an application format not yet inferred or selected.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Value -1 in PixarLogState::user_datafmt. Set by TIFFInitPixarLog and
+ * returned by PixarLogGuessDataFmt; setup then guesses the format from the
+ * directory and fails with a diagnostic if none matches.
+ */
+
+/**
+ * @def CLAMP(v)
+ * @brief Map one float sixteen-bit or byte input to a companded code in its
+ * enclosing converter.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Defined three times as a local helper. In horizontalDifferenceF it maps a
+ * float through FromLT2 below 2.0, returns 2047 above 24.2, and otherwise
+ * applies the LogK1/LogK2 logarithm; it evaluates v (unparenthesised) up to
+ * four times. In horizontalDifference16 it indexes From14 with v >> 2, and
+ * in horizontalDifference8 it indexes From8 with v; both evaluate v once.
+ *
+ * @param[in] v Input sample value.
+ */
+
+/**
+ * @var float Fltsize
+ * @brief Scale low-range float lookup indices.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Process-global coefficient written by every PixarLogMakeTables call
+ * (always with the same value) and read by horizontalDifferenceF. The writes
+ * are unsynchronised, so serialise table construction against float encoding
+ * on other handles.
+ */
+
+/**
+ * @var float LogK1
+ * @brief Scale logarithmic float companding.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Process-global coefficient written by every PixarLogMakeTables call
+ * (always with the same value) and read by horizontalDifferenceF. The writes
+ * are unsynchronised, so serialise table construction against float encoding
+ * on other handles.
+ */
+
+/**
+ * @var float LogK2
+ * @brief Normalise logarithmic float companding.
+ * @ingroup libtiff_private_pixarlog
+ *
+ * Process-global coefficient written by every PixarLogMakeTables call
+ * (always with the same value) and read by horizontalDifferenceF. The writes
+ * are unsynchronised, so serialise table construction against float encoding
+ * on other handles.
+ */

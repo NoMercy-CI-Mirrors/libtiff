@@ -1,0 +1,508 @@
+/**
+ * @defgroup libtiff_public Public API
+ * @brief Supported library interfaces declared in installed headers.
+ *
+ * Includes the C library and C++ stream interface. Refer to each interface
+ * for availability, ownership, and error handling. Deprecated interfaces
+ * remain documented and must identify their replacements where available.
+ */
+
+/**
+ * @defgroup libtiff_public_foundations Foundations
+ * @ingroup libtiff_public
+ * @brief Fundamental types, file headers, and build identification.
+ *
+ * Start with @ref libtiff_public_types for data representation,
+ * @ref libtiff_public_version for compile-time and runtime version information,
+ * and @ref libtiff_public_configuration for legacy configuration definitions.
+ * See @ref foundations for the scope and interpretation of these interfaces.
+ */
+
+/**
+ * @defgroup libtiff_public_types Types and file headers
+ * @ingroup libtiff_public_foundations
+ * @brief Scalar types, file-header layouts, and TIFF field data types.
+ */
+
+/**
+ * @defgroup libtiff_public_tiff_tags TIFF tags and values
+ * @ingroup libtiff_public_foundations
+ * @brief Identify TIFF directory tags and their predefined values and flags.
+ *
+ * This catalogue includes baseline, extension, and vendor identifiers. A
+ * constant's presence does not imply that a particular codec or extension is
+ * implemented. Values are not complete TIFFGetField()/TIFFSetField() contracts;
+ * those interfaces also depend on field types, counts, and pointer lifetimes.
+ */
+
+/**
+ * @defgroup libtiff_public_dng_tags DNG tags
+ * @ingroup libtiff_public_foundations
+ * @brief Identify Digital Negative metadata fields.
+ */
+
+/**
+ * @defgroup libtiff_public_ep_tags TIFF/EP tags
+ * @ingroup libtiff_public_foundations
+ * @brief Identify electronic-photography fields in the image directory.
+ *
+ * Some identifiers share values with EXIF tags, but TIFF/EP stores these fields
+ * in the image directory whereas EXIF uses a separate EXIF directory.
+ */
+
+/**
+ * @defgroup libtiff_public_pseudotags Pseudo-tags and control values
+ * @ingroup libtiff_public_foundations
+ * @brief Identify in-memory controls that are not written as TIFF fields.
+ *
+ * Pseudo-tag numbers exceed 65535, the largest on-disk TIFF tag identifier.
+ * Codec-specific controls require the relevant codec. See the codec and
+ * directory interfaces for argument types, supported ranges, and side effects.
+ */
+
+/**
+ * @defgroup libtiff_public_exif_tags EXIF tags
+ * @ingroup libtiff_public_foundations
+ * @brief Identify fields interpreted in an EXIF directory.
+ */
+
+/**
+ * @defgroup libtiff_public_gps_tags GPS tags
+ * @ingroup libtiff_public_foundations
+ * @brief Identify fields interpreted in an EXIF GPS directory.
+ *
+ * These small numeric identifiers belong to the GPS directory's namespace;
+ * they must not be interpreted as main-image-directory tags.
+ */
+
+/**
+ * @defgroup libtiff_public_data Public data structures and constants
+ * @ingroup libtiff_public_foundations
+ * @brief Describe supporting data layouts, flags, and packed-pixel accessors.
+ *
+ * Structures are documented here as data representations. Callable callback
+ * contracts and the operations that initialise and consume each structure are
+ * documented with their owning modules.
+ */
+
+/**
+ * @defgroup libtiff_public_version Version information
+ * @ingroup libtiff_public_foundations
+ * @brief Identify the headers used to compile and the library loaded at runtime.
+ */
+
+/**
+ * @defgroup libtiff_public_configuration Legacy build configuration
+ * @ingroup libtiff_public_foundations
+ * @brief Describe compatibility definitions in the configured public header.
+ *
+ * These definitions describe this build, not every possible LibTIFF build.
+ * Applications should avoid relying on the legacy feature macros.
+ */
+
+/**
+ * @defgroup libtiff_private Library internals
+ * @brief Private interfaces and implementation details.
+ *
+ * These interfaces are not a stable API for applications. Their presence in
+ * this reference or its tagfile does not make them public or ABI-stable.
+ */
+
+/**
+ * @defgroup libtiff_private_foundations Foundations internals
+ * @ingroup libtiff_private
+ * @brief Private header representation, handle state, utilities, and configuration.
+ */
+
+/**
+ * @defgroup libtiff_private_configuration Build configuration
+ * @ingroup libtiff_private_foundations
+ * @brief Describe private platform probes, feature switches, and format helpers.
+ *
+ * Values describe the current build. They are not an installed configuration
+ * API, and undefined conditional features remain absent from the generated
+ * header rather than being defined merely for documentation.
+ */
+
+/**
+ * @defgroup libtiff_private_state Handle state and utility definitions
+ * @ingroup libtiff_private_foundations
+ * @brief Describe per-handle storage, state flags, and basic internal helpers.
+ */
+
+/**
+ * @defgroup libtiff_public_lifecycle Lifecycle
+ * @ingroup libtiff_public
+ * @brief Open, inspect, flush, and release TIFF handles and their I/O resources.
+ *
+ * See @ref lifecycle for ownership, open modes, failure postconditions, and
+ * platform/stream adapter limitations.
+ */
+
+/**
+ * @defgroup libtiff_public_open_options Open options and diagnostic context
+ * @ingroup libtiff_public_lifecycle
+ * @brief Configure checked allocations and per-handle diagnostics for opening.
+ */
+
+/**
+ * @defgroup libtiff_public_io_callbacks Client I/O callbacks
+ * @ingroup libtiff_public_lifecycle
+ * @brief Define the client-resource operations used by a TIFF handle.
+ */
+
+/**
+ * @defgroup libtiff_public_streams C++ stream interface
+ * @ingroup libtiff_public_lifecycle
+ * @brief Attach TIFF handles to caller-owned seekable C++ streams.
+ */
+
+/**
+ * @defgroup libtiff_private_lifecycle Lifecycle internals
+ * @ingroup libtiff_private
+ * @brief Support initialisation, resource callbacks, and handle cleanup.
+ */
+
+/**
+ * @defgroup libtiff_private_streams C++ stream adapters
+ * @ingroup libtiff_private_lifecycle
+ * @brief Track borrowed streams and implement their client I/O callbacks.
+ */
+
+/**
+ * @defgroup libtiff_public_services Shared services
+ * @ingroup libtiff_public
+ * @brief Allocate memory, report diagnostics, and associate named client data.
+ *
+ * See @ref shared_services for allocation families, diagnostic routing, and
+ * ownership/failure rules.
+ */
+
+/**
+ * @defgroup libtiff_public_memory Memory services
+ * @ingroup libtiff_public_services
+ * @brief Provide public allocation and byte-memory operations.
+ */
+
+/**
+ * @defgroup libtiff_public_diagnostics Diagnostics
+ * @ingroup libtiff_public_services
+ * @brief Dispatch diagnostics and install library-wide handlers.
+ */
+
+/**
+ * @defgroup libtiff_public_client_info Named client information
+ * @ingroup libtiff_public_services
+ * @brief Associate borrowed payloads with copied names on a TIFF handle.
+ */
+
+/**
+ * @defgroup libtiff_private_services Shared service internals
+ * @ingroup libtiff_private
+ * @brief Implement checked memory operations, arithmetic, and containers.
+ */
+
+/**
+ * @defgroup libtiff_private_memory Checked allocation and array copies
+ * @ingroup libtiff_private_services
+ * @brief Apply handle allocation policies and manage owned array replacements.
+ */
+
+/**
+ * @defgroup libtiff_private_arithmetic Checked arithmetic and conversions
+ * @ingroup libtiff_private_services
+ * @brief Compute checked sizes/offsets and bounded scalar conversions.
+ */
+
+/**
+ * @defgroup libtiff_private_diagnostics Diagnostic state and implementations
+ * @ingroup libtiff_private_services
+ * @brief Store global callbacks and implement built-in diagnostic formatting.
+ */
+
+/**
+ * @defgroup libtiff_private_hash Hash sets
+ * @ingroup libtiff_private_services
+ * @brief Store unique elements with explicit comparison and disposal callbacks.
+ */
+
+/**
+ * @defgroup libtiff_public_directories Directories
+ * @ingroup libtiff_public
+ * @brief Read, write, navigate, and describe image and metadata directories.
+ *
+ * See @ref directories for ownership, variadic arguments, and migration scope.
+ */
+
+/**
+ * @defgroup libtiff_public_fields Field definitions and extension
+ * @ingroup libtiff_public_directories
+ * @brief Query registered descriptors and extend image-directory schemas.
+ */
+
+/**
+ * @defgroup libtiff_public_tag_access Tag access
+ * @ingroup libtiff_public_directories
+ * @brief Get, set, unset, and default values through tag-specific arguments.
+ *
+ * See @ref tag_arguments before constructing a variadic call.
+ */
+
+/**
+ * @defgroup libtiff_private_directories Directory internals
+ * @ingroup libtiff_private
+ * @brief Represent directories and implement metadata access and IFD processing.
+ */
+
+/**
+ * @defgroup libtiff_private_fields Directory storage and field schemas
+ * @ingroup libtiff_private_directories
+ * @brief Store directory values and register or query their descriptors.
+ */
+
+/**
+ * @defgroup libtiff_private_tag_access Core tag access and defaults
+ * @ingroup libtiff_private_directories
+ * @brief Implement built-in/custom value access and allocate cached defaults.
+ */
+
+/**
+ * @defgroup libtiff_public_directory_navigation Directory creation and navigation
+ * @ingroup libtiff_public_directories
+ * @brief Create, release, select, query, and unlink directories.
+ *
+ * See @ref directory_navigation for numbering, failure states, and side effects.
+ */
+
+/**
+ * @defgroup libtiff_private_directory_navigation Directory state and chain maps
+ * @ingroup libtiff_private_directories
+ * @brief Initialise directory state and track chain indices and file offsets.
+ */
+
+/**
+ * @defgroup libtiff_public_ifd_reading IFD reading
+ * @ingroup libtiff_public_directories
+ * @brief Load image, custom, EXIF, and GPS directory values.
+ *
+ * See @ref ifd_io for recovery, ownership, and partial failure semantics.
+ */
+
+/**
+ * @defgroup libtiff_public_ifd_writing IFD writing and patching
+ * @ingroup libtiff_public_directories
+ * @brief Write, checkpoint, relocate, and patch directory metadata.
+ */
+
+/**
+ * @defgroup libtiff_public_strile_metadata Strile offsets and byte counts
+ * @ingroup libtiff_public_directories
+ * @brief Query logical strip/tile metadata with eager or deferred loading.
+ */
+
+/**
+ * @defgroup libtiff_private_ifd_reading Entry decoding and reader helpers
+ * @ingroup libtiff_private_directories
+ * @brief Fetch, convert, validate, and recover parsed directory entries.
+ */
+
+/**
+ * @defgroup libtiff_private_ifd_writing Entry serialisation and writer helpers
+ * @ingroup libtiff_private_directories
+ * @brief Count, convert, encode, link, and patch directory entries and payloads.
+ */
+
+/**
+ * @defgroup libtiff_private_strile_metadata Strile loading and subdivision
+ * @ingroup libtiff_private_directories
+ * @brief Load deferred/lazy arrays and construct logical uncompressed strips.
+ */
+
+/**
+ * @defgroup libtiff_public_directory_printing Directory printing
+ * @ingroup libtiff_public_directories
+ * @brief Describe current directory values through caller-owned stdio streams.
+ *
+ * See @ref directory_printing for flags, callback order, and output limits.
+ */
+
+/**
+ * @defgroup libtiff_private_directory_printing Directory formatting helpers
+ * @ingroup libtiff_private_directories
+ * @brief Format custom fields, labels, and private escaped text.
+ */
+
+/**
+ * @defgroup libtiff_public_image_io Image I/O
+ * @ingroup libtiff_public
+ * @brief Describe image layouts and transfer scanlines, strips, and tiles.
+ */
+
+/**
+ * @defgroup libtiff_public_image_layout Layout sizes and traversal queries
+ * @ingroup libtiff_public_image_io
+ * @brief Calculate image-data extents, select default geometry, and inspect progress.
+ *
+ * See @ref image_layout for rounding, limits, and the current coverage boundary.
+ */
+
+/**
+ * @defgroup libtiff_private_image_io Image I/O internals
+ * @ingroup libtiff_private
+ * @brief Implement layout calculations, buffered transfers, and codec dispatch.
+ */
+
+/**
+ * @defgroup libtiff_private_image_layout Layout calculations and sizing methods
+ * @ingroup libtiff_private_image_io
+ * @brief Compute row/strile sizes and dispatch codec sizing recommendations.
+ */
+/**
+ * @defgroup libtiff_public_image_reading Pixel reading
+ * @ingroup libtiff_public_image_io
+ * @brief Decode scanlines and striles or copy stored payload bytes.
+ */
+
+/**
+ * @defgroup libtiff_public_image_writing Pixel writing
+ * @ingroup libtiff_public_image_io
+ * @brief Encode scanlines and striles or append stored payload bytes.
+ */
+
+/**
+ * @defgroup libtiff_public_image_buffers Transfer buffers and preparation
+ * @ingroup libtiff_public_image_io
+ * @brief Attach borrowed buffers, allocate owned buffers, and prepare strile arrays.
+ */
+
+/**
+ * @defgroup libtiff_private_image_transfers Transfer helpers and codec methods
+ * @ingroup libtiff_private_image_io
+ * @brief Manage raw caches, codec progress, strile appends, and postdecode conversion.
+ */
+
+/**
+ * @defgroup libtiff_public_conversion Byte, bit, and colour conversion
+ * @ingroup libtiff_public
+ * @brief Convert sample representations and colour components.
+ */
+
+/**
+ * @defgroup libtiff_private_conversion Conversion helpers
+ * @ingroup libtiff_private
+ * @brief Convert sample representations and colour components.
+ */
+
+/**
+ * @defgroup libtiff_public_rgba RGBA image reading
+ * @ingroup libtiff_public
+ * @brief Read supported image layouts into associated eight-bit RGBA rasters.
+ */
+
+/**
+ * @defgroup libtiff_private_rgba RGBA getters maps and packers
+ * @ingroup libtiff_private
+ * @brief Read supported image layouts into associated eight-bit RGBA rasters.
+ */
+
+/**
+ * @defgroup libtiff_public_codecs Compression registry
+ * @ingroup libtiff_public
+ * @brief Register, enumerate, and install compression implementations.
+ */
+
+/**
+ * @defgroup libtiff_private_codecs Compression registry and dispatch
+ * @ingroup libtiff_private
+ * @brief Register, enumerate, and install compression implementations.
+ */
+
+/**
+ * @defgroup libtiff_private_predictor Predictor transforms
+ * @ingroup libtiff_private_codecs
+ * @brief Chain codec methods and transform predicted rows.
+ */
+
+/**
+ * @defgroup libtiff_private_basic_codecs Uncompressed and byte-run codecs
+ * @ingroup libtiff_private_codecs
+ * @brief Implement uncompressed PackBits ThunderScan and NeXT transfers.
+ */
+
+/**
+ * @defgroup libtiff_private_lzw LZW codec
+ * @ingroup libtiff_private_codecs
+ * @brief Manage TIFF LZW dictionaries bit streams and predictor-aware transfers.
+ */
+
+/**
+ * @defgroup libtiff_private_zstd ZSTD streaming codec
+ * @ingroup libtiff_private_codecs
+ * @brief Implement predictor-aware ZSTD frame streaming.
+ */
+
+/**
+ * @defgroup libtiff_private_lzma LZMA2 streaming codec
+ * @ingroup libtiff_private_codecs
+ * @brief Implement filtered LZMA2 stream compression.
+ */
+
+/**
+ * @defgroup libtiff_private_deflate Deflate codec
+ * @ingroup libtiff_private_codecs
+ * @brief Implement zlib and optional whole-strile libdeflate compression.
+ */
+
+/**
+ * @defgroup libtiff_private_webp WebP frame codec
+ * @ingroup libtiff_private_codecs
+ * @brief Stage and transfer WebP RGB or RGBA frames.
+ */
+
+/**
+ * @defgroup libtiff_private_jbig JBIG plane codec
+ * @ingroup libtiff_private_codecs
+ * @brief Transfer complete JBIG image planes through strip callbacks.
+ */
+
+/**
+ * @defgroup libtiff_private_lerc LERC frame codec
+ * @ingroup libtiff_private_codecs
+ * @brief Stage scalar samples validity masks and secondary compression.
+ */
+
+/**
+ * @defgroup libtiff_private_fax CCITT fax codecs
+ * @ingroup libtiff_private_codecs
+ * @brief Encode and decode Group3 Group4 and aligned bilevel runs.
+ */
+
+/**
+ * @defgroup libtiff_private_pixarlog PixarLog codec
+ * @ingroup libtiff_private_codecs
+ * @brief Compand linear samples into predicted eleven-bit zlib streams.
+ */
+
+/**
+ * @defgroup libtiff_public_logluv LogL and LogLuv representations
+ * @ingroup libtiff_public_conversion
+ * @brief Convert logarithmic luminance chromaticity and XYZ representations.
+ */
+
+/**
+ * @defgroup libtiff_private_sgilog SGILog codec
+ * @ingroup libtiff_private_codecs
+ * @brief Compress logarithmic luminance and packed LogLuv pixel rows.
+ */
+
+/**
+ * @defgroup libtiff_private_jpeg JPEG dependency interface
+ * @ingroup libtiff_private_codecs
+ * @brief Bridge dependency error handling and borrowed JPEG buffers.
+ */
+
+/**
+ * @defgroup libtiff_private_ojpeg Old-style JPEG reconstruction
+ * @ingroup libtiff_private_codecs
+ * @brief The decode-only old-style JPEG codec reconstructs a single dependency stream
+ */

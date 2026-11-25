@@ -27,17 +27,67 @@
  *
  * Scanline-oriented Write Support
  */
+/**
+ * @file tif_write.c
+ * @brief Transfer image bytes through raw buffers and codec methods.
+ */
+
 #include "tiffiop.h"
 
 #include <assert.h>
 #include <stdio.h>
 
+/**
+ * @brief Local repeat of the NOSTRIP sentinel defined in tif_dir.h.
+ * @ingroup libtiff_private_image_transfers
+ */
 #define NOSTRIP ((uint32_t)(-1)) /* undefined state */
 
+/**
+ * @brief Reuse write preparation or check strip organisation.
+ * @ingroup libtiff_private_image_transfers
+ *
+ * Short-circuits when TIFF_BEENWRITING is already set, so the organisation
+ * is not checked again; otherwise calls TIFFWriteCheck() with tiles = 0,
+ * which can allocate and change handle state. tif is evaluated up to twice.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching current geometry
+ * and codec methods; serialise access externally.
+ * @param[in] module Diagnostic context evaluated only when preparation
+ * runs.
+ * @return Nonzero for prior been-writing state or successful preparation.
+ */
 #define WRITECHECKSTRIPS(tif, module)                                          \
     (((tif)->tif_flags & TIFF_BEENWRITING) || TIFFWriteCheck((tif), 0, module))
+/**
+ * @brief Reuse write preparation or check tile organisation.
+ * @ingroup libtiff_private_image_transfers
+ *
+ * Short-circuits when TIFF_BEENWRITING is already set, so the organisation
+ * is not checked again; otherwise calls TIFFWriteCheck() with tiles = 1,
+ * which can allocate and change handle state. tif is evaluated up to twice.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching current geometry
+ * and codec methods; serialise access externally.
+ * @param[in] module Diagnostic context evaluated only when preparation
+ * runs.
+ * @return Nonzero for prior been-writing state or successful preparation.
+ */
 #define WRITECHECKTILES(tif, module)                                           \
     (((tif)->tif_flags & TIFF_BEENWRITING) || TIFFWriteCheck((tif), 1, module))
+/**
+ * @brief Reuse an output buffer or allocate default encoding storage.
+ * @ingroup libtiff_private_image_transfers
+ *
+ * Short-circuits when TIFF_BUFFERSETUP is set and tif_rawdata is non-NULL;
+ * otherwise calls TIFFWriteBufferSetup() with a NULL buffer and default
+ * size, which allocates a handle-owned buffer. tif is evaluated up to three
+ * times.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching current geometry
+ * and codec methods; serialise access externally.
+ * @return Nonzero for usable prior storage or successful setup.
+ */
 #define BUFFERCHECK(tif)                                                       \
     ((((tif)->tif_flags & TIFF_BUFFERSETUP) && tif->tif_rawdata) ||            \
      TIFFWriteBufferSetup((tif), NULL, (tmsize_t)(-1)))
@@ -208,6 +258,26 @@ int TIFFWriteScanline(TIFF *tif, void *buf, uint32_t row, uint16_t sample)
     tif->tif_dir.td_row = row + 1;
     return (status);
 }
+/**
+ * @brief Reserve raw output capacity for a possible strile rewrite.
+ * @ingroup libtiff_private_image_transfers
+ *
+ * Requires a valid count array/index. Can replace output buffering with a
+ * rounded owned allocation larger than the previous stored count plus
+ * safety margin, even if a borrowed buffer was attached.
+ * Byte-count-plus-margin and casts rely on representable metadata; not
+ * general overflow validation. Old raw contents can be lost. The only
+ * effects are TIFFWriteBufferSetup() replacing the raw buffer and
+ * diagnostics; no client I/O. If that allocation fails, the previous raw
+ * buffer has already been released and tif_rawdata is NULL. See
+ * @ref image_transfers.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching current geometry
+ * and codec methods; serialise access externally.
+ * @param[in] strip_or_tile Valid logical strile index for this operation.
+ * @return One after adequate capacity/no growth, zero on invalid
+ * metadata/index or allocation failure.
+ */
 
 /* Make sure that at the first attempt of rewriting a tile/strip, we will have
  */
@@ -614,6 +684,18 @@ tmsize_t TIFFWriteRawTile(TIFF *tif, uint32_t tile, void *data, tmsize_t cc)
                                                               : (tmsize_t)(-1));
 }
 
+/**
+ * @brief Test the zero-image-length provisional strile case.
+ * @ingroup libtiff_private_image_transfers
+ *
+ * Pure test with no side effects; it reads the presence bitmap and
+ * ImageLength only.
+ *
+ * @param[in] tif Live handle expression, evaluated twice.
+ * @param[in] f Valid presence-bit index, evaluated twice (by
+ * TIFFFieldSet()).
+ * @return Nonzero if the bit is set and ImageLength is zero.
+ */
 #define isUnspecified(tif, f)                                                  \
     (TIFFFieldSet(tif, f) && (tif)->tif_dir.td_imagelength == 0)
 
@@ -789,6 +871,26 @@ int TIFFWriteBufferSetup(TIFF *tif, void *bp, tmsize_t size)
     tif->tif_flags |= TIFF_BUFFERSETUP;
     return (1);
 }
+/**
+ * @brief Grow contiguous strip offset/count arrays by a requested delta.
+ * @ingroup libtiff_private_image_transfers
+ *
+ * Requires contiguous layout and representable nonnegative allocation
+ * products. Reallocates arrays separately, updates each pointer
+ * immediately, zeroes new slots and marks directory dirty on success. If
+ * either realloc fails, sets td_nstrips zero but retains the latest
+ * allocated pointers; old views can already be invalidated. Does not grow
+ * image height itself. No client I/O; diagnoses allocation failure. See
+ * @ref image_transfers.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching current geometry
+ * and codec methods; serialise access externally.
+ * @param[in] delta Number of slots to add; allocation products and new
+ * uint32_t count must be representable.
+ * @param[in] module Borrowed diagnostic context string.
+ * @return One on both reallocations, zero on failure with changed
+ * pointer/count state.
+ */
 
 /*
  * Grow the strip data structures by delta strips.
@@ -831,6 +933,32 @@ static int TIFFGrowStrips(TIFF *tif, uint32_t delta, const char *module)
 
     return (1);
 }
+/**
+ * @brief Append stored bytes or relocate a growing overwritten strile.
+ * @ingroup libtiff_private_image_transfers
+ *
+ * Validates current arrays/index, chooses existing reusable extent or EOF,
+ * resets counts when starting a write, and moves previously appended bytes
+ * to EOF if they outgrow a reused extent. Temporary copying storage is
+ * freed on ordinary exits. Checks classic-file wrap and reports
+ * I/O/allocation failures, but EOF seeks/metadata additions are not all
+ * checked. May modify earlier bytes and array offsets/counts before
+ * failure; no overlap proof, rollback, IFD persistence, or durability
+ * guarantee. Seeks, reads and writes through the client procedures and
+ * dispatches diagnostics; does not touch the raw buffer. No handle or
+ * caller-buffer ownership transfers. See @ref image_transfers.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching current geometry
+ * and codec methods; serialise access externally.
+ * @param[in] strip Zero-based strip or tile index; NOSTRIP and values not
+ * below td_nstrips are diagnosed and rejected.
+ * @param[in] data Borrowed readable stored bytes; no alias with buffers
+ * that append/copy may replace.
+ * @param[in] cc Nonnegative byte extent with representable
+ * file-offset/count additions.
+ * @return One after append, zero on detected metadata/extent/allocation/I/O
+ * failure; previous bytes and counts may have changed.
+ */
 
 /*
  * Append the data to the specified strip.

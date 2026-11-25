@@ -710,9 +710,10 @@ returned by :c:func:`TIFFOpen`. Only the error handlers
 (as well as :c:func:`TIFFWarning` and :c:func:`TIFFWarningExt`)
 use TIFF handle independent, common error handler functions.
 
-:c:func:`TIFFErrorHandlerExtR` and :c:func:`TIFFWarningHandlerExtR`
-(introduced in ``libtiff`` 4.5) offer the option of registering
-a separate error handler for each TIFF handle.
+Handlers of type :c:type:`TIFFErrorHandlerExtR` (introduced in ``libtiff``
+4.5; the same type is used for both error and warning handlers) offer the
+option of registering separate error and warning handlers for each TIFF
+handle.
 This error handler is called via the TIFF handle and is therefore
 re-entrant, which means that it is naturally thread-safe.
 

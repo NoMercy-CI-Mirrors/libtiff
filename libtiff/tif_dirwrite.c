@@ -27,18 +27,75 @@
  *
  * Directory Write Support Routines.
  */
+/**
+ * @file tif_dirwrite.c
+ * @brief Serialise, link, and patch classic TIFF and BigTIFF directories.
+ */
+
 #include "tiffiop.h"
 #include <float.h> /*--: for Rational2Double */
 #include <math.h>  /*--: for Rational2Double */
 
 #ifdef HAVE_IEEEFP
+/**
+ * @brief Recognise already compatible float storage without conversion.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * With HAVE_IEEEFP defined this is a no-op macro: arguments are not
+ * evaluated and no state, ownership, I/O, diagnostics, or storage changes
+ * occur. Non-IEEE ports instead require the external platform hook with
+ * this name.
+ *
+ * @param[in] tif Ignored handle expression.
+ * @param[in] n Ignored element-count expression.
+ * @param[in,out] fp Ignored data-pointer expression; storage is unchanged.
+ */
 #define TIFFCvtNativeToIEEEFloat(tif, n, fp)
+/**
+ * @brief Recognise already compatible double storage without conversion.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * With HAVE_IEEEFP defined this is a no-op macro: arguments are not
+ * evaluated and no state, ownership, I/O, diagnostics, or storage changes
+ * occur. Non-IEEE ports instead require the external platform hook with
+ * this name.
+ *
+ * @param[in] tif Ignored handle expression.
+ * @param[in] n Ignored element-count expression.
+ * @param[in,out] dp Ignored data-pointer expression; storage is unchanged.
+ */
 #define TIFFCvtNativeToIEEEDouble(tif, n, dp)
 #else
 /* If your machine does not support IEEE floating point then you will need to
  * add support to tif_machdep.c to convert between the native format and
  * IEEE format. */
+/**
+ * @brief Convert float elements through a non-IEEE platform hook.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Only declared when HAVE_IEEEFP is absent; this source supplies no
+ * implementation. The port must convert the requested elements in place,
+ * keep storage borrowed, and provide any diagnostic/failure policy because
+ * the hook has no status result.
+ *
+ * @param[in,out] tif Borrowed live handle/context supplied by the caller.
+ * @param[in] n Number of readable/writable elements.
+ * @param[in,out] fp Borrowed array of n elements to convert in place.
+ */
 extern void TIFFCvtNativeToIEEEFloat(TIFF *tif, uint32_t n, float *fp);
+/**
+ * @brief Convert double elements through a non-IEEE platform hook.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Only declared when HAVE_IEEEFP is absent; this source supplies no
+ * implementation. The port must convert the requested elements in place,
+ * keep storage borrowed, and provide any diagnostic/failure policy because
+ * the hook has no status result.
+ *
+ * @param[in,out] tif Borrowed live handle/context supplied by the caller.
+ * @param[in] n Number of readable/writable elements.
+ * @param[in,out] dp Borrowed array of n elements to convert in place.
+ */
 extern void TIFFCvtNativeToIEEEDouble(TIFF *tif, uint32_t n, double *dp);
 #endif
 
@@ -312,6 +369,31 @@ int TIFFWriteCustomDirectory(TIFF *tif, uint64_t *pdiroff)
  * previously used directory space.
  */
 
+/**
+ * @brief Detach and relocate an IFD using the requested writer mode.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Requires an existing main-chain-reachable IFD on a writable seekable
+ * resource. Clears its header/preceding link and map entry before calling
+ * TIFFWriteDirectorySec(); old bytes remain unused. Partial link/file/cache
+ * changes survive failure, and some seek/map-removal results are unchecked.
+ * Does not independently reject read-only mode before detachment. If
+ * current offset is zero, delegates to TIFFWriteDirectory() and ignores the
+ * requested mode/output arguments. Allocations, callback/encoder work,
+ * ownership invalidation, and diagnostics otherwise follow the shared
+ * writer.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] isimage Nonzero for image-bit plus custom values; zero for
+ * custom values only.
+ * @param[in] imagedone Nonzero to finish encoding and reset values; zero to
+ * retain directory state.
+ * @param[out] pdiroff Optional custom-offset slot as required by the
+ * downstream mode; not assigned on the zero-offset fallback.
+ * @return One on downstream write completion, zero on detected
+ * traversal/write failure; not transactional.
+ */
 static int TIFFRewriteDirectorySec(TIFF *tif, int isimage, int imagedone,
                                    uint64_t *pdiroff)
 {
@@ -484,6 +566,35 @@ int TIFFRewriteDirectory(TIFF *tif)
     return TIFFRewriteDirectorySec(tif, TRUE, TRUE, NULL);
 }
 
+/**
+ * @brief Serialise the current IFD using image/custom and completion modes.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Read-only mode returns one immediately without assigning pdiroff or
+ * finalising state. Otherwise attempts strile fill (unchecked), optionally
+ * finishes encoding/raw data, and performs count/size and emission passes.
+ * Builds sorted entries, writes external data, links/relocates/reuses IFD
+ * space, writes raw IFD bytes, and updates index/count/maps. Some arrays
+ * are swapped in place. Final map-check errors are diagnosed but do not
+ * change success. Completion frees/resets directory/codec storage;
+ * retaining mode keeps values and records written size. Any failure can
+ * leave partial bytes, links, state, or mutated arrays; temporary
+ * entry/serialisation buffers are freed on the ordinary bad path, without
+ * rollback.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] isimage Nonzero for image directory including core field bits;
+ * zero for custom-value-only emission.
+ * @param[in] imagedone Nonzero to finalise encoder/raw data and
+ * release/reset directory after writing.
+ * @param[out] pdiroff Optional (may be NULL) slot that receives the IFD
+ * offset in either mode; may be set before a later failure; untouched by the
+ * read-only no-op.
+ * @return One after write/reset attempt or read-only no-op, zero for
+ * detected encoding/size/allocation/I/O failure; nested failures are not
+ * uniformly propagated.
+ */
 static int TIFFWriteDirectorySec(TIFF *tif, int isimage, int imagedone,
                                  uint64_t *pdiroff)
 {
@@ -1470,6 +1581,17 @@ bad:
     return (0);
 }
 
+/**
+ * @brief Clamp and convert a double to int8.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Clamps infinities/out-of-range values to target bounds, then truncates
+ * finite in-range values toward zero. NaN maps to the signed minimum. No
+ * allocation, diagnostic, handle state, or ownership effects.
+ *
+ * @param[in] val Input double, including infinities or NaN.
+ * @return Bounded target integer; NaN uses the documented endpoint.
+ */
 static int8_t TIFFClampDoubleToInt8(double val)
 {
     if (val > 127)
@@ -1479,6 +1601,17 @@ static int8_t TIFFClampDoubleToInt8(double val)
     return (int8_t)val;
 }
 
+/**
+ * @brief Clamp and convert a double to int16.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Clamps infinities/out-of-range values to target bounds, then truncates
+ * finite in-range values toward zero. NaN maps to the signed minimum. No
+ * allocation, diagnostic, handle state, or ownership effects.
+ *
+ * @param[in] val Input double, including infinities or NaN.
+ * @return Bounded target integer; NaN uses the documented endpoint.
+ */
 static int16_t TIFFClampDoubleToInt16(double val)
 {
     if (val > 32767)
@@ -1488,6 +1621,17 @@ static int16_t TIFFClampDoubleToInt16(double val)
     return (int16_t)val;
 }
 
+/**
+ * @brief Clamp and convert a double to int32.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Clamps infinities/out-of-range values to target bounds, then truncates
+ * finite in-range values toward zero. NaN maps to the signed minimum. No
+ * allocation, diagnostic, handle state, or ownership effects.
+ *
+ * @param[in] val Input double, including infinities or NaN.
+ * @return Bounded target integer; NaN uses the documented endpoint.
+ */
 static int32_t TIFFClampDoubleToInt32(double val)
 {
     if (val > 0x7FFFFFFF)
@@ -1497,6 +1641,17 @@ static int32_t TIFFClampDoubleToInt32(double val)
     return (int32_t)val;
 }
 
+/**
+ * @brief Clamp and convert a double to uint8.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Clamps infinities/out-of-range values to target bounds, then truncates
+ * finite in-range values toward zero. NaN maps to the unsigned maximum. No
+ * allocation, diagnostic, handle state, or ownership effects.
+ *
+ * @param[in] val Input double, including infinities or NaN.
+ * @return Bounded target integer; NaN uses the documented endpoint.
+ */
 static uint8_t TIFFClampDoubleToUInt8(double val)
 {
     if (val < 0)
@@ -1506,6 +1661,17 @@ static uint8_t TIFFClampDoubleToUInt8(double val)
     return (uint8_t)val;
 }
 
+/**
+ * @brief Clamp and convert a double to uint16.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Clamps infinities/out-of-range values to target bounds, then truncates
+ * finite in-range values toward zero. NaN maps to the unsigned maximum. No
+ * allocation, diagnostic, handle state, or ownership effects.
+ *
+ * @param[in] val Input double, including infinities or NaN.
+ * @return Bounded target integer; NaN uses the documented endpoint.
+ */
 static uint16_t TIFFClampDoubleToUInt16(double val)
 {
     if (val < 0)
@@ -1515,6 +1681,17 @@ static uint16_t TIFFClampDoubleToUInt16(double val)
     return (uint16_t)val;
 }
 
+/**
+ * @brief Clamp and convert a double to uint32.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Clamps infinities/out-of-range values to target bounds, then truncates
+ * finite in-range values toward zero. NaN maps to the unsigned maximum. No
+ * allocation, diagnostic, handle state, or ownership effects.
+ *
+ * @param[in] val Input double, including infinities or NaN.
+ * @return Bounded target integer; NaN uses the documented endpoint.
+ */
 static uint32_t TIFFClampDoubleToUInt32(double val)
 {
     if (val < 0)
@@ -1524,6 +1701,35 @@ static uint32_t TIFFClampDoubleToUInt32(double val)
     return (uint32_t)val;
 }
 
+/**
+ * @brief Account for or emit Sampleformat array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Converts value to the directory's SampleFormat and BitsPerSample in a
+ * temporary buffer (allocated in both passes) and writes it as
+ * SBYTE/SSHORT/SLONG, BYTE/SHORT/LONG or FLOAT, clamping out-of-range values
+ * (NaN becomes the signed minimum or the unsigned maximum). IEEE floating point
+ * samples wider than 32 bits are written as DOUBLE directly from value, which
+ * the emission pass then byte-swaps in place when TIFF_SWAB is set. Any other
+ * SampleFormat returns zero without a diagnostic. Sizing pass (dir NULL): adds
+ * any payload too large for the entry to td_dirdatasize_write and increments
+ * *ndir. Emission pass: inserts the entry in tag order and writes any
+ * out-of-line payload at tif_dataoff through TIFFWriteDirectoryTagData(). A
+ * failed emission can leave dir shifted and payload bytes written without
+ * incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in,out] value Array of count double values; modified in place only on
+ * the DOUBLE path.
+ * @return One on success; zero on allocation failure, an unsupported
+ * SampleFormat, or a failure from the type-specific helper.
+ */
 static int TIFFWriteDirectoryTagSampleformatArray(TIFF *tif, uint32_t *ndir,
                                                   TIFFDirEntry *dir,
                                                   uint16_t tag, uint32_t count,
@@ -1610,6 +1816,28 @@ static int TIFFWriteDirectoryTagSampleformatArray(TIFF *tif, uint32_t *ndir,
     return (ok);
 }
 
+/**
+ * @brief Account for or emit Ascii tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Forwards to TIFFWriteDirectoryTagCheckedAscii(). Writes exactly count bytes
+ * as ASCII; any NUL terminator must be included in count. Sizing pass (dir
+ * NULL): adds any payload too large for the entry to td_dirdatasize_write and
+ * increments *ndir. Emission pass: inserts the entry in tag order and writes
+ * any out-of-line payload at tif_dataoff through TIFFWriteDirectoryTagData(). A
+ * failed emission can leave dir shifted and payload bytes written without
+ * incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in] value Array of count char values; not modified.
+ * @return One on success; zero on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagAscii(TIFF *tif, uint32_t *ndir,
                                       TIFFDirEntry *dir, uint16_t tag,
                                       uint32_t count, char *value)
@@ -1618,6 +1846,28 @@ static int TIFFWriteDirectoryTagAscii(TIFF *tif, uint32_t *ndir,
         TIFFWriteDirectoryTagCheckedAscii(tif, ndir, dir, tag, count, value));
 }
 
+/**
+ * @brief Account for or emit Undefined array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Forwards to TIFFWriteDirectoryTagCheckedUndefinedArray(). Writes count bytes
+ * as UNDEFINED without conversion. Sizing pass (dir NULL): adds any payload too
+ * large for the entry to td_dirdatasize_write and increments *ndir. Emission
+ * pass: inserts the entry in tag order and writes any out-of-line payload at
+ * tif_dataoff through TIFFWriteDirectoryTagData(). A failed emission can leave
+ * dir shifted and payload bytes written without incrementing *ndir; nothing is
+ * rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in] value Array of count uint8_t values; not modified.
+ * @return One on success; zero on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagUndefinedArray(TIFF *tif, uint32_t *ndir,
                                                TIFFDirEntry *dir, uint16_t tag,
                                                uint32_t count, uint8_t *value)
@@ -1626,6 +1876,28 @@ static int TIFFWriteDirectoryTagUndefinedArray(TIFF *tif, uint32_t *ndir,
                                                        count, value));
 }
 
+/**
+ * @brief Account for or emit Byte array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Forwards to TIFFWriteDirectoryTagCheckedByteArray(). Writes count bytes as
+ * BYTE without conversion. Sizing pass (dir NULL): adds any payload too large
+ * for the entry to td_dirdatasize_write and increments *ndir. Emission pass:
+ * inserts the entry in tag order and writes any out-of-line payload at
+ * tif_dataoff through TIFFWriteDirectoryTagData(). A failed emission can leave
+ * dir shifted and payload bytes written without incrementing *ndir; nothing is
+ * rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in] value Array of count uint8_t values; not modified.
+ * @return One on success; zero on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagByteArray(TIFF *tif, uint32_t *ndir,
                                           TIFFDirEntry *dir, uint16_t tag,
                                           uint32_t count, uint8_t *value)
@@ -1634,6 +1906,28 @@ static int TIFFWriteDirectoryTagByteArray(TIFF *tif, uint32_t *ndir,
                                                   value));
 }
 
+/**
+ * @brief Account for or emit Sbyte array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Forwards to TIFFWriteDirectoryTagCheckedSbyteArray(). Writes count bytes as
+ * SBYTE without conversion. Sizing pass (dir NULL): adds any payload too large
+ * for the entry to td_dirdatasize_write and increments *ndir. Emission pass:
+ * inserts the entry in tag order and writes any out-of-line payload at
+ * tif_dataoff through TIFFWriteDirectoryTagData(). A failed emission can leave
+ * dir shifted and payload bytes written without incrementing *ndir; nothing is
+ * rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in] value Array of count int8_t values; not modified.
+ * @return One on success; zero on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagSbyteArray(TIFF *tif, uint32_t *ndir,
                                            TIFFDirEntry *dir, uint16_t tag,
                                            uint32_t count, int8_t *value)
@@ -1642,6 +1936,23 @@ static int TIFFWriteDirectoryTagSbyteArray(TIFF *tif, uint32_t *ndir,
                                                    value));
 }
 
+/**
+ * @brief Account for or emit Short tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Forwards to TIFFWriteDirectoryTagCheckedShort(). Writes one SHORT. The value
+ * always fits inline in the entry, so sizing adds no payload size and emission
+ * cannot fail.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] value Value to write.
+ * @return Always one.
+ */
 static int TIFFWriteDirectoryTagShort(TIFF *tif, uint32_t *ndir,
                                       TIFFDirEntry *dir, uint16_t tag,
                                       uint16_t value)
@@ -1649,6 +1960,31 @@ static int TIFFWriteDirectoryTagShort(TIFF *tif, uint32_t *ndir,
     return (TIFFWriteDirectoryTagCheckedShort(tif, ndir, dir, tag, value));
 }
 
+/**
+ * @brief Account for or emit Short array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Forwards to TIFFWriteDirectoryTagCheckedShortArray(). Writes count values as
+ * SHORT. Sizing pass (dir NULL): adds any payload too large for the entry to
+ * td_dirdatasize_write and increments *ndir. Emission pass: inserts the entry
+ * in tag order and writes any out-of-line payload at tif_dataoff through
+ * TIFFWriteDirectoryTagData(). When the file byte order differs from the host
+ * (TIFF_SWAB), the emission pass byte-swaps value in place and does not restore
+ * it. A failed emission can leave dir shifted and payload bytes written without
+ * incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in,out] value Array of count uint16_t values; byte-swapped in place by
+ * the emission pass when TIFF_SWAB is set.
+ * @return One on success; zero if count exceeds UINT32_MAX/2 (no diagnostic),
+ * or on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagShortArray(TIFF *tif, uint32_t *ndir,
                                            TIFFDirEntry *dir, uint16_t tag,
                                            uint32_t count, uint16_t *value)
@@ -1657,6 +1993,29 @@ static int TIFFWriteDirectoryTagShortArray(TIFF *tif, uint32_t *ndir,
                                                    value));
 }
 
+/**
+ * @brief Account for or emit Short per sample tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Writes value repeated SamplesPerPixel times as a SHORT array. The sizing pass
+ * passes a NULL array to TIFFWriteDirectoryTagCheckedShortArray(), which only
+ * uses the count; the emission pass builds a temporary array. Sizing pass (dir
+ * NULL): adds any payload too large for the entry to td_dirdatasize_write and
+ * increments *ndir. Emission pass: inserts the entry in tag order and writes
+ * any out-of-line payload at tif_dataoff through TIFFWriteDirectoryTagData(). A
+ * failed emission can leave dir shifted and payload bytes written without
+ * incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] value Value to write.
+ * @return One on success; zero on allocation failure or a size or I/O error
+ * during emission.
+ */
 static int TIFFWriteDirectoryTagShortPerSample(TIFF *tif, uint32_t *ndir,
                                                TIFFDirEntry *dir, uint16_t tag,
                                                uint16_t value)
@@ -1688,6 +2047,31 @@ static int TIFFWriteDirectoryTagShortPerSample(TIFF *tif, uint32_t *ndir,
     return (o);
 }
 
+/**
+ * @brief Account for or emit Sshort array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Forwards to TIFFWriteDirectoryTagCheckedSshortArray(). Writes count values as
+ * SSHORT. Sizing pass (dir NULL): adds any payload too large for the entry to
+ * td_dirdatasize_write and increments *ndir. Emission pass: inserts the entry
+ * in tag order and writes any out-of-line payload at tif_dataoff through
+ * TIFFWriteDirectoryTagData(). When the file byte order differs from the host
+ * (TIFF_SWAB), the emission pass byte-swaps value in place and does not restore
+ * it. A failed emission can leave dir shifted and payload bytes written without
+ * incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in,out] value Array of count int16_t values; byte-swapped in place by
+ * the emission pass when TIFF_SWAB is set.
+ * @return One on success; zero if count exceeds UINT32_MAX/2 (no diagnostic),
+ * or on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagSshortArray(TIFF *tif, uint32_t *ndir,
                                             TIFFDirEntry *dir, uint16_t tag,
                                             uint32_t count, int16_t *value)
@@ -1696,6 +2080,23 @@ static int TIFFWriteDirectoryTagSshortArray(TIFF *tif, uint32_t *ndir,
                                                     value));
 }
 
+/**
+ * @brief Account for or emit Long tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Forwards to TIFFWriteDirectoryTagCheckedLong(). Writes one LONG. The value
+ * always fits inline in the entry, so sizing adds no payload size and emission
+ * cannot fail.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] value Value to write.
+ * @return Always one.
+ */
 static int TIFFWriteDirectoryTagLong(TIFF *tif, uint32_t *ndir,
                                      TIFFDirEntry *dir, uint16_t tag,
                                      uint32_t value)
@@ -1703,6 +2104,31 @@ static int TIFFWriteDirectoryTagLong(TIFF *tif, uint32_t *ndir,
     return (TIFFWriteDirectoryTagCheckedLong(tif, ndir, dir, tag, value));
 }
 
+/**
+ * @brief Account for or emit Long array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Forwards to TIFFWriteDirectoryTagCheckedLongArray(). Writes count values as
+ * LONG. Sizing pass (dir NULL): adds any payload too large for the entry to
+ * td_dirdatasize_write and increments *ndir. Emission pass: inserts the entry
+ * in tag order and writes any out-of-line payload at tif_dataoff through
+ * TIFFWriteDirectoryTagData(). When the file byte order differs from the host
+ * (TIFF_SWAB), the emission pass byte-swaps value in place and does not restore
+ * it. A failed emission can leave dir shifted and payload bytes written without
+ * incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in,out] value Array of count uint32_t values; byte-swapped in place by
+ * the emission pass when TIFF_SWAB is set.
+ * @return One on success; zero if count exceeds UINT32_MAX/4 (no diagnostic),
+ * or on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagLongArray(TIFF *tif, uint32_t *ndir,
                                           TIFFDirEntry *dir, uint16_t tag,
                                           uint32_t count, uint32_t *value)
@@ -1711,6 +2137,31 @@ static int TIFFWriteDirectoryTagLongArray(TIFF *tif, uint32_t *ndir,
                                                   value));
 }
 
+/**
+ * @brief Account for or emit Slong array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Forwards to TIFFWriteDirectoryTagCheckedSlongArray(). Writes count values as
+ * SLONG. Sizing pass (dir NULL): adds any payload too large for the entry to
+ * td_dirdatasize_write and increments *ndir. Emission pass: inserts the entry
+ * in tag order and writes any out-of-line payload at tif_dataoff through
+ * TIFFWriteDirectoryTagData(). When the file byte order differs from the host
+ * (TIFF_SWAB), the emission pass byte-swaps value in place and does not restore
+ * it. A failed emission can leave dir shifted and payload bytes written without
+ * incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in,out] value Array of count int32_t values; byte-swapped in place by
+ * the emission pass when TIFF_SWAB is set.
+ * @return One on success; zero if count exceeds UINT32_MAX/4 (no diagnostic),
+ * or on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagSlongArray(TIFF *tif, uint32_t *ndir,
                                            TIFFDirEntry *dir, uint16_t tag,
                                            uint32_t count, int32_t *value)
@@ -1724,6 +2175,33 @@ static int TIFFWriteDirectoryTagSlongArray(TIFF *tif, uint32_t *ndir,
 /*                                                                      */
 /*      Write either Long8 or Long array depending on file type.        */
 /************************************************************************/
+/**
+ * @brief Account for or emit Long8 array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * In BigTIFF, forwards to TIFFWriteDirectoryTagCheckedLong8Array(), which
+ * writes LONG8 and byte-swaps value in place when TIFF_SWAB is set. In classic
+ * TIFF, copies value to a temporary uint32_t array in both passes, reports an
+ * error for any value above 0xFFFFFFFF, and writes the copy as LONG. Sizing
+ * pass (dir NULL): adds any payload too large for the entry to
+ * td_dirdatasize_write and increments *ndir. Emission pass: inserts the entry
+ * in tag order and writes any out-of-line payload at tif_dataoff through
+ * TIFFWriteDirectoryTagData(). A failed emission can leave dir shifted and
+ * payload bytes written without incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in,out] value Array of count uint64_t values; modified in place only
+ * in BigTIFF.
+ * @return One on success; zero on allocation failure, an out-of-range value in
+ * classic TIFF, count too large for the file type (no diagnostic), or a size or
+ * I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagLong8Array(TIFF *tif, uint32_t *ndir,
                                            TIFFDirEntry *dir, uint16_t tag,
                                            uint32_t count, uint64_t *value)
@@ -1778,6 +2256,33 @@ static int TIFFWriteDirectoryTagLong8Array(TIFF *tif, uint32_t *ndir,
 /*                                                                      */
 /*      Write either SLong8 or SLong array depending on file type.      */
 /************************************************************************/
+/**
+ * @brief Account for or emit Slong8 array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * In BigTIFF, forwards to TIFFWriteDirectoryTagCheckedSlong8Array(), which
+ * writes SLONG8 and byte-swaps value in place when TIFF_SWAB is set. In classic
+ * TIFF, copies value to a temporary int32_t array in both passes, reports an
+ * error for any value outside the int32_t range, and writes the copy as SLONG.
+ * Sizing pass (dir NULL): adds any payload too large for the entry to
+ * td_dirdatasize_write and increments *ndir. Emission pass: inserts the entry
+ * in tag order and writes any out-of-line payload at tif_dataoff through
+ * TIFFWriteDirectoryTagData(). A failed emission can leave dir shifted and
+ * payload bytes written without incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in,out] value Array of count int64_t values; modified in place only in
+ * BigTIFF.
+ * @return One on success; zero on allocation failure, an out-of-range value in
+ * classic TIFF, count too large for the file type (no diagnostic), or a size or
+ * I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagSlong8Array(TIFF *tif, uint32_t *ndir,
                                             TIFFDirEntry *dir, uint16_t tag,
                                             uint32_t count, int64_t *value)
@@ -1837,6 +2342,27 @@ static int TIFFWriteDirectoryTagSlong8Array(TIFF *tif, uint32_t *ndir,
     return (o);
 }
 
+/**
+ * @brief Account for or emit Rational tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Forwards to TIFFWriteDirectoryTagCheckedRational(). Rejects negative and NaN
+ * values with an error in both passes, then converts value with
+ * DoubleToRational() into one RATIONAL. Sizing adds 8 bytes of payload in
+ * classic TIFF and none in BigTIFF, where the value is inline. A failed
+ * emission can leave dir shifted and payload bytes written without incrementing
+ * *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] value Value to write.
+ * @return One on success; zero for a negative or NaN value or, in classic TIFF,
+ * a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagRational(TIFF *tif, uint32_t *ndir,
                                          TIFFDirEntry *dir, uint16_t tag,
                                          double value)
@@ -1844,6 +2370,32 @@ static int TIFFWriteDirectoryTagRational(TIFF *tif, uint32_t *ndir,
     return (TIFFWriteDirectoryTagCheckedRational(tif, ndir, dir, tag, value));
 }
 
+/**
+ * @brief Account for or emit Rational array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Forwards to TIFFWriteDirectoryTagCheckedRationalArray(). Converts each
+ * element with DoubleToRational() into a temporary buffer of
+ * numerator/denominator pairs (emission pass only) and writes them as RATIONAL,
+ * byte-swapped when TIFF_SWAB is set. A negative or NaN element is reported by
+ * DoubleToRational() and written as 0/0 without failing. Sizing pass (dir
+ * NULL): adds any payload too large for the entry to td_dirdatasize_write and
+ * increments *ndir. Emission pass: inserts the entry in tag order and writes
+ * any out-of-line payload at tif_dataoff through TIFFWriteDirectoryTagData(). A
+ * failed emission can leave dir shifted and payload bytes written without
+ * incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in] value Array of count float values; not modified.
+ * @return One on success; zero if count exceeds UINT32_MAX/8 (no diagnostic),
+ * on allocation failure, or on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagRationalArray(TIFF *tif, uint32_t *ndir,
                                               TIFFDirEntry *dir, uint16_t tag,
                                               uint32_t count, float *value)
@@ -1852,6 +2404,32 @@ static int TIFFWriteDirectoryTagRationalArray(TIFF *tif, uint32_t *ndir,
                                                       count, value));
 }
 
+/**
+ * @brief Account for or emit Srational array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Forwards to TIFFWriteDirectoryTagCheckedSrationalArray(). Converts each
+ * element with DoubleToSrational() into a temporary buffer of
+ * numerator/denominator pairs (emission pass only) and writes them as
+ * SRATIONAL, byte-swapped when TIFF_SWAB is set. NaN elements are not checked
+ * and are not valid input to DoubleToSrational(). Sizing pass (dir NULL): adds
+ * any payload too large for the entry to td_dirdatasize_write and increments
+ * *ndir. Emission pass: inserts the entry in tag order and writes any
+ * out-of-line payload at tif_dataoff through TIFFWriteDirectoryTagData(). A
+ * failed emission can leave dir shifted and payload bytes written without
+ * incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in] value Array of count float values; not modified.
+ * @return One on success; zero if count exceeds UINT32_MAX/8 (no diagnostic),
+ * on allocation failure, or on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagSrationalArray(TIFF *tif, uint32_t *ndir,
                                                TIFFDirEntry *dir, uint16_t tag,
                                                uint32_t count, float *value)
@@ -1861,6 +2439,32 @@ static int TIFFWriteDirectoryTagSrationalArray(TIFF *tif, uint32_t *ndir,
 }
 
 /*-- Rational2Double: additional write functions */
+/**
+ * @brief Account for or emit RationalDouble array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Forwards to TIFFWriteDirectoryTagCheckedRationalDoubleArray(). Converts each
+ * element with DoubleToRational() into a temporary buffer of
+ * numerator/denominator pairs (emission pass only) and writes them as RATIONAL,
+ * byte-swapped when TIFF_SWAB is set. A negative or NaN element is reported by
+ * DoubleToRational() and written as 0/0 without failing. Sizing pass (dir
+ * NULL): adds any payload too large for the entry to td_dirdatasize_write and
+ * increments *ndir. Emission pass: inserts the entry in tag order and writes
+ * any out-of-line payload at tif_dataoff through TIFFWriteDirectoryTagData(). A
+ * failed emission can leave dir shifted and payload bytes written without
+ * incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in] value Array of count double values; not modified.
+ * @return One on success; zero if count exceeds UINT32_MAX/8 (no diagnostic),
+ * on allocation failure, or on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagRationalDoubleArray(TIFF *tif, uint32_t *ndir,
                                                     TIFFDirEntry *dir,
                                                     uint16_t tag,
@@ -1871,6 +2475,32 @@ static int TIFFWriteDirectoryTagRationalDoubleArray(TIFF *tif, uint32_t *ndir,
                                                             count, value));
 }
 
+/**
+ * @brief Account for or emit SrationalDouble array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Forwards to TIFFWriteDirectoryTagCheckedSrationalDoubleArray(). Converts each
+ * element with DoubleToSrational() into a temporary buffer of
+ * numerator/denominator pairs (emission pass only) and writes them as
+ * SRATIONAL, byte-swapped when TIFF_SWAB is set. NaN elements are not checked
+ * and are not valid input to DoubleToSrational(). Sizing pass (dir NULL): adds
+ * any payload too large for the entry to td_dirdatasize_write and increments
+ * *ndir. Emission pass: inserts the entry in tag order and writes any
+ * out-of-line payload at tif_dataoff through TIFFWriteDirectoryTagData(). A
+ * failed emission can leave dir shifted and payload bytes written without
+ * incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in] value Array of count double values; not modified.
+ * @return One on success; zero if count exceeds UINT32_MAX/8 (no diagnostic),
+ * on allocation failure, or on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagSrationalDoubleArray(TIFF *tif, uint32_t *ndir,
                                                      TIFFDirEntry *dir,
                                                      uint16_t tag,
@@ -1881,6 +2511,32 @@ static int TIFFWriteDirectoryTagSrationalDoubleArray(TIFF *tif, uint32_t *ndir,
         tif, ndir, dir, tag, count, value));
 }
 
+/**
+ * @brief Account for or emit Float array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Forwards to TIFFWriteDirectoryTagCheckedFloatArray(). Writes count values as
+ * FLOAT. Sizing pass (dir NULL): adds any payload too large for the entry to
+ * td_dirdatasize_write and increments *ndir. Emission pass: inserts the entry
+ * in tag order and writes any out-of-line payload at tif_dataoff through
+ * TIFFWriteDirectoryTagData(). The emission pass converts value in place to
+ * IEEE format with TIFFCvtNativeToIEEEFloat() (a no-op on IEEE hosts) and, when
+ * TIFF_SWAB is set, byte-swaps it in place; value is not restored. A failed
+ * emission can leave dir shifted and payload bytes written without incrementing
+ * *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in,out] value Array of count float values; converted and byte-swapped
+ * in place by the emission pass.
+ * @return One on success; zero if count exceeds UINT32_MAX/4 (no diagnostic),
+ * or on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagFloatArray(TIFF *tif, uint32_t *ndir,
                                            TIFFDirEntry *dir, uint16_t tag,
                                            uint32_t count, float *value)
@@ -1889,6 +2545,32 @@ static int TIFFWriteDirectoryTagFloatArray(TIFF *tif, uint32_t *ndir,
                                                    value));
 }
 
+/**
+ * @brief Account for or emit Double array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Forwards to TIFFWriteDirectoryTagCheckedDoubleArray(). Writes count values as
+ * DOUBLE. Sizing pass (dir NULL): adds any payload too large for the entry to
+ * td_dirdatasize_write and increments *ndir. Emission pass: inserts the entry
+ * in tag order and writes any out-of-line payload at tif_dataoff through
+ * TIFFWriteDirectoryTagData(). The emission pass converts value in place to
+ * IEEE format with TIFFCvtNativeToIEEEDouble() (a no-op on IEEE hosts) and,
+ * when TIFF_SWAB is set, byte-swaps it in place; value is not restored. A
+ * failed emission can leave dir shifted and payload bytes written without
+ * incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in,out] value Array of count double values; converted and byte-swapped
+ * in place by the emission pass.
+ * @return One on success; zero if count exceeds UINT32_MAX/8 (no diagnostic),
+ * or on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagDoubleArray(TIFF *tif, uint32_t *ndir,
                                             TIFFDirEntry *dir, uint16_t tag,
                                             uint32_t count, double *value)
@@ -1897,6 +2579,31 @@ static int TIFFWriteDirectoryTagDoubleArray(TIFF *tif, uint32_t *ndir,
                                                     value));
 }
 
+/**
+ * @brief Account for or emit Ifd array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Forwards to TIFFWriteDirectoryTagCheckedIfdArray(). Writes count values as
+ * IFD. Sizing pass (dir NULL): adds any payload too large for the entry to
+ * td_dirdatasize_write and increments *ndir. Emission pass: inserts the entry
+ * in tag order and writes any out-of-line payload at tif_dataoff through
+ * TIFFWriteDirectoryTagData(). When the file byte order differs from the host
+ * (TIFF_SWAB), the emission pass byte-swaps value in place and does not restore
+ * it. A failed emission can leave dir shifted and payload bytes written without
+ * incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in,out] value Array of count uint32_t values; byte-swapped in place by
+ * the emission pass when TIFF_SWAB is set.
+ * @return One on success; zero if count exceeds UINT32_MAX/4 (no diagnostic),
+ * or on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagIfdArray(TIFF *tif, uint32_t *ndir,
                                          TIFFDirEntry *dir, uint16_t tag,
                                          uint32_t count, uint32_t *value)
@@ -1905,6 +2612,23 @@ static int TIFFWriteDirectoryTagIfdArray(TIFF *tif, uint32_t *ndir,
                                                  value));
 }
 
+/**
+ * @brief Account for or emit ShortLong tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Writes value as one SHORT if it is at most 0xFFFF, otherwise as one LONG. The
+ * value always fits inline in the entry, so sizing adds no payload size and
+ * emission cannot fail.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] value Value to write.
+ * @return Always one.
+ */
 static int TIFFWriteDirectoryTagShortLong(TIFF *tif, uint32_t *ndir,
                                           TIFFDirEntry *dir, uint16_t tag,
                                           uint32_t value)
@@ -1916,6 +2640,22 @@ static int TIFFWriteDirectoryTagShortLong(TIFF *tif, uint32_t *ndir,
         return (TIFFWriteDirectoryTagCheckedLong(tif, ndir, dir, tag, value));
 }
 
+/**
+ * @brief Choose whether a strile count needs a wider integer type.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Uncompressed counts use a strict size-threshold comparison. Selected
+ * codecs use a pessimistic factor-ten expansion threshold; other codecs
+ * always choose wider storage. Pure selection heuristic: no payload
+ * inspection, allocation, diagnostics, state change, or ownership transfer.
+ *
+ * @param[in] tif Non-NULL handle whose compression mode is inspected.
+ * @param[in] strile_size Uncompressed strile size in bytes.
+ * @param[in] uncompressed_threshold Narrower unsigned type's maximum byte
+ * count.
+ * @return Nonzero to select the wider type, zero to permit the narrower
+ * type; not proof of actual compressed size.
+ */
 static int _WriteAsType(TIFF *tif, uint64_t strile_size,
                         uint64_t uncompressed_threshold)
 {
@@ -1941,11 +2681,41 @@ static int _WriteAsType(TIFF *tif, uint64_t strile_size,
     return 1;
 }
 
+/**
+ * @brief Choose whether a strile count needs a wider integer type.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Uncompressed counts use a strict size-threshold comparison. Selected
+ * codecs use a pessimistic factor-ten expansion threshold; other codecs
+ * always choose wider storage. Uses UINT32_MAX as the narrower threshold.
+ * Pure selection heuristic: no payload inspection, allocation, diagnostics,
+ * state change, or ownership transfer.
+ *
+ * @param[in] tif Non-NULL handle whose compression mode is inspected.
+ * @param[in] strile_size Uncompressed strile size in bytes.
+ * @return Nonzero to select the wider type, zero to permit the narrower
+ * type; not proof of actual compressed size.
+ */
 static int WriteAsLong8(TIFF *tif, uint64_t strile_size)
 {
     return _WriteAsType(tif, strile_size, 0xFFFFFFFFU);
 }
 
+/**
+ * @brief Choose whether a strile count needs a wider integer type.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Uncompressed counts use a strict size-threshold comparison. Selected
+ * codecs use a pessimistic factor-ten expansion threshold; other codecs
+ * always choose wider storage. Uses UINT16_MAX as the narrower threshold.
+ * Pure selection heuristic: no payload inspection, allocation, diagnostics,
+ * state change, or ownership transfer.
+ *
+ * @param[in] tif Non-NULL handle whose compression mode is inspected.
+ * @param[in] strile_size Uncompressed strile size in bytes.
+ * @return Nonzero to select the wider type, zero to permit the narrower
+ * type; not proof of actual compressed size.
+ */
 static int WriteAsLong4(TIFF *tif, uint64_t strile_size)
 {
     return _WriteAsType(tif, strile_size, 0xFFFFU);
@@ -1958,6 +2728,39 @@ static int WriteAsLong4(TIFF *tif, uint64_t strile_size)
 /*      on strile size and Classic/BigTIFF mode.                        */
 /************************************************************************/
 
+/**
+ * @brief Account for or emit LongLong8 array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Writes a strip/tile offset or byte-count array. If strile-array writing is
+ * deferred (td_deferstrilearraywriting), value is ignored: sizing only
+ * increments *ndir, and emission inserts a TIFF_NOTYPE, zero-count placeholder
+ * entry to be patched later by TIFFForceStrileArrayWriting(). Otherwise BigTIFF
+ * writes LONG8 directly from value (byte-swapped in place when TIFF_SWAB is
+ * set), unless the tag is StripByteCounts or TileByteCounts, count > 1, and
+ * WriteAsLong8() decides the strip/tile size allows a narrower type. Classic
+ * TIFF and narrowed BigTIFF copy value to a temporary array in both passes:
+ * SHORT for those byte-count tags when WriteAsLong4() allows it, otherwise
+ * LONG; a value that does not fit is reported and fails. Sizing pass (dir
+ * NULL): adds any payload too large for the entry to td_dirdatasize_write and
+ * increments *ndir. Emission pass: inserts the entry in tag order and writes
+ * any out-of-line payload at tif_dataoff through TIFFWriteDirectoryTagData(). A
+ * failed emission can leave dir shifted and payload bytes written without
+ * incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in,out] value Array of count uint64_t values; ignored in deferred
+ * mode, and modified in place only on the direct BigTIFF LONG8 path.
+ * @return One on success, including the deferred placeholder; zero on
+ * allocation failure, an out-of-range value, count too large for the chosen
+ * type (no diagnostic), or a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagLongLong8Array(TIFF *tif, uint32_t *ndir,
                                                TIFFDirEntry *dir, uint16_t tag,
                                                uint32_t count, uint64_t *value)
@@ -2089,6 +2892,33 @@ static int TIFFWriteDirectoryTagLongLong8Array(TIFF *tif, uint32_t *ndir,
 /*      Write either IFD8 or IFD array depending on file type.          */
 /************************************************************************/
 
+/**
+ * @brief Account for or emit IfdIfd8 array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * In BigTIFF, forwards to TIFFWriteDirectoryTagCheckedIfd8Array(), which writes
+ * IFD8 and byte-swaps value in place when TIFF_SWAB is set. In classic TIFF,
+ * copies value to a temporary uint32_t array in both passes, reports an error
+ * for any offset above 0xFFFFFFFF, and writes the copy as IFD. Sizing pass (dir
+ * NULL): adds any payload too large for the entry to td_dirdatasize_write and
+ * increments *ndir. Emission pass: inserts the entry in tag order and writes
+ * any out-of-line payload at tif_dataoff through TIFFWriteDirectoryTagData(). A
+ * failed emission can leave dir shifted and payload bytes written without
+ * incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in,out] value Array of count uint64_t IFD offsets; modified in place
+ * only in BigTIFF.
+ * @return One on success; zero on allocation failure, an out-of-range offset in
+ * classic TIFF, count too large for the file type (no diagnostic), or a size or
+ * I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagIfdIfd8Array(TIFF *tif, uint32_t *ndir,
                                              TIFFDirEntry *dir, uint16_t tag,
                                              uint32_t count, uint64_t *value)
@@ -2142,6 +2972,21 @@ static int TIFFWriteDirectoryTagIfdIfd8Array(TIFF *tif, uint32_t *ndir,
  * The IFD data size is finally the size of the IFD tag entries plus the IFD
  * data that is written directly after the IFD tag entries.
  */
+/**
+ * @brief Accumulate external payload size and one IFD entry.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Computes count*typesize in uint64_t, adds even-padded payload bytes only
+ * when larger than inline storage, and increments *ndir. Does not allocate,
+ * write, emit diagnostics, or transfer ownership. Accumulation/increment
+ * overflow is not checked here; caller must keep totals representable.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] count Element count.
+ * @param[in] typesize Positive file element width in bytes.
+ * @param[in,out] ndir Non-NULL entry counter to increment.
+ */
 static void EvaluateIFDdatasizeWrite(TIFF *tif, uint32_t count,
                                      uint32_t typesize, uint32_t *ndir)
 {
@@ -2157,6 +3002,28 @@ static void EvaluateIFDdatasizeWrite(TIFF *tif, uint32_t count,
     (*ndir)++;
 }
 
+/**
+ * @brief Account for or emit Colormap tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Writes the directory's three td_colormap planes, each of 2^BitsPerSample
+ * entries, as one SHORT array of 3 * 2^BitsPerSample values. BitsPerSample of
+ * 32 or more is reported as an error, as are size products that overflow. The
+ * emission pass concatenates the planes into a temporary buffer, so td_colormap
+ * is not modified. Sizing pass (dir NULL): adds any payload too large for the
+ * entry to td_dirdatasize_write and increments *ndir. Emission pass: inserts
+ * the entry in tag order and writes any out-of-line payload at tif_dataoff
+ * through TIFFWriteDirectoryTagData(). A failed emission can leave dir shifted
+ * and payload bytes written without incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @return One on success; zero for BitsPerSample >= 32, a size overflow,
+ * allocation failure, or a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagColormap(TIFF *tif, uint32_t *ndir,
                                          TIFFDirEntry *dir)
 {
@@ -2205,6 +3072,31 @@ static int TIFFWriteDirectoryTagColormap(TIFF *tif, uint32_t *ndir,
     return (o);
 }
 
+/**
+ * @brief Account for or emit Transferfunction tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Writes TransferFunction as one SHORT array of n * 2^BitsPerSample values,
+ * where n is 3 if SamplesPerPixel - ExtraSamples > 1 and 1 otherwise; three
+ * identical curves are written as one. If any of the n required
+ * td_transferfunction curves is NULL, warns, skips the tag, and returns one
+ * without incrementing *ndir, in either pass. BitsPerSample of 32 or more is
+ * reported as an error. The emission pass concatenates the curves into a
+ * temporary buffer. Sizing pass (dir NULL): adds any payload too large for the
+ * entry to td_dirdatasize_write and increments *ndir. Emission pass: inserts
+ * the entry in tag order and writes any out-of-line payload at tif_dataoff
+ * through TIFFWriteDirectoryTagData(). A failed emission can leave dir shifted
+ * and payload bytes written without incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted, but not when the tag is skipped.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @return One on success or when the tag is skipped for missing curves; zero
+ * for BitsPerSample >= 32, a size overflow, allocation failure, or a size or
+ * I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagTransferfunction(TIFF *tif, uint32_t *ndir,
                                                  TIFFDirEntry *dir)
 {
@@ -2292,6 +3184,34 @@ static int TIFFWriteDirectoryTagTransferfunction(TIFF *tif, uint32_t *ndir,
     return (p);
 }
 
+/**
+ * @brief Account for or emit Subifd tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * If td_nsubifd is zero, there is no SubIFD tag to write: returns one without
+ * adding an entry. Otherwise writes td_subifd as the SubIFD tag: in classic
+ * TIFF as IFD from a temporary uint32_t copy made in both passes (an offset
+ * above 0xFFFFFFFF is an error), and in BigTIFF as IFD8 directly from
+ * td_subifd, which the emission pass byte-swaps in place when TIFF_SWAB is set.
+ * After a successful emission, sets TIFF_INSUBIFD and tif_nsubifd so that the
+ * next td_nsubifd directories are written as children and, for more than one
+ * child, the external child-link patch location tif_subifdoff (a single inline
+ * child is located later by TIFFWriteDirectorySec()). Sizing pass (dir NULL):
+ * adds any payload too large for the entry to td_dirdatasize_write and
+ * increments *ndir. Emission pass: inserts the entry in tag order and writes
+ * any out-of-line payload at tif_dataoff through TIFFWriteDirectoryTagData(). A
+ * failed emission can leave dir shifted and payload bytes written without
+ * incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted, but not when there are no SubIFDs.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @return One on success or when there are no SubIFDs; zero for an oversized
+ * offset in classic TIFF, allocation failure, or a size or I/O error during
+ * emission.
+ */
 static int TIFFWriteDirectoryTagSubifd(TIFF *tif, uint32_t *ndir,
                                        TIFFDirEntry *dir)
 {
@@ -2364,6 +3284,28 @@ static int TIFFWriteDirectoryTagSubifd(TIFF *tif, uint32_t *ndir,
     return (1);
 }
 
+/**
+ * @brief Account for or emit Ascii tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Writes exactly count bytes as ASCII; any NUL terminator must be included in
+ * count. Sizing pass (dir NULL): adds any payload too large for the entry to
+ * td_dirdatasize_write and increments *ndir. Emission pass: inserts the entry
+ * in tag order and writes any out-of-line payload at tif_dataoff through
+ * TIFFWriteDirectoryTagData(). A failed emission can leave dir shifted and
+ * payload bytes written without incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in] value Array of count char values; not modified. Not accessed by
+ * the sizing pass.
+ * @return One on success; zero on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagCheckedAscii(TIFF *tif, uint32_t *ndir,
                                              TIFFDirEntry *dir, uint16_t tag,
                                              uint32_t count, char *value)
@@ -2378,6 +3320,28 @@ static int TIFFWriteDirectoryTagCheckedAscii(TIFF *tif, uint32_t *ndir,
                                       count, value));
 }
 
+/**
+ * @brief Account for or emit Undefined array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Writes count bytes as UNDEFINED without conversion. Sizing pass (dir NULL):
+ * adds any payload too large for the entry to td_dirdatasize_write and
+ * increments *ndir. Emission pass: inserts the entry in tag order and writes
+ * any out-of-line payload at tif_dataoff through TIFFWriteDirectoryTagData(). A
+ * failed emission can leave dir shifted and payload bytes written without
+ * incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in] value Array of count uint8_t values; not modified. Not accessed by
+ * the sizing pass.
+ * @return One on success; zero on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagCheckedUndefinedArray(TIFF *tif, uint32_t *ndir,
                                                       TIFFDirEntry *dir,
                                                       uint16_t tag,
@@ -2394,6 +3358,28 @@ static int TIFFWriteDirectoryTagCheckedUndefinedArray(TIFF *tif, uint32_t *ndir,
                                       count, count, value));
 }
 
+/**
+ * @brief Account for or emit Byte array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Writes count bytes as BYTE without conversion. Sizing pass (dir NULL): adds
+ * any payload too large for the entry to td_dirdatasize_write and increments
+ * *ndir. Emission pass: inserts the entry in tag order and writes any
+ * out-of-line payload at tif_dataoff through TIFFWriteDirectoryTagData(). A
+ * failed emission can leave dir shifted and payload bytes written without
+ * incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in] value Array of count uint8_t values; not modified. Not accessed by
+ * the sizing pass.
+ * @return One on success; zero on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagCheckedByteArray(TIFF *tif, uint32_t *ndir,
                                                  TIFFDirEntry *dir,
                                                  uint16_t tag, uint32_t count,
@@ -2409,6 +3395,28 @@ static int TIFFWriteDirectoryTagCheckedByteArray(TIFF *tif, uint32_t *ndir,
                                       count, value));
 }
 
+/**
+ * @brief Account for or emit Sbyte array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Writes count bytes as SBYTE without conversion. Sizing pass (dir NULL): adds
+ * any payload too large for the entry to td_dirdatasize_write and increments
+ * *ndir. Emission pass: inserts the entry in tag order and writes any
+ * out-of-line payload at tif_dataoff through TIFFWriteDirectoryTagData(). A
+ * failed emission can leave dir shifted and payload bytes written without
+ * incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in] value Array of count int8_t values; not modified. Not accessed by
+ * the sizing pass.
+ * @return One on success; zero on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagCheckedSbyteArray(TIFF *tif, uint32_t *ndir,
                                                   TIFFDirEntry *dir,
                                                   uint16_t tag, uint32_t count,
@@ -2424,6 +3432,23 @@ static int TIFFWriteDirectoryTagCheckedSbyteArray(TIFF *tif, uint32_t *ndir,
                                       count, value));
 }
 
+/**
+ * @brief Account for or emit Short tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Writes one SHORT, byte-swapping a local copy when TIFF_SWAB is set. The value
+ * always fits inline in the entry, so sizing adds no payload size and emission
+ * cannot fail.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] value Value to write.
+ * @return Always one.
+ */
 static int TIFFWriteDirectoryTagCheckedShort(TIFF *tif, uint32_t *ndir,
                                              TIFFDirEntry *dir, uint16_t tag,
                                              uint16_t value)
@@ -2443,6 +3468,31 @@ static int TIFFWriteDirectoryTagCheckedShort(TIFF *tif, uint32_t *ndir,
         TIFFWriteDirectoryTagData(tif, ndir, dir, tag, TIFF_SHORT, 1, 2, &m));
 }
 
+/**
+ * @brief Account for or emit Short array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Writes count values as SHORT. Sizing pass (dir NULL): adds any payload too
+ * large for the entry to td_dirdatasize_write and increments *ndir. Emission
+ * pass: inserts the entry in tag order and writes any out-of-line payload at
+ * tif_dataoff through TIFFWriteDirectoryTagData(). When the file byte order
+ * differs from the host (TIFF_SWAB), the emission pass byte-swaps value in
+ * place and does not restore it. A failed emission can leave dir shifted and
+ * payload bytes written without incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in,out] value Array of count uint16_t values; byte-swapped in place by
+ * the emission pass when TIFF_SWAB is set. Not accessed by the sizing pass. May
+ * be NULL for sizing, as TIFFWriteDirectoryTagShortPerSample() passes.
+ * @return One on success; zero if count exceeds UINT32_MAX/2 (no diagnostic),
+ * or on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagCheckedShortArray(TIFF *tif, uint32_t *ndir,
                                                   TIFFDirEntry *dir,
                                                   uint16_t tag, uint32_t count,
@@ -2461,6 +3511,30 @@ static int TIFFWriteDirectoryTagCheckedShortArray(TIFF *tif, uint32_t *ndir,
                                       count * 2, value));
 }
 
+/**
+ * @brief Account for or emit Sshort array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Writes count values as SSHORT. Sizing pass (dir NULL): adds any payload too
+ * large for the entry to td_dirdatasize_write and increments *ndir. Emission
+ * pass: inserts the entry in tag order and writes any out-of-line payload at
+ * tif_dataoff through TIFFWriteDirectoryTagData(). When the file byte order
+ * differs from the host (TIFF_SWAB), the emission pass byte-swaps value in
+ * place and does not restore it. A failed emission can leave dir shifted and
+ * payload bytes written without incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in,out] value Array of count int16_t values; byte-swapped in place by
+ * the emission pass when TIFF_SWAB is set. Not accessed by the sizing pass.
+ * @return One on success; zero if count exceeds UINT32_MAX/2 (no diagnostic),
+ * or on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagCheckedSshortArray(TIFF *tif, uint32_t *ndir,
                                                    TIFFDirEntry *dir,
                                                    uint16_t tag, uint32_t count,
@@ -2479,6 +3553,23 @@ static int TIFFWriteDirectoryTagCheckedSshortArray(TIFF *tif, uint32_t *ndir,
                                       count * 2, value));
 }
 
+/**
+ * @brief Account for or emit Long tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Writes one LONG, byte-swapping a local copy when TIFF_SWAB is set. The value
+ * always fits inline in the entry, so sizing adds no payload size and emission
+ * cannot fail.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] value Value to write.
+ * @return Always one.
+ */
 static int TIFFWriteDirectoryTagCheckedLong(TIFF *tif, uint32_t *ndir,
                                             TIFFDirEntry *dir, uint16_t tag,
                                             uint32_t value)
@@ -2498,6 +3589,30 @@ static int TIFFWriteDirectoryTagCheckedLong(TIFF *tif, uint32_t *ndir,
         TIFFWriteDirectoryTagData(tif, ndir, dir, tag, TIFF_LONG, 1, 4, &m));
 }
 
+/**
+ * @brief Account for or emit Long array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Writes count values as LONG. Sizing pass (dir NULL): adds any payload too
+ * large for the entry to td_dirdatasize_write and increments *ndir. Emission
+ * pass: inserts the entry in tag order and writes any out-of-line payload at
+ * tif_dataoff through TIFFWriteDirectoryTagData(). When the file byte order
+ * differs from the host (TIFF_SWAB), the emission pass byte-swaps value in
+ * place and does not restore it. A failed emission can leave dir shifted and
+ * payload bytes written without incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in,out] value Array of count uint32_t values; byte-swapped in place by
+ * the emission pass when TIFF_SWAB is set. Not accessed by the sizing pass.
+ * @return One on success; zero if count exceeds UINT32_MAX/4 (no diagnostic),
+ * or on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagCheckedLongArray(TIFF *tif, uint32_t *ndir,
                                                  TIFFDirEntry *dir,
                                                  uint16_t tag, uint32_t count,
@@ -2516,6 +3631,30 @@ static int TIFFWriteDirectoryTagCheckedLongArray(TIFF *tif, uint32_t *ndir,
                                       count * 4, value));
 }
 
+/**
+ * @brief Account for or emit Slong array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Writes count values as SLONG. Sizing pass (dir NULL): adds any payload too
+ * large for the entry to td_dirdatasize_write and increments *ndir. Emission
+ * pass: inserts the entry in tag order and writes any out-of-line payload at
+ * tif_dataoff through TIFFWriteDirectoryTagData(). When the file byte order
+ * differs from the host (TIFF_SWAB), the emission pass byte-swaps value in
+ * place and does not restore it. A failed emission can leave dir shifted and
+ * payload bytes written without incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in,out] value Array of count int32_t values; byte-swapped in place by
+ * the emission pass when TIFF_SWAB is set. Not accessed by the sizing pass.
+ * @return One on success; zero if count exceeds UINT32_MAX/4 (no diagnostic),
+ * or on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagCheckedSlongArray(TIFF *tif, uint32_t *ndir,
                                                   TIFFDirEntry *dir,
                                                   uint16_t tag, uint32_t count,
@@ -2534,6 +3673,33 @@ static int TIFFWriteDirectoryTagCheckedSlongArray(TIFF *tif, uint32_t *ndir,
                                       count * 4, value));
 }
 
+/**
+ * @brief Account for or emit Long8 array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Writes count values as LONG8. In classic TIFF, reports an error and returns
+ * zero in both passes; narrowing is done only by
+ * TIFFWriteDirectoryTagLong8Array(). Sizing pass (dir NULL): adds any payload
+ * too large for the entry to td_dirdatasize_write and increments *ndir.
+ * Emission pass: inserts the entry in tag order and writes any out-of-line
+ * payload at tif_dataoff through TIFFWriteDirectoryTagData(). When the file
+ * byte order differs from the host (TIFF_SWAB), the emission pass byte-swaps
+ * value in place and does not restore it. A failed emission can leave dir
+ * shifted and payload bytes written without incrementing *ndir; nothing is
+ * rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in,out] value Array of count uint64_t values; byte-swapped in place by
+ * the emission pass when TIFF_SWAB is set. Not accessed by the sizing pass.
+ * @return One on success; zero in classic TIFF, if count exceeds UINT32_MAX/8
+ * (no diagnostic), or on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagCheckedLong8Array(TIFF *tif, uint32_t *ndir,
                                                   TIFFDirEntry *dir,
                                                   uint16_t tag, uint32_t count,
@@ -2558,6 +3724,33 @@ static int TIFFWriteDirectoryTagCheckedLong8Array(TIFF *tif, uint32_t *ndir,
                                       count * 8, value));
 }
 
+/**
+ * @brief Account for or emit Slong8 array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Writes count values as SLONG8. In classic TIFF, reports an error and returns
+ * zero in both passes; narrowing is done only by
+ * TIFFWriteDirectoryTagSlong8Array(). Sizing pass (dir NULL): adds any payload
+ * too large for the entry to td_dirdatasize_write and increments *ndir.
+ * Emission pass: inserts the entry in tag order and writes any out-of-line
+ * payload at tif_dataoff through TIFFWriteDirectoryTagData(). When the file
+ * byte order differs from the host (TIFF_SWAB), the emission pass byte-swaps
+ * value in place and does not restore it. A failed emission can leave dir
+ * shifted and payload bytes written without incrementing *ndir; nothing is
+ * rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in,out] value Array of count int64_t values; byte-swapped in place by
+ * the emission pass when TIFF_SWAB is set. Not accessed by the sizing pass.
+ * @return One on success; zero in classic TIFF, if count exceeds UINT32_MAX/8
+ * (no diagnostic), or on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagCheckedSlong8Array(TIFF *tif, uint32_t *ndir,
                                                    TIFFDirEntry *dir,
                                                    uint16_t tag, uint32_t count,
@@ -2582,6 +3775,26 @@ static int TIFFWriteDirectoryTagCheckedSlong8Array(TIFF *tif, uint32_t *ndir,
                                       count * 8, value));
 }
 
+/**
+ * @brief Account for or emit Rational tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Rejects negative and NaN values with an error in both passes, then converts
+ * value with DoubleToRational() into two uint32_t components, byte-swapped when
+ * TIFF_SWAB is set. Sizing adds 8 bytes of payload in classic TIFF and none in
+ * BigTIFF, where the value is inline. A failed emission can leave dir shifted
+ * and payload bytes written without incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] value Value to write.
+ * @return One on success; zero for a negative or NaN value or, in classic TIFF,
+ * a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagCheckedRational(TIFF *tif, uint32_t *ndir,
                                                 TIFFDirEntry *dir, uint16_t tag,
                                                 double value)
@@ -2619,6 +3832,32 @@ static int TIFFWriteDirectoryTagCheckedRational(TIFF *tif, uint32_t *ndir,
                                       &m[0]));
 }
 
+/**
+ * @brief Account for or emit Rational array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Converts each element with DoubleToRational() into a temporary buffer of
+ * numerator/denominator pairs (emission pass only) and writes them as RATIONAL,
+ * byte-swapped when TIFF_SWAB is set. A negative or NaN element is reported by
+ * DoubleToRational() and written as 0/0 without failing. Sizing pass (dir
+ * NULL): adds any payload too large for the entry to td_dirdatasize_write and
+ * increments *ndir. Emission pass: inserts the entry in tag order and writes
+ * any out-of-line payload at tif_dataoff through TIFFWriteDirectoryTagData(). A
+ * failed emission can leave dir shifted and payload bytes written without
+ * incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in] value Array of count float values; not modified. Not accessed by
+ * the sizing pass.
+ * @return One on success; zero if count exceeds UINT32_MAX/8 (no diagnostic),
+ * on allocation failure, or on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagCheckedRationalArray(TIFF *tif, uint32_t *ndir,
                                                      TIFFDirEntry *dir,
                                                      uint16_t tag,
@@ -2657,6 +3896,32 @@ static int TIFFWriteDirectoryTagCheckedRationalArray(TIFF *tif, uint32_t *ndir,
     return (o);
 }
 
+/**
+ * @brief Account for or emit Srational array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Converts each element with DoubleToSrational() into a temporary buffer of
+ * numerator/denominator pairs (emission pass only) and writes them as
+ * SRATIONAL, byte-swapped when TIFF_SWAB is set. NaN elements are not checked
+ * and are not valid input to DoubleToSrational(). Sizing pass (dir NULL): adds
+ * any payload too large for the entry to td_dirdatasize_write and increments
+ * *ndir. Emission pass: inserts the entry in tag order and writes any
+ * out-of-line payload at tif_dataoff through TIFFWriteDirectoryTagData(). A
+ * failed emission can leave dir shifted and payload bytes written without
+ * incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in] value Array of count float values; not modified. Not accessed by
+ * the sizing pass.
+ * @return One on success; zero if count exceeds UINT32_MAX/8 (no diagnostic),
+ * on allocation failure, or on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagCheckedSrationalArray(TIFF *tif, uint32_t *ndir,
                                                       TIFFDirEntry *dir,
                                                       uint16_t tag,
@@ -2696,6 +3961,32 @@ static int TIFFWriteDirectoryTagCheckedSrationalArray(TIFF *tif, uint32_t *ndir,
 }
 
 /*-- Rational2Double: additional write functions for double arrays */
+/**
+ * @brief Account for or emit RationalDouble array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Converts each element with DoubleToRational() into a temporary buffer of
+ * numerator/denominator pairs (emission pass only) and writes them as RATIONAL,
+ * byte-swapped when TIFF_SWAB is set. A negative or NaN element is reported by
+ * DoubleToRational() and written as 0/0 without failing. Sizing pass (dir
+ * NULL): adds any payload too large for the entry to td_dirdatasize_write and
+ * increments *ndir. Emission pass: inserts the entry in tag order and writes
+ * any out-of-line payload at tif_dataoff through TIFFWriteDirectoryTagData(). A
+ * failed emission can leave dir shifted and payload bytes written without
+ * incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in] value Array of count double values; not modified. Not accessed by
+ * the sizing pass.
+ * @return One on success; zero if count exceeds UINT32_MAX/8 (no diagnostic),
+ * on allocation failure, or on a size or I/O error during emission.
+ */
 static int
 TIFFWriteDirectoryTagCheckedRationalDoubleArray(TIFF *tif, uint32_t *ndir,
                                                 TIFFDirEntry *dir, uint16_t tag,
@@ -2734,6 +4025,32 @@ TIFFWriteDirectoryTagCheckedRationalDoubleArray(TIFF *tif, uint32_t *ndir,
     return (o);
 } /*-- TIFFWriteDirectoryTagCheckedRationalDoubleArray() ------- */
 
+/**
+ * @brief Account for or emit SrationalDouble array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Converts each element with DoubleToSrational() into a temporary buffer of
+ * numerator/denominator pairs (emission pass only) and writes them as
+ * SRATIONAL, byte-swapped when TIFF_SWAB is set. NaN elements are not checked
+ * and are not valid input to DoubleToSrational(). Sizing pass (dir NULL): adds
+ * any payload too large for the entry to td_dirdatasize_write and increments
+ * *ndir. Emission pass: inserts the entry in tag order and writes any
+ * out-of-line payload at tif_dataoff through TIFFWriteDirectoryTagData(). A
+ * failed emission can leave dir shifted and payload bytes written without
+ * incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in] value Array of count double values; not modified. Not accessed by
+ * the sizing pass.
+ * @return One on success; zero if count exceeds UINT32_MAX/8 (no diagnostic),
+ * on allocation failure, or on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagCheckedSrationalDoubleArray(
     TIFF *tif, uint32_t *ndir, TIFFDirEntry *dir, uint16_t tag, uint32_t count,
     double *value)
@@ -2792,6 +4109,36 @@ rationals
 * Calculates the rational fractional of a double input value
 * using the Euclidean algorithm to find the greatest common divisor (GCD)
 ------------------------------------------------------------------------*/
+/**
+ * @def MAX_ITERATIONS
+ * @brief Bound the rational approximation loop to 64 iterations.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Source-local macro used by ToRationalEuclideanGCD(); it does not bound
+ * all setup work.
+ */
+
+/**
+ * @brief Approximate a nonnegative scalar by bounded rational components.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Requires finite nonnegative input within the caller's established
+ * magnitude range and distinct writable outputs. Constructs a binary
+ * fraction then limits continued-fraction/GCD work to MAX_ITERATIONS, using
+ * selected signed/unsigned component bounds and initial precision. Returns
+ * unsigned magnitude components without applying a sign. No allocation,
+ * handle state, diagnostics, or ownership transfer; unsuitable for
+ * NaN/infinite/arbitrary out-of-range input.
+ *
+ * @param[in] value Finite nonnegative scalar within established converter
+ * range.
+ * @param[in] blnUseSignedRange Nonzero limits components to INT32_MAX, zero
+ * to UINT32_MAX.
+ * @param[in] blnUseSmallRange Nonzero uses the smaller initial precision
+ * range.
+ * @param[out] ullNum Non-NULL numerator magnitude slot.
+ * @param[out] ullDenom Non-NULL denominator magnitude slot.
+ */
 static void ToRationalEuclideanGCD(double value, int blnUseSignedRange,
                                    int blnUseSmallRange, uint64_t *ullNum,
                                    uint64_t *ullDenom)
@@ -2921,6 +4268,24 @@ static void ToRationalEuclideanGCD(double value, int blnUseSignedRange,
 * for UN-SIGNED rationals,
 * using the Euclidean algorithm to find the greatest common divisor (GCD)
 ------------------------------------------------------------------------*/
+/**
+ * @brief Convert a double into unsigned 32-bit rational components.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Negative/NaN input reports a global TIFFErrorExt() diagnostic with zero
+ * context and returns zero/zero. Above UINT32_MAX returns maximum/zero
+ * without a diagnostic. Exact integers use denominator one; tiny positive
+ * values use zero/UINT32_MAX. Otherwise compares two bounded GCD
+ * approximations. No allocation/ownership transfer or handle state.
+ * Internal range-invariant violations report globally and assert in debug
+ * builds; diagnostics are not a caller-visible status result.
+ *
+ * @param[in] value Scalar to encode, including documented
+ * negative/NaN/overflow cases.
+ * @param[out] num Non-NULL numerator slot, distinct from denom.
+ * @param[out] denom Non-NULL denominator slot; zero is a sentinel rather
+ * than guaranteed finite quotient.
+ */
 static void DoubleToRational(double value, uint32_t *num, uint32_t *denom)
 {
     /*---- UN-SIGNED RATIONAL ---- */
@@ -2992,11 +4357,31 @@ static void DoubleToRational(double value, uint32_t *num, uint32_t *denom)
     }
 } /*-- DoubleToRational() -------------- */
 
-/**---- DoubleToSrational() -----------------------------------------------
+/*---- DoubleToSrational() -----------------------------------------------
 * Calculates the rational fractional of a double input value
 * for SIGNED rationals,
 * using the Euclidean algorithm to find the greatest common divisor (GCD)
 ------------------------------------------------------------------------*/
+/**
+ * @brief Convert a non-NaN double into signed rational components.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Requires non-NaN input: NaN reaches unsupported floating-to-integer
+ * conversion. Encodes sign in numerator for normal values, with a positive
+ * denominator. Magnitudes above INT32_MAX, including either infinity,
+ * produce positive INT32_MAX/zero (negative overflow loses its sign). Exact
+ * integers use denominator one; tiny magnitudes use zero/INT32_MAX.
+ * Otherwise selects the more accurate of two bounded GCD approximations. No
+ * allocation/ownership transfer or handle state. Internal invariant
+ * violations use global diagnostics and debug assertions; there is no
+ * status result.
+ *
+ * @param[in] value Non-NaN scalar; finite supported magnitudes or
+ * documented infinity/overflow cases.
+ * @param[out] num Non-NULL signed numerator slot, distinct from denom.
+ * @param[out] denom Non-NULL signed denominator slot; zero may encode
+ * overflow.
+ */
 static void DoubleToSrational(double value, int32_t *num, int32_t *denom)
 {
     /*---- SIGNED RATIONAL ----*/
@@ -3068,6 +4453,31 @@ static void DoubleToSrational(double value, int32_t *num, int32_t *denom)
     }
 } /*-- DoubleToSrational() --------------*/
 
+/**
+ * @brief Account for or emit Float array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Writes count values as FLOAT. Sizing pass (dir NULL): adds any payload too
+ * large for the entry to td_dirdatasize_write and increments *ndir. Emission
+ * pass: inserts the entry in tag order and writes any out-of-line payload at
+ * tif_dataoff through TIFFWriteDirectoryTagData(). The emission pass converts
+ * value in place to IEEE format with TIFFCvtNativeToIEEEFloat() (a no-op on
+ * IEEE hosts) and, when TIFF_SWAB is set, byte-swaps it in place; value is not
+ * restored. A failed emission can leave dir shifted and payload bytes written
+ * without incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in,out] value Array of count float values; converted and byte-swapped
+ * in place by the emission pass. Not accessed by the sizing pass.
+ * @return One on success; zero if count exceeds UINT32_MAX/4 (no diagnostic),
+ * or on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagCheckedFloatArray(TIFF *tif, uint32_t *ndir,
                                                   TIFFDirEntry *dir,
                                                   uint16_t tag, uint32_t count,
@@ -3088,6 +4498,31 @@ static int TIFFWriteDirectoryTagCheckedFloatArray(TIFF *tif, uint32_t *ndir,
                                       count * 4, value));
 }
 
+/**
+ * @brief Account for or emit Double array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Writes count values as DOUBLE. Sizing pass (dir NULL): adds any payload too
+ * large for the entry to td_dirdatasize_write and increments *ndir. Emission
+ * pass: inserts the entry in tag order and writes any out-of-line payload at
+ * tif_dataoff through TIFFWriteDirectoryTagData(). The emission pass converts
+ * value in place to IEEE format with TIFFCvtNativeToIEEEDouble() (a no-op on
+ * IEEE hosts) and, when TIFF_SWAB is set, byte-swaps it in place; value is not
+ * restored. A failed emission can leave dir shifted and payload bytes written
+ * without incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in,out] value Array of count double values; converted and byte-swapped
+ * in place by the emission pass. Not accessed by the sizing pass.
+ * @return One on success; zero if count exceeds UINT32_MAX/8 (no diagnostic),
+ * or on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagCheckedDoubleArray(TIFF *tif, uint32_t *ndir,
                                                    TIFFDirEntry *dir,
                                                    uint16_t tag, uint32_t count,
@@ -3108,6 +4543,30 @@ static int TIFFWriteDirectoryTagCheckedDoubleArray(TIFF *tif, uint32_t *ndir,
                                       count * 8, value));
 }
 
+/**
+ * @brief Account for or emit Ifd array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Writes count values as IFD. Sizing pass (dir NULL): adds any payload too
+ * large for the entry to td_dirdatasize_write and increments *ndir. Emission
+ * pass: inserts the entry in tag order and writes any out-of-line payload at
+ * tif_dataoff through TIFFWriteDirectoryTagData(). When the file byte order
+ * differs from the host (TIFF_SWAB), the emission pass byte-swaps value in
+ * place and does not restore it. A failed emission can leave dir shifted and
+ * payload bytes written without incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in,out] value Array of count uint32_t values; byte-swapped in place by
+ * the emission pass when TIFF_SWAB is set. Not accessed by the sizing pass.
+ * @return One on success; zero if count exceeds UINT32_MAX/4 (no diagnostic),
+ * or on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagCheckedIfdArray(TIFF *tif, uint32_t *ndir,
                                                 TIFFDirEntry *dir, uint16_t tag,
                                                 uint32_t count, uint32_t *value)
@@ -3125,6 +4584,31 @@ static int TIFFWriteDirectoryTagCheckedIfdArray(TIFF *tif, uint32_t *ndir,
                                       count * 4, value));
 }
 
+/**
+ * @brief Account for or emit Ifd8 array tag data.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Writes count values as IFD8. Requires BigTIFF, which is checked only by
+ * assert(). Sizing pass (dir NULL): adds any payload too large for the entry to
+ * td_dirdatasize_write and increments *ndir. Emission pass: inserts the entry
+ * in tag order and writes any out-of-line payload at tif_dataoff through
+ * TIFFWriteDirectoryTagData(). When the file byte order differs from the host
+ * (TIFF_SWAB), the emission pass byte-swaps value in place and does not restore
+ * it. A failed emission can leave dir shifted and payload bytes written without
+ * incrementing *ndir; nothing is rolled back.
+ *
+ * @param[in,out] tif Handle whose directory is being written.
+ * @param[in,out] ndir Running entry count; incremented by one when the entry is
+ * counted or inserted.
+ * @param[in,out] dir NULL for the sizing pass, or the tag-sorted entry array
+ * with room for one more entry after the first *ndir entries.
+ * @param[in] tag Tag number; must not already be present in dir.
+ * @param[in] count Number of elements in value.
+ * @param[in,out] value Array of count uint64_t values; byte-swapped in place by
+ * the emission pass when TIFF_SWAB is set. Not accessed by the sizing pass.
+ * @return One on success; zero if count exceeds UINT32_MAX/8 (no diagnostic),
+ * or on a size or I/O error during emission.
+ */
 static int TIFFWriteDirectoryTagCheckedIfd8Array(TIFF *tif, uint32_t *ndir,
                                                  TIFFDirEntry *dir,
                                                  uint16_t tag, uint32_t count,
@@ -3144,6 +4628,36 @@ static int TIFFWriteDirectoryTagCheckedIfd8Array(TIFF *tif, uint32_t *ndir,
                                       count * 8, value));
 }
 
+/**
+ * @brief Insert one sorted IFD entry and emit its raw payload.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Requires non-NULL dir with capacity and a unique tag; shifts existing
+ * entries before payload I/O. Copies inline bytes or writes external bytes
+ * at tif_dataoff, checks wrap/classic size and the external 2 GiB ceiling,
+ * and aligns the next payload offset. Caller supplies already
+ * encoded/file-order data; this helper only swaps the stored external
+ * offset. Does not allocate or take ownership. On failure dir may already
+ * be shifted/initialised and file bytes/position may change even though
+ * *ndir was not incremented. Diagnostics accompany detected size/seek/write
+ * failures; no rollback.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in,out] ndir Non-NULL populated-entry count, incremented only on
+ * successful completion.
+ * @param[in,out] dir Writable borrowed sorted entry array with one spare
+ * slot.
+ * @param[in] tag Unique on-disk tag number.
+ * @param[in] datatype File data-type code.
+ * @param[in] count File element count.
+ * @param[in] datalength Representable raw byte extent, consistent with file
+ * type/count.
+ * @param[in] data Readable borrowed file-order bytes; NULL is only
+ * appropriate for a zero/placeholder inline payload.
+ * @return One after insertion/payload completion, zero on detected size/I/O
+ * failure; prior insertion/file effects are retained.
+ */
 static int TIFFWriteDirectoryTagData(TIFF *tif, uint32_t *ndir,
                                      TIFFDirEntry *dir, uint16_t tag,
                                      uint16_t datatype, uint32_t count,
@@ -3229,6 +4743,26 @@ static int TIFFWriteDirectoryTagData(TIFF *tif, uint32_t *ndir,
 
 /*
  * Link the current directory into the directory chain for the file.
+ */
+/**
+ * @brief Link a new IFD at an even end-of-file offset.
+ * @ingroup libtiff_private_ifd_writing
+ *
+ * Patches the next pending SubIFD slot, the first-header pointer, or a
+ * main-chain terminal link, using cached last-offset information where
+ * available. Requires writable, seekable, consistent chain/SubIFD state.
+ * Updates current/last offsets, child-slot counters and cached main count;
+ * allocates no owned return. Traversal can seek/read and dispatch
+ * diagnostics, and is not general malformed-chain validation. Some seeks
+ * and narrowing on SubIFD paths are unchecked. Link writes precede
+ * directory content emission; failure does not restore file/cache state.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @return One after a link patch, zero on detected header/count/link I/O,
+ * BigTIFF count rejection, or IFD-loop/directory-count rejection by
+ * _TIFFCheckDirNumberAndOffset() during traversal; file may already be
+ * modified.
  */
 static int TIFFLinkDirectory(TIFF *tif)
 {

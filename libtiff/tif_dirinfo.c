@@ -27,6 +27,11 @@
  *
  * Core Directory Tag Support.
  */
+/**
+ * @file tif_dirinfo.c
+ * @brief Define directory schemas and implement field registration and queries.
+ */
+
 #include "tiffiop.h"
 #include <stdlib.h>
 
@@ -94,6 +99,15 @@ static const TIFFFieldArray gpsFieldArray;
  */
 
 /* clang-format off */ /* for better readability of tag comments */
+/**
+ * @brief Describe the built-in image fields and their argument representations.
+ * @ingroup libtiff_private_fields
+ *
+ * Static borrowed descriptors/names; registration stores pointers into this
+ * array. Entries encode file type, count rules, field bits, and set/get
+ * representation. Special built-in dispatch can override the generic
+ * argument shape.
+ */
 static const TIFFField tiffFields[] = {
     {TIFFTAG_SUBFILETYPE, 1, 1, TIFF_LONG, 0, TIFF_SETGET_UINT32, FIELD_SUBFILETYPE, 1, 0, "SubfileType", NULL},
     {TIFFTAG_OSUBFILETYPE, 1, 1, TIFF_SHORT, 0, TIFF_SETGET_UNDEFINED,  FIELD_IGNORE, 1, 0, "OldSubfileType", NULL},
@@ -377,6 +391,15 @@ static const TIFFField tiffFields[] = {
 /*
  * EXIF tags  (Version 2.31, July 2016 plus version 2.32 May 2019)
  */
+/**
+ * @brief Describe the built-in EXIF fields and their argument representations.
+ * @ingroup libtiff_private_fields
+ *
+ * Static borrowed descriptors/names; registration stores pointers into this
+ * array. Entries encode file type, count rules, field bits, and set/get
+ * representation. Special built-in dispatch can override the generic
+ * argument shape.
+ */
 static const TIFFField exifFields[] = {
     {EXIFTAG_EXPOSURETIME, 1, 1, TIFF_RATIONAL, 0, TIFF_SETGET_FLOAT,  FIELD_CUSTOM, 1, 0, "ExposureTime", NULL},
     {EXIFTAG_FNUMBER, 1, 1, TIFF_RATIONAL, 0, TIFF_SETGET_FLOAT,  FIELD_CUSTOM, 1, 0, "FNumber", NULL},
@@ -469,6 +492,15 @@ static const TIFFField exifFields[] = {
  * 2019)
  */
 
+/**
+ * @brief Describe the built-in GPS fields and their argument representations.
+ * @ingroup libtiff_private_fields
+ *
+ * Static borrowed descriptors/names; registration stores pointers into this
+ * array. Entries encode file type, count rules, field bits, and set/get
+ * representation. Special built-in dispatch can override the generic
+ * argument shape.
+ */
 static const TIFFField gpsFields[] = {
     /*  For the GPS tag definitions in gpsFields[] the standard definition for Rationals is TIFF_SETGET_DOUBLE and TIFF_SETGET_C0_FLOAT.
      *-- ATTENTION: After the upgrade with Rational2Double, the GPSTAG values can now be written and also read in double precision!
@@ -527,10 +559,31 @@ const TIFFFieldArray gpsFieldArray = {tfiatGps, 0, TIFFArrayCount(gpsFields),
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wc++-compat"
 #endif
+/**
+ * @brief Wrap the static image field schema.
+ * @ingroup libtiff_private_fields
+ *
+ * Borrowed immutable schema with zero allocated_size; do not release
+ * through dynamic field-array cleanup.
+ */
 static const TIFFFieldArray tiffFieldArray = {
     tfiatImage, 0, TIFFArrayCount(tiffFields), (TIFFField *)tiffFields};
+/**
+ * @brief Wrap the static EXIF field schema.
+ * @ingroup libtiff_private_fields
+ *
+ * Borrowed immutable schema with zero allocated_size; do not release
+ * through dynamic field-array cleanup.
+ */
 static const TIFFFieldArray exifFieldArray = {
     tfiatExif, 0, TIFFArrayCount(exifFields), (TIFFField *)exifFields};
+/**
+ * @brief Wrap the static GPS field schema.
+ * @ingroup libtiff_private_fields
+ *
+ * Borrowed immutable schema with zero allocated_size; do not release
+ * through dynamic field-array cleanup.
+ */
 static const TIFFFieldArray gpsFieldArray = {
     tfiatGps, 0, TIFFArrayCount(gpsFields), (TIFFField *)gpsFields};
 #if defined(__GNUC__) && !defined(__clang__)
@@ -545,6 +598,24 @@ static const TIFFFieldArray gpsFieldArray = {
  *  in types passed to lfind() on different systems.
  */
 
+/**
+ * @brief Find the first equal fixed-width element by linear search.
+ * @ingroup libtiff_private_fields
+ *
+ * Borrows the array and comparator; does not allocate or modify array
+ * storage/count. The comparator must return zero on equality and must not
+ * mutate/destroy the search storage. Caller ensures the extent product is
+ * representable.
+ *
+ * @param[in] key Borrowed comparator key.
+ * @param[in] base Readable contiguous storage for *nmemb elements.
+ * @param[in] nmemb Non-NULL element-count pointer; not changed.
+ * @param[in] size Positive element width in bytes.
+ * @param[in] compar Non-NULL comparator invoked synchronously with key and
+ * each element.
+ * @return Borrowed pointer into base, or NULL if absent; lifetime follows
+ * base.
+ */
 static void *td_lfind(const void *key, const void *base, size_t *nmemb,
                       size_t size, int (*compar)(const void *, const void *))
 {
@@ -597,6 +668,20 @@ void _TIFFSetupFields(TIFF *tif, const TIFFFieldArray *fieldarray)
     }
 }
 
+/**
+ * @brief Compare field pointers by tag number and reverse type order.
+ * @ingroup libtiff_private_fields
+ *
+ * TIFF_ANY in the left operand matches any type after the primary key
+ * matches. Borrows inputs without allocation or mutation; used for lookup
+ * and sorting.
+ *
+ * @param[in] a Pointer to a readable TIFFField pointer; left/key operand.
+ * @param[in] b Pointer to a readable TIFFField pointer; right/element
+ * operand.
+ * @return Negative, zero, or positive according to the ordering; zero means
+ * a match.
+ */
 static int tagCompare(const void *a, const void *b)
 {
     const TIFFField *ta = *(const TIFFField **)a;
@@ -610,6 +695,20 @@ static int tagCompare(const void *a, const void *b)
                    : ((int)tb->field_type - (int)ta->field_type);
 }
 
+/**
+ * @brief Compare field pointers by case-sensitive name and reverse type order.
+ * @ingroup libtiff_private_fields
+ *
+ * TIFF_ANY in the left operand matches any type after the primary key
+ * matches. Borrows inputs without allocation or mutation; used for lookup.
+ * Names must be non-NULL terminated strings.
+ *
+ * @param[in] a Pointer to a readable TIFFField pointer; left/key operand.
+ * @param[in] b Pointer to a readable TIFFField pointer; right/element
+ * operand.
+ * @return Negative, zero, or positive according to the ordering; zero means
+ * a match.
+ */
 static int tagNameCompare(const void *a, const void *b)
 {
     const TIFFField *ta = *(const TIFFField **)a;
@@ -902,6 +1001,22 @@ const TIFFField *TIFFFindField(TIFF *tif, uint32_t tag, TIFFDataType dt)
     return tif->tif_foundfield = (ret ? *ret : NULL);
 }
 
+/**
+ * @brief Find a registered descriptor by name and file type.
+ * @ingroup libtiff_private_fields
+ *
+ * The result is borrowed; do not free or modify it. Directory field-table
+ * replacement or handle cleanup can invalidate it, particularly for
+ * anonymous and legacy descriptors. Lookup updates the handle's field cache
+ * but does not register a missing tag. Uses a linear name search because
+ * the table is sorted by tag. No diagnostic is emitted.
+ *
+ * @param[in,out] tif Non-NULL live TIFF handle; accessed without internal
+ * locking.
+ * @param[in] field_name Non-NULL case-sensitive terminated name.
+ * @param[in] dt Required type, or TIFF_ANY.
+ * @return Borrowed matching descriptor or NULL.
+ */
 static const TIFFField *_TIFFFindFieldByName(TIFF *tif, const char *field_name,
                                              TIFFDataType dt)
 {
@@ -1086,6 +1201,22 @@ TIFFField *_TIFFCreateAnonField(TIFF *tif, uint32_t tag,
  * libtiff versions.
  ****************************************************************************/
 
+/**
+ * @brief Translate legacy type/count metadata into a set/get representation.
+ * @ingroup libtiff_private_fields
+ *
+ * Maps scalar, fixed/implicit arrays, C16, and C32 patterns without
+ * allocation or state changes. Legacy rationals use float storage; IFD
+ * types use IFD8 argument representation. This is a metadata mapping, not
+ * validation of all runtime tag exceptions.
+ *
+ * @param[in] type On-disk data type.
+ * @param[in] count Fixed count or TIFF_VARIABLE/TIFF_VARIABLE2/TIFF_SPP
+ * sentinel.
+ * @param[in] passcount One to pass a count; zero for an implicit count.
+ * @return Mapped representation, or TIFF_SETGET_UNDEFINED for unsupported
+ * combinations/types; no diagnostic.
+ */
 static TIFFSetGetFieldType _TIFFSetGetType(TIFFDataType type, short count,
                                            unsigned char passcount)
 {

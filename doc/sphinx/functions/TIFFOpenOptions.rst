@@ -44,6 +44,12 @@ opaque structure and returns a :c:type:`TIFFOpenOptions` pointer.
 can be released straight after successful execution of the related
 TIFFOpen"Ext" functions like :c:func:`TIFFOpenExt`.
 
+The settings are copied, but callback context pointers remain borrowed.
+Their storage must remain valid through the last invocation on the resulting
+handle, including close. Early opening errors may pass NULL as the callback's
+TIFF pointer. A nonzero diagnostic callback return suppresses legacy global
+handlers for that message; it does not change the operation's status.
+
 :c:func:`TIFFOpenOptionsSetMaxSingleMemAlloc` (added in libtiff 4.5.0) sets
 the value for the maximum single memory limit in byte that ``libtiff`` internal
 memory allocation functions are allowed to request per call.
@@ -56,6 +62,14 @@ memory allocation functions are allowed to request per call.
 :c:func:`TIFFOpenOptionsSetMaxCumulatedMemAlloc` (added in libtiff 4.6.1) sets
 the maximum cumulated memory allocations in byte, for a given TIFF handle,
 that ``libtiff`` internal memory allocation functions are allowed.
+
+This cumulative limit applies to allocations tracked by the handle-aware
+helpers, rather than total process memory. The initial TIFF handle/name
+allocation is checked separately and is not added to the subsequent tracked
+total. Mappings, caller storage, and other untracked allocations are not covered.
+Positive values enable checking; zero is the unlimited default. The setters
+store negative values without validation, and those values do not activate
+the positive-limit checks.
 
 .. note::
     However, the ``libtiff`` external functions :c:func:`_TIFFmalloc`

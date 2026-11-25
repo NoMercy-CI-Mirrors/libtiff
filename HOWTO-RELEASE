@@ -50,14 +50,14 @@ Notes on releasing.
      mv ChangeLog.new ChangeLog
      rm ChangeLog.added
 
-3. Create doc/releases/vX.X.rst and add it to git with 'git add doc/releases/vX.X.rst'.
-   Update doc/releases/index.rst to point to the new file
+3. Create doc/sphinx/releases/vX.X.rst and add it to git with 'git add doc/sphinx/releases/vX.X.rst'.
+   Update doc/sphinx/releases/index.rst to point to the new file
    Take ChangeLog entries and rst-ify in there.
-   Easiest thing to do is take doc/releases/vX.(X-1).rst and use it as a template.
+   Easiest thing to do is take doc/sphinx/releases/vX.(X-1).rst and use it as a template.
 
-4. Add vX.X.rst file to the list of 'rst_sources' files in the doc/Makefile.am.
+4. Add vX.X.rst file to the list of 'rst_sources' files in the doc/sphinx/Makefile.am.
 
-5. Update "Latest Stable Release" in doc/index.rst.
+5. Update "Latest Stable Release" in doc/sphinx/index.rst.
 
 6. Increment the release version in configure.ac.  Put 'alpha' or
    'beta' after the version, if applicable.  For example:

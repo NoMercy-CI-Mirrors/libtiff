@@ -34,35 +34,114 @@
  *   TIFFReadDirectory, so as to eliminate current possibly repetitive lookup.
  */
 
+/**
+ * @file tif_dirread.c
+ * @brief Read directory entries and manage directory-chain maps.
+ */
+
 #include "tiffconf.h"
+
 #include "tiffiop.h"
 #include <float.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
+/**
+ * @brief Represent a missing field-table index with UINT32_MAX.
+ * @ingroup libtiff_private_ifd_reading
+ */
 #define FAILED_FII ((uint32_t)-1)
 
 #ifdef HAVE_IEEEFP
+/**
+ * @brief Recognise already compatible float storage without conversion.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * With HAVE_IEEEFP defined this is a no-op macro: arguments are not
+ * evaluated and no state, ownership, I/O, diagnostics, or storage changes
+ * occur. Non-IEEE ports instead require the external platform hook with
+ * this name.
+ *
+ * @param[in] tif Ignored handle expression.
+ * @param[in] n Ignored element-count expression.
+ * @param[in,out] fp Ignored data-pointer expression; storage is unchanged.
+ */
 #define TIFFCvtIEEEFloatToNative(tif, n, fp)
+/**
+ * @brief Recognise already compatible double storage without conversion.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * With HAVE_IEEEFP defined this is a no-op macro: arguments are not
+ * evaluated and no state, ownership, I/O, diagnostics, or storage changes
+ * occur. Non-IEEE ports instead require the external platform hook with
+ * this name.
+ *
+ * @param[in] tif Ignored handle expression.
+ * @param[in] n Ignored element-count expression.
+ * @param[in,out] dp Ignored data-pointer expression; storage is unchanged.
+ */
 #define TIFFCvtIEEEDoubleToNative(tif, n, dp)
 #else
 /* If your machine does not support IEEE floating point then you will need to
  * add support to tif_machdep.c to convert between the native format and
  * IEEE format. */
-extern void TIFFCvtIEEEFloatToNative(TIFF *, uint32_t, float *);
-extern void TIFFCvtIEEEDoubleToNative(TIFF *, uint32_t, double *);
+/**
+ * @brief Convert float elements through a non-IEEE platform hook.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Only declared when HAVE_IEEEFP is absent; this source supplies no
+ * implementation. The port must convert the requested elements in place,
+ * keep storage borrowed, and provide any diagnostic/failure policy because
+ * the hook has no status result.
+ *
+ * @param[in,out] tif Borrowed live handle/context supplied by the caller.
+ * @param[in] n Number of readable/writable elements.
+ * @param[in,out] fp Borrowed array of n elements to convert in place.
+ */
+extern void TIFFCvtIEEEFloatToNative(TIFF *tif, uint32_t n, float *fp);
+/**
+ * @brief Convert double elements through a non-IEEE platform hook.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Only declared when HAVE_IEEEFP is absent; this source supplies no
+ * implementation. The port must convert the requested elements in place,
+ * keep storage borrowed, and provide any diagnostic/failure policy because
+ * the hook has no status result.
+ *
+ * @param[in,out] tif Borrowed live handle/context supplied by the caller.
+ * @param[in] n Number of readable/writable elements.
+ * @param[in,out] dp Borrowed array of n elements to convert in place.
+ */
+extern void TIFFCvtIEEEDoubleToNative(TIFF *tif, uint32_t n, double *dp);
 #endif
 
+/**
+ * @brief Classify directory-entry decoding failures.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Ok is zero; nonzero values distinguish malformed counts/types, I/O,
+ * range, per-sample inconsistency, size ceilings, and allocation failure.
+ * Most low-level converters return these for their caller to diagnose. The
+ * code alone does not guarantee unchanged outputs or handle state.
+ */
 enum TIFFReadDirEntryErr
 {
+    /** @brief Successful or accepted empty conversion. */
     TIFFReadDirEntryErrOk = 0,
+    /** @brief Unsupported or inconsistent element count. */
     TIFFReadDirEntryErrCount = 1,
+    /** @brief Unsupported source file data type. */
     TIFFReadDirEntryErrType = 2,
+    /** @brief Mapped extent, seek, or read failure. */
     TIFFReadDirEntryErrIo = 3,
+    /** @brief Value cannot be represented by the target integer type. */
     TIFFReadDirEntryErrRange = 4,
+    /** @brief Per-sample values differ where uniform values are required. */
     TIFFReadDirEntryErrPsdif = 5,
+    /** @brief Source or target array exceeds the configured sanity ceiling. */
     TIFFReadDirEntryErrSizesan = 6,
+    /** @brief Allocation, policy, or large-request/file-size rejection. */
     TIFFReadDirEntryErrAlloc = 7,
 };
 
@@ -267,18 +346,42 @@ static int _TIFFGetMaxColorChannels(uint16_t photometric);
 
 static int _TIFFFillStrilesInternal(TIFF *tif, int loadStripByteCount);
 
+/**
+ * @brief Provide aligned scalar and byte views of eight raw bytes.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Used for unaligned-safe copies and rational/component interpretation.
+ * Owns no separate storage; file-byte swapping is performed explicitly by
+ * each consumer.
+ */
 typedef union _UInt64Aligned_t
 {
+    /** @brief Native double view. */
     double d;
+    /** @brief Native uint64_t view. */
     uint64_t l;
+    /** @brief Two native 32-bit component views. */
     uint32_t i[2];
+    /** @brief Four native 16-bit component views. */
     uint16_t s[4];
+    /** @brief Eight raw octets in copied order. */
     uint8_t c[8];
 } UInt64Aligned_t;
 
 /*
   Unaligned safe copy of a uint64_t value from an octet array.
 */
+/**
+ * @brief Copy eight unaligned bytes into a native uint64_t value.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Does not swap file byte order, allocate, validate the buffer extent, or
+ * transfer ownership; no handle state or diagnostics.
+ *
+ * @param[in] value Borrowed readable buffer of at least eight bytes; no
+ * alignment required.
+ * @return Native-order interpretation of the copied eight bytes.
+ */
 static uint64_t TIFFReadUInt64(const uint8_t *value)
 {
     UInt64Aligned_t result;
@@ -295,6 +398,30 @@ static uint64_t TIFFReadUInt64(const uint8_t *value)
     return result.l;
 }
 
+/**
+ * @brief Convert one directory value to uint8_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Requires count exactly one. Accepts TIFF_BYTE, TIFF_UNDEFINED, TIFF_SBYTE,
+ * TIFF_SHORT, TIFF_SSHORT, TIFF_LONG, TIFF_SLONG, TIFF_LONG8, TIFF_SLONG8.
+ * TIFF_BYTE and TIFF_UNDEFINED are copied; every other type is rejected with
+ * TIFFReadDirEntryErrRange unless the value is in 0..UINT8_MAX. TIFF_LONG8 and
+ * TIFF_SLONG8 values are read from the file at the entry offset in classic TIFF
+ * (seeking unless memory-mapped) and from the inline entry bytes in BigTIFF;
+ * all other accepted types are inline. Performs no allocation and emits no
+ * diagnostics itself; errors are returned for the caller to report. *value is
+ * written only on success, except that an I/O failure can leave it partially
+ * written when it is the read destination.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL caller-owned scalar slot; valid only on
+ * TIFFReadDirEntryErrOk.
+ * @return TIFFReadDirEntryErrOk on conversion, or the specific
+ * count/type/range/I/O error; no owned output.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryByte(TIFF *tif, TIFFDirEntry *direntry, uint8_t *value)
 {
@@ -387,6 +514,30 @@ TIFFReadDirEntryByte(TIFF *tif, TIFFDirEntry *direntry, uint8_t *value)
     }
 }
 
+/**
+ * @brief Convert one directory value to int8_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Requires count exactly one. Accepts TIFF_BYTE, TIFF_UNDEFINED, TIFF_SBYTE,
+ * TIFF_SHORT, TIFF_SSHORT, TIFF_LONG, TIFF_SLONG, TIFF_LONG8, TIFF_SLONG8.
+ * TIFF_SBYTE is copied; every other type is rejected with
+ * TIFFReadDirEntryErrRange unless the value is in INT8_MIN..INT8_MAX.
+ * TIFF_LONG8 and TIFF_SLONG8 values are read from the file at the entry offset
+ * in classic TIFF (seeking unless memory-mapped) and from the inline entry
+ * bytes in BigTIFF; all other accepted types are inline. Performs no allocation
+ * and emits no diagnostics itself; errors are returned for the caller to
+ * report. *value is written only on success, except that an I/O failure can
+ * leave it partially written when it is the read destination.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL caller-owned scalar slot; valid only on
+ * TIFFReadDirEntryErrOk.
+ * @return TIFFReadDirEntryErrOk on conversion, or the specific
+ * count/type/range/I/O error; no owned output.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntrySbyte(TIFF *tif, TIFFDirEntry *direntry, int8_t *value)
 {
@@ -481,6 +632,30 @@ TIFFReadDirEntrySbyte(TIFF *tif, TIFFDirEntry *direntry, int8_t *value)
     }
 } /*-- TIFFReadDirEntrySbyte() --*/
 
+/**
+ * @brief Convert one directory value to uint16_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Requires count exactly one. Accepts TIFF_BYTE, TIFF_SBYTE, TIFF_SHORT,
+ * TIFF_SSHORT, TIFF_LONG, TIFF_SLONG, TIFF_LONG8, TIFF_SLONG8. TIFF_SHORT is
+ * copied and TIFF_BYTE widened; the other types are rejected with
+ * TIFFReadDirEntryErrRange unless the value is in 0..UINT16_MAX. TIFF_LONG8 and
+ * TIFF_SLONG8 values are read from the file at the entry offset in classic TIFF
+ * (seeking unless memory-mapped) and from the inline entry bytes in BigTIFF;
+ * all other accepted types are inline. Performs no allocation and emits no
+ * diagnostics itself; errors are returned for the caller to report. *value is
+ * written only on success, except that an I/O failure can leave it partially
+ * written when it is the read destination.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL caller-owned scalar slot; valid only on
+ * TIFFReadDirEntryErrOk.
+ * @return TIFFReadDirEntryErrOk on conversion, or the specific
+ * count/type/range/I/O error; no owned output.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryShort(TIFF *tif, TIFFDirEntry *direntry, uint16_t *value)
 {
@@ -568,6 +743,30 @@ TIFFReadDirEntryShort(TIFF *tif, TIFFDirEntry *direntry, uint16_t *value)
     }
 } /*-- TIFFReadDirEntryShort() --*/
 
+/**
+ * @brief Convert one directory value to int16_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Requires count exactly one. Accepts TIFF_BYTE, TIFF_SBYTE, TIFF_SHORT,
+ * TIFF_SSHORT, TIFF_LONG, TIFF_SLONG, TIFF_LONG8, TIFF_SLONG8. TIFF_SSHORT is
+ * copied and TIFF_BYTE/TIFF_SBYTE widened; the other types are rejected with
+ * TIFFReadDirEntryErrRange unless the value is in INT16_MIN..INT16_MAX.
+ * TIFF_LONG8 and TIFF_SLONG8 values are read from the file at the entry offset
+ * in classic TIFF (seeking unless memory-mapped) and from the inline entry
+ * bytes in BigTIFF; all other accepted types are inline. Performs no allocation
+ * and emits no diagnostics itself; errors are returned for the caller to
+ * report. *value is written only on success, except that an I/O failure can
+ * leave it partially written when it is the read destination.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL caller-owned scalar slot; valid only on
+ * TIFFReadDirEntryErrOk.
+ * @return TIFFReadDirEntryErrOk on conversion, or the specific
+ * count/type/range/I/O error; no owned output.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntrySshort(TIFF *tif, TIFFDirEntry *direntry, int16_t *value)
 {
@@ -652,6 +851,31 @@ TIFFReadDirEntrySshort(TIFF *tif, TIFFDirEntry *direntry, int16_t *value)
     }
 } /*-- TIFFReadDirEntrySshort() --*/
 
+/**
+ * @brief Convert one directory value to uint32_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Requires count exactly one. Accepts TIFF_BYTE, TIFF_SBYTE, TIFF_SHORT,
+ * TIFF_SSHORT, TIFF_LONG, TIFF_IFD, TIFF_SLONG, TIFF_LONG8, TIFF_IFD8,
+ * TIFF_SLONG8. TIFF_LONG/TIFF_IFD are copied and TIFF_BYTE/TIFF_SHORT widened;
+ * the other types are rejected with TIFFReadDirEntryErrRange unless the value
+ * is in 0..UINT32_MAX. TIFF_LONG8, TIFF_IFD8 and TIFF_SLONG8 values are read
+ * from the file at the entry offset in classic TIFF (seeking unless
+ * memory-mapped) and from the inline entry bytes in BigTIFF; all other accepted
+ * types are inline. Performs no allocation and emits no diagnostics itself;
+ * errors are returned for the caller to report. *value is written only on
+ * success, except that an I/O failure can leave it partially written when it is
+ * the read destination.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL caller-owned scalar slot; valid only on
+ * TIFFReadDirEntryErrOk.
+ * @return TIFFReadDirEntryErrOk on conversion, or the specific
+ * count/type/range/I/O error; no owned output.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryLong(TIFF *tif, TIFFDirEntry *direntry, uint32_t *value)
 {
@@ -738,6 +962,30 @@ TIFFReadDirEntryLong(TIFF *tif, TIFFDirEntry *direntry, uint32_t *value)
     }
 } /*-- TIFFReadDirEntryLong() --*/
 
+/**
+ * @brief Convert one directory value to int32_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Requires count exactly one. Accepts TIFF_BYTE, TIFF_SBYTE, TIFF_SHORT,
+ * TIFF_SSHORT, TIFF_LONG, TIFF_SLONG, TIFF_LONG8, TIFF_SLONG8. TIFF_SLONG is
+ * copied and the 8- and 16-bit types widened; TIFF_LONG, TIFF_LONG8 and
+ * TIFF_SLONG8 are rejected with TIFFReadDirEntryErrRange unless the value is in
+ * INT32_MIN..INT32_MAX. TIFF_LONG8 and TIFF_SLONG8 values are read from the
+ * file at the entry offset in classic TIFF (seeking unless memory-mapped) and
+ * from the inline entry bytes in BigTIFF; all other accepted types are inline.
+ * Performs no allocation and emits no diagnostics itself; errors are returned
+ * for the caller to report. *value is written only on success, except that an
+ * I/O failure can leave it partially written when it is the read destination.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL caller-owned scalar slot; valid only on
+ * TIFFReadDirEntryErrOk.
+ * @return TIFFReadDirEntryErrOk on conversion, or the specific
+ * count/type/range/I/O error; no owned output.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntrySlong(TIFF *tif, TIFFDirEntry *direntry, int32_t *value)
 {
@@ -816,6 +1064,31 @@ TIFFReadDirEntrySlong(TIFF *tif, TIFFDirEntry *direntry, int32_t *value)
     }
 } /*-- TIFFReadDirEntrySlong() --*/
 
+/**
+ * @brief Convert one directory value to uint64_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Requires count exactly one. Accepts TIFF_BYTE, TIFF_SBYTE, TIFF_SHORT,
+ * TIFF_SSHORT, TIFF_LONG, TIFF_IFD, TIFF_SLONG, TIFF_LONG8, TIFF_IFD8,
+ * TIFF_SLONG8. TIFF_LONG8/TIFF_IFD8 are copied and the unsigned types widened;
+ * negative TIFF_SBYTE, TIFF_SSHORT, TIFF_SLONG and TIFF_SLONG8 values are
+ * rejected with TIFFReadDirEntryErrRange. TIFF_LONG8, TIFF_IFD8 and TIFF_SLONG8
+ * values are read from the file at the entry offset in classic TIFF (seeking
+ * unless memory-mapped) and from the inline entry bytes in BigTIFF; all other
+ * accepted types are inline. Performs no allocation and emits no diagnostics
+ * itself; errors are returned for the caller to report. *value is written only
+ * on success, except that an I/O failure can leave it partially written when it
+ * is the read destination.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL caller-owned scalar slot; valid only on
+ * TIFFReadDirEntryErrOk.
+ * @return TIFFReadDirEntryErrOk on conversion, or the specific
+ * count/type/range/I/O error; no owned output.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryLong8(TIFF *tif, TIFFDirEntry *direntry, uint64_t *value)
 {
@@ -897,6 +1170,30 @@ TIFFReadDirEntryLong8(TIFF *tif, TIFFDirEntry *direntry, uint64_t *value)
     }
 } /*-- TIFFReadDirEntryLong8() --*/
 
+/**
+ * @brief Convert one directory value to int64_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Requires count exactly one. Accepts TIFF_BYTE, TIFF_SBYTE, TIFF_SHORT,
+ * TIFF_SSHORT, TIFF_LONG, TIFF_SLONG, TIFF_LONG8, TIFF_SLONG8. TIFF_SLONG8 is
+ * copied and the 8- to 32-bit types widened; TIFF_LONG8 values above INT64_MAX
+ * are rejected with TIFFReadDirEntryErrRange. TIFF_LONG8 and TIFF_SLONG8 values
+ * are read from the file at the entry offset in classic TIFF (seeking unless
+ * memory-mapped) and from the inline entry bytes in BigTIFF; all other accepted
+ * types are inline. Performs no allocation and emits no diagnostics itself;
+ * errors are returned for the caller to report. *value is written only on
+ * success, except that an I/O failure can leave it partially written when it is
+ * the read destination.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL caller-owned scalar slot; valid only on
+ * TIFFReadDirEntryErrOk.
+ * @return TIFFReadDirEntryErrOk on conversion, or the specific
+ * count/type/range/I/O error; no owned output.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntrySlong8(TIFF *tif, TIFFDirEntry *direntry, int64_t *value)
 {
@@ -967,6 +1264,34 @@ TIFFReadDirEntrySlong8(TIFF *tif, TIFFDirEntry *direntry, int64_t *value)
     }
 } /*-- TIFFReadDirEntrySlong8() --*/
 
+/**
+ * @brief Convert one directory value to float.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Requires count exactly one. Accepts TIFF_BYTE, TIFF_SBYTE, TIFF_SHORT,
+ * TIFF_SSHORT, TIFF_LONG, TIFF_SLONG, TIFF_LONG8, TIFF_SLONG8, TIFF_RATIONAL,
+ * TIFF_SRATIONAL, TIFF_FLOAT, TIFF_DOUBLE. TIFF_FLOAT is copied. Integer
+ * sources are converted with a C cast and may lose precision. Rationals are
+ * divided in double precision and then cast; a zero denominator gives zero, and
+ * SRATIONAL uses a signed numerator over an unsigned denominator. A TIFF_DOUBLE
+ * outside +/-FLT_MAX returns TIFFReadDirEntryErrRange; NaN and in-range values
+ * are cast. TIFF_LONG8, TIFF_SLONG8, TIFF_RATIONAL, TIFF_SRATIONAL and
+ * TIFF_DOUBLE values are read from the file at the entry offset in classic TIFF
+ * (seeking unless memory-mapped) and from the inline entry bytes in BigTIFF;
+ * all other accepted types are inline. Performs no allocation and emits no
+ * diagnostics itself; errors are returned for the caller to report. *value is
+ * written only on success, except that an I/O failure can leave it partially
+ * written when it is the read destination.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL caller-owned scalar slot; valid only on
+ * TIFFReadDirEntryErrOk.
+ * @return TIFFReadDirEntryErrOk on conversion, or the specific
+ * count/type/range/I/O error; no owned output.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryFloat(TIFF *tif, TIFFDirEntry *direntry, float *value)
 {
@@ -1072,6 +1397,34 @@ TIFFReadDirEntryFloat(TIFF *tif, TIFFDirEntry *direntry, float *value)
     }
 }
 
+/**
+ * @brief Convert one directory value to double.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Requires count exactly one. Accepts TIFF_BYTE, TIFF_SBYTE, TIFF_SHORT,
+ * TIFF_SSHORT, TIFF_LONG, TIFF_SLONG, TIFF_LONG8, TIFF_SLONG8, TIFF_RATIONAL,
+ * TIFF_SRATIONAL, TIFF_FLOAT, TIFF_DOUBLE. TIFF_DOUBLE is copied and TIFF_FLOAT
+ * and the 8- to 32-bit integer types convert exactly; TIFF_LONG8/TIFF_SLONG8
+ * magnitudes above 2^53 may lose precision. Rationals are divided in double
+ * precision; a zero denominator gives zero, and SRATIONAL uses a signed
+ * numerator over an unsigned denominator. No range errors are returned.
+ * TIFF_LONG8, TIFF_SLONG8, TIFF_RATIONAL, TIFF_SRATIONAL and TIFF_DOUBLE values
+ * are read from the file at the entry offset in classic TIFF (seeking unless
+ * memory-mapped) and from the inline entry bytes in BigTIFF; all other accepted
+ * types are inline. Performs no allocation and emits no diagnostics itself;
+ * errors are returned for the caller to report. *value is written only on
+ * success, except that an I/O failure can leave it partially written when it is
+ * the read destination.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL caller-owned scalar slot; valid only on
+ * TIFFReadDirEntryErrOk.
+ * @return TIFFReadDirEntryErrOk on conversion, or the specific
+ * count/type/I/O error; no owned output.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryDouble(TIFF *tif, TIFFDirEntry *direntry, double *value)
 {
@@ -1161,6 +1514,29 @@ TIFFReadDirEntryDouble(TIFF *tif, TIFFDirEntry *direntry, double *value)
     }
 }
 
+/**
+ * @brief Convert one directory value to uint64_t directory offset.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Requires count exactly one. Accepts TIFF_LONG, TIFF_IFD, TIFF_LONG8,
+ * TIFF_IFD8. TIFF_LONG/TIFF_IFD values are widened and TIFF_LONG8/TIFF_IFD8 are
+ * copied; no range checks apply. TIFF_LONG8 and TIFF_IFD8 values are read from
+ * the file at the entry offset in classic TIFF (seeking unless memory-mapped)
+ * and from the inline entry bytes in BigTIFF; all other accepted types are
+ * inline. Performs no allocation and emits no diagnostics itself; errors are
+ * returned for the caller to report. *value is written only on success, except
+ * that an I/O failure can leave it partially written when it is the read
+ * destination.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL caller-owned scalar slot; valid only on
+ * TIFFReadDirEntryErrOk.
+ * @return TIFFReadDirEntryErrOk on conversion, or the specific
+ * count/type/I/O error; no owned output.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryIfd8(TIFF *tif, TIFFDirEntry *direntry, uint64_t *value)
 {
@@ -1186,12 +1562,49 @@ TIFFReadDirEntryIfd8(TIFF *tif, TIFFDirEntry *direntry, uint64_t *value)
     }
 }
 
+/**
+ * @brief Start progressive external-tag reads at one MiB on 64-bit hosts.
+ * @ingroup libtiff_private_ifd_reading
+ */
 #define INITIAL_THRESHOLD (1024 * 1024)
+/**
+ * @brief Grow progressive read requests by a factor of ten.
+ * @ingroup libtiff_private_ifd_reading
+ */
 #define THRESHOLD_MULTIPLIER 10
+/**
+ * @brief Set the progressive read threshold cutoff to 1000 MiB.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Later reads can request the entire remaining value; this is not a
+ * maximum request size.
+ */
 #define MAX_THRESHOLD                                                          \
     (THRESHOLD_MULTIPLIER * THRESHOLD_MULTIPLIER * THRESHOLD_MULTIPLIER *      \
      INITIAL_THRESHOLD)
 
+/**
+ * @brief Grow an owned buffer while reading an external value.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Requires non-mapped I/O and a NULL or matching Ext allocation slot. Seeks
+ * to offset, then reallocates and reads progressively (1 MiB, factor ten
+ * growth on 64-bit hosts); 32-bit hosts request the full size. Updates
+ * *pdest after each successful realloc. On allocation/read failure retains
+ * the latest allocation and partial contents for the caller to release with
+ * _TIFFfreeExt(); old addresses can already be invalidated. Does not
+ * restore file position. Allocation failure is diagnosed; seek/read errors
+ * return codes without a direct helper diagnostic.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] offset Start offset in file bytes.
+ * @param[in] size Positive representable requested byte count.
+ * @param[in,out] pdest Non-NULL owner slot; caller retains responsibility
+ * for the latest pointer on all exits.
+ * @return TIFFReadDirEntryErrOk when all bytes read, ErrAlloc or ErrIo
+ * otherwise; no rollback.
+ */
 static enum TIFFReadDirEntryErr TIFFReadDirEntryDataAndRealloc(TIFF *tif,
                                                                uint64_t offset,
                                                                tmsize_t size,
@@ -1254,8 +1667,42 @@ static enum TIFFReadDirEntryErr TIFFReadDirEntryDataAndRealloc(TIFF *tif,
 
 /* Caution: if raising that value, make sure int32 / uint32 overflows can't
  * occur elsewhere */
+/**
+ * @brief Limit source and converted tag arrays to INT32_MAX bytes.
+ * @ingroup libtiff_private_ifd_reading
+ */
 #define MAX_SIZE_TAG_DATA 2147483647U
 
+/**
+ * @brief Fetch raw directory array bytes with checked size limits.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Copies bytes without element swapping/conversion, preserving the original
+ * entry. Applies the MAX_SIZE_TAG_DATA ceiling to source and destination
+ * element products and large-request/file-size checks. Uses inline bytes or
+ * external I/O; may allocate progressively. Empty/unknown-width data succeeds
+ * with *value NULL without setting count. Successful nonempty storage belongs
+ * to the caller and must be freed with _TIFFfreeExt(tif,...); supply no prior
+ * owned allocation. Temporary data is freed on detected read failure. May seek
+ * and read when not memory-mapped. The oversized-request check warns and
+ * allocation failures are diagnosed; other errors are only returned.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] count Non-NULL element-count slot; assigned before some later
+ * failures, and not assigned on the zero/unknown-width success path.
+ * @param[in] desttypesize Positive intended output element width used for
+ * the size ceiling, not conversion.
+ * @param[out] value Non-NULL empty owner slot; success supplies a new
+ * matching Ext allocation or NULL; errors do not uniformly initialise it.
+ * @param[in] maxcount Maximum elements to fetch; original count still
+ * determines inline/external placement.
+ * @return TIFFReadDirEntryErrOk for fetched or empty/unknown-width data,
+ * otherwise a size/allocation/I/O code; output count is valid only for
+ * nonempty success.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryArrayWithLimit(TIFF *tif, TIFFDirEntry *direntry,
                                uint32_t *count, uint32_t desttypesize,
@@ -1384,6 +1831,35 @@ TIFFReadDirEntryArrayWithLimit(TIFF *tif, TIFFDirEntry *direntry,
     return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Fetch raw directory array bytes with checked size limits.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Copies bytes without element swapping/conversion, preserving the original
+ * entry. Applies the MAX_SIZE_TAG_DATA ceiling to source and destination
+ * element products and large-request/file-size checks. Uses inline bytes or
+ * external I/O; may allocate progressively. Empty/unknown-width data succeeds
+ * with *value NULL without setting count. Successful nonempty storage belongs
+ * to the caller and must be freed with _TIFFfreeExt(tif,...); supply no prior
+ * owned allocation. Temporary data is freed on detected read failure. Delegates
+ * to the limited variant with UINT64_MAX maximum. May seek and read when not
+ * memory-mapped. The oversized-request check warns and allocation failures are
+ * diagnosed; other errors are only returned.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] count Non-NULL element-count slot; assigned before some later
+ * failures, and not assigned on the zero/unknown-width success path.
+ * @param[in] desttypesize Positive intended output element width used for
+ * the size ceiling, not conversion.
+ * @param[out] value Non-NULL empty owner slot; success supplies a new
+ * matching Ext allocation or NULL; errors do not uniformly initialise it.
+ * @return TIFFReadDirEntryErrOk for fetched or empty/unknown-width data,
+ * otherwise a size/allocation/I/O code; output count is valid only for
+ * nonempty success.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryArray(TIFF *tif, TIFFDirEntry *direntry, uint32_t *count,
                       uint32_t desttypesize, void **value)
@@ -1392,6 +1868,33 @@ TIFFReadDirEntryArray(TIFF *tif, TIFFDirEntry *direntry, uint32_t *count,
                                           value, ~((uint64_t)0));
 }
 
+/**
+ * @brief Read a directory array as uint8_t elements.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Accepts TIFF_ASCII, TIFF_UNDEFINED, TIFF_BYTE, TIFF_SBYTE, TIFF_SHORT,
+ * TIFF_SSHORT, TIFF_LONG, TIFF_SLONG, TIFF_LONG8, TIFF_SLONG8. Fetches the raw
+ * elements with TIFFReadDirEntryArray() (inline bytes, or file data that may be
+ * sought and read when not memory-mapped) and swaps them to host order.
+ * TIFF_ASCII, TIFF_UNDEFINED and TIFF_BYTE are returned as fetched; TIFF_SBYTE
+ * is range-checked in place. Wider types are converted into a new array. Any
+ * element outside 0..UINT8_MAX fails with TIFFReadDirEntryErrRange. On success
+ * *value receives a new allocation owned by the caller and released with
+ * _TIFFfreeExt(); a zero count succeeds with *value NULL. An existing
+ * allocation in *value is not freed. *value is set to NULL when the raw fetch
+ * fails; type, allocation and range errors leave it unchanged. Temporary
+ * buffers are freed on every error path. The oversized-request check and
+ * allocation failures emit diagnostics; other errors are only returned.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL empty owner slot for the new element array;
+ * valid only on success.
+ * @return TIFFReadDirEntryErrOk for a converted/empty array, or a type,
+ * range, size, allocation, or I/O error; only success transfers ownership.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryByteArray(TIFF *tif, TIFFDirEntry *direntry, uint8_t **value)
 {
@@ -1578,6 +2081,33 @@ TIFFReadDirEntryByteArray(TIFF *tif, TIFFDirEntry *direntry, uint8_t **value)
     return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Read a directory array as int8_t elements.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Accepts TIFF_UNDEFINED, TIFF_BYTE, TIFF_SBYTE, TIFF_SHORT, TIFF_SSHORT,
+ * TIFF_LONG, TIFF_SLONG, TIFF_LONG8, TIFF_SLONG8. Fetches the raw elements with
+ * TIFFReadDirEntryArray() (inline bytes, or file data that may be sought and
+ * read when not memory-mapped) and swaps them to host order. TIFF_SBYTE is
+ * returned as fetched; TIFF_UNDEFINED and TIFF_BYTE are range-checked in place.
+ * Wider types are converted into a new array. Any element outside
+ * INT8_MIN..INT8_MAX fails with TIFFReadDirEntryErrRange. On success *value
+ * receives a new allocation owned by the caller and released with
+ * _TIFFfreeExt(); a zero count succeeds with *value NULL. An existing
+ * allocation in *value is not freed. *value is set to NULL when the raw fetch
+ * fails; type, allocation and range errors leave it unchanged. Temporary
+ * buffers are freed on every error path. The oversized-request check and
+ * allocation failures emit diagnostics; other errors are only returned.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL empty owner slot for the new element array;
+ * valid only on success.
+ * @return TIFFReadDirEntryErrOk for a converted/empty array, or a type,
+ * range, size, allocation, or I/O error; only success transfers ownership.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntrySbyteArray(TIFF *tif, TIFFDirEntry *direntry, int8_t **value)
 {
@@ -1762,6 +2292,33 @@ TIFFReadDirEntrySbyteArray(TIFF *tif, TIFFDirEntry *direntry, int8_t **value)
     return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Read a directory array as uint16_t elements.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Accepts TIFF_BYTE, TIFF_SBYTE, TIFF_SHORT, TIFF_SSHORT, TIFF_LONG,
+ * TIFF_SLONG, TIFF_LONG8, TIFF_SLONG8. Fetches the raw elements with
+ * TIFFReadDirEntryArray() (inline bytes, or file data that may be sought and
+ * read when not memory-mapped) and swaps them to host order. TIFF_SHORT is
+ * returned as fetched; TIFF_SSHORT is range-checked in place. Other types are
+ * converted into a new array: TIFF_BYTE is widened, and any other element
+ * outside 0..UINT16_MAX fails with TIFFReadDirEntryErrRange. On success *value
+ * receives a new allocation owned by the caller and released with
+ * _TIFFfreeExt(); a zero count succeeds with *value NULL. An existing
+ * allocation in *value is not freed. *value is set to NULL when the raw fetch
+ * fails; type, allocation and range errors leave it unchanged. Temporary
+ * buffers are freed on every error path. The oversized-request check and
+ * allocation failures emit diagnostics; other errors are only returned.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL empty owner slot for the new element array;
+ * valid only on success.
+ * @return TIFFReadDirEntryErrOk for a converted/empty array, or a type,
+ * range, size, allocation, or I/O error; only success transfers ownership.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryShortArray(TIFF *tif, TIFFDirEntry *direntry, uint16_t **value)
 {
@@ -1940,6 +2497,34 @@ TIFFReadDirEntryShortArray(TIFF *tif, TIFFDirEntry *direntry, uint16_t **value)
     return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Read a directory array as int16_t elements.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Accepts TIFF_BYTE, TIFF_SBYTE, TIFF_SHORT, TIFF_SSHORT, TIFF_LONG,
+ * TIFF_SLONG, TIFF_LONG8, TIFF_SLONG8. Fetches the raw elements with
+ * TIFFReadDirEntryArray() (inline bytes, or file data that may be sought and
+ * read when not memory-mapped) and swaps them to host order. TIFF_SSHORT is
+ * returned as fetched; TIFF_SHORT is range-checked in place. Other types are
+ * converted into a new array: TIFF_BYTE and TIFF_SBYTE are widened, and any
+ * other element outside INT16_MIN..INT16_MAX fails with
+ * TIFFReadDirEntryErrRange. On success *value receives a new allocation owned
+ * by the caller and released with _TIFFfreeExt(); a zero count succeeds with
+ * *value NULL. An existing allocation in *value is not freed. *value is set to
+ * NULL when the raw fetch fails; type, allocation and range errors leave it
+ * unchanged. Temporary buffers are freed on every error path. The
+ * oversized-request check and allocation failures emit diagnostics; other
+ * errors are only returned.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL empty owner slot for the new element array;
+ * valid only on success.
+ * @return TIFFReadDirEntryErrOk for a converted/empty array, or a type,
+ * range, size, allocation, or I/O error; only success transfers ownership.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntrySshortArray(TIFF *tif, TIFFDirEntry *direntry, int16_t **value)
 {
@@ -2113,6 +2698,34 @@ TIFFReadDirEntrySshortArray(TIFF *tif, TIFFDirEntry *direntry, int16_t **value)
     return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Read a directory array as uint32_t elements.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Accepts TIFF_BYTE, TIFF_SBYTE, TIFF_SHORT, TIFF_SSHORT, TIFF_LONG,
+ * TIFF_SLONG, TIFF_LONG8, TIFF_SLONG8, TIFF_IFD, TIFF_IFD8. Fetches the raw
+ * elements with TIFFReadDirEntryArray() (inline bytes, or file data that may be
+ * sought and read when not memory-mapped) and swaps them to host order.
+ * TIFF_LONG and TIFF_IFD are returned as fetched; TIFF_SLONG is range-checked
+ * in place. Other types are converted into a new array: TIFF_BYTE and
+ * TIFF_SHORT are widened, and any other element outside 0..UINT32_MAX fails
+ * with TIFFReadDirEntryErrRange. On success *value receives a new allocation
+ * owned by the caller and released with _TIFFfreeExt(); a zero count succeeds
+ * with *value NULL. An existing allocation in *value is not freed. *value is
+ * set to NULL when the raw fetch fails; type, allocation and range errors leave
+ * it unchanged. Temporary buffers are freed on every error path. The
+ * oversized-request check and allocation failures emit diagnostics; other
+ * errors are only returned.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL empty owner slot for the new element array;
+ * valid only on success.
+ * @return TIFFReadDirEntryErrOk for a converted/empty array, or a type,
+ * range, size, allocation, or I/O error; only success transfers ownership.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryLongArray(TIFF *tif, TIFFDirEntry *direntry, uint32_t **value)
 {
@@ -2292,6 +2905,34 @@ TIFFReadDirEntryLongArray(TIFF *tif, TIFFDirEntry *direntry, uint32_t **value)
     return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Read a directory array as int32_t elements.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Accepts TIFF_BYTE, TIFF_SBYTE, TIFF_SHORT, TIFF_SSHORT, TIFF_LONG,
+ * TIFF_SLONG, TIFF_LONG8, TIFF_SLONG8. Fetches the raw elements with
+ * TIFFReadDirEntryArray() (inline bytes, or file data that may be sought and
+ * read when not memory-mapped) and swaps them to host order. TIFF_SLONG is
+ * returned as fetched; TIFF_LONG is range-checked in place. Other types are
+ * converted into a new array: the 8- and 16-bit types are widened, and
+ * TIFF_LONG8/TIFF_SLONG8 elements outside INT32_MIN..INT32_MAX fail with
+ * TIFFReadDirEntryErrRange. On success *value receives a new allocation owned
+ * by the caller and released with _TIFFfreeExt(); a zero count succeeds with
+ * *value NULL. An existing allocation in *value is not freed. *value is set to
+ * NULL when the raw fetch fails; type, allocation and range errors leave it
+ * unchanged. Temporary buffers are freed on every error path. The
+ * oversized-request check and allocation failures emit diagnostics; other
+ * errors are only returned.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL empty owner slot for the new element array;
+ * valid only on success.
+ * @return TIFFReadDirEntryErrOk for a converted/empty array, or a type,
+ * range, size, allocation, or I/O error; only success transfers ownership.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntrySlongArray(TIFF *tif, TIFFDirEntry *direntry, int32_t **value)
 {
@@ -2459,6 +3100,37 @@ TIFFReadDirEntrySlongArray(TIFF *tif, TIFFDirEntry *direntry, int32_t **value)
     return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Read a directory array as uint64_t elements.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Accepts TIFF_BYTE, TIFF_SBYTE, TIFF_SHORT, TIFF_SSHORT, TIFF_LONG,
+ * TIFF_SLONG, TIFF_LONG8, TIFF_SLONG8, TIFF_IFD, TIFF_IFD8. Reads at most
+ * maxcount elements. Fetches the raw elements with
+ * TIFFReadDirEntryArrayWithLimit() (inline bytes, or file data that may be
+ * sought and read when not memory-mapped) and swaps them to host order.
+ * TIFF_LONG8 and TIFF_IFD8 are returned as fetched; TIFF_SLONG8 is
+ * range-checked in place. Other types are converted into a new array: the
+ * unsigned types are widened, and a negative signed element fails with
+ * TIFFReadDirEntryErrRange. On success *value receives a new allocation owned
+ * by the caller and released with _TIFFfreeExt(); a zero count succeeds with
+ * *value NULL. An existing allocation in *value is not freed. *value is set to
+ * NULL when the raw fetch fails; type, allocation and range errors leave it
+ * unchanged. Temporary buffers are freed on every error path. The
+ * oversized-request check and allocation failures emit diagnostics; other
+ * errors are only returned.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL empty owner slot for the new element array;
+ * valid only on success.
+ * @param[in] maxcount Maximum elements to read/convert; preserves
+ * inline-versus-external placement from the original count.
+ * @return TIFFReadDirEntryErrOk for a converted/empty array, or a type,
+ * range, size, allocation, or I/O error; only success transfers ownership.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryLong8ArrayWithLimit(TIFF *tif, TIFFDirEntry *direntry,
                                     uint64_t **value, uint64_t maxcount)
@@ -2637,6 +3309,25 @@ TIFFReadDirEntryLong8ArrayWithLimit(TIFF *tif, TIFFDirEntry *direntry,
     return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Read a directory array as uint64_t elements.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Calls TIFFReadDirEntryLong8ArrayWithLimit() with no element limit; see that
+ * function for the accepted types, conversions, range errors and error-path
+ * state of *value. On success *value receives a new allocation owned by the
+ * caller and released with _TIFFfreeExt(); a zero count succeeds with *value
+ * NULL.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL empty owner slot for the new element array;
+ * valid only on success.
+ * @return TIFFReadDirEntryErrOk for a converted/empty array, or a type,
+ * range, size, allocation, or I/O error; only success transfers ownership.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryLong8Array(TIFF *tif, TIFFDirEntry *direntry, uint64_t **value)
 {
@@ -2644,6 +3335,33 @@ TIFFReadDirEntryLong8Array(TIFF *tif, TIFFDirEntry *direntry, uint64_t **value)
                                                ~((uint64_t)0));
 }
 
+/**
+ * @brief Read a directory array as int64_t elements.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Accepts TIFF_BYTE, TIFF_SBYTE, TIFF_SHORT, TIFF_SSHORT, TIFF_LONG,
+ * TIFF_SLONG, TIFF_LONG8, TIFF_SLONG8. Fetches the raw elements with
+ * TIFFReadDirEntryArray() (inline bytes, or file data that may be sought and
+ * read when not memory-mapped) and swaps them to host order. TIFF_SLONG8 is
+ * returned as fetched; TIFF_LONG8 is range-checked in place and an element
+ * above INT64_MAX fails with TIFFReadDirEntryErrRange. The 8- to 32-bit types
+ * are widened into a new array without checks. On success *value receives a new
+ * allocation owned by the caller and released with _TIFFfreeExt(); a zero count
+ * succeeds with *value NULL. An existing allocation in *value is not freed.
+ * *value is set to NULL when the raw fetch fails; type, allocation and range
+ * errors leave it unchanged. Temporary buffers are freed on every error path.
+ * The oversized-request check and allocation failures emit diagnostics; other
+ * errors are only returned.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL empty owner slot for the new element array;
+ * valid only on success.
+ * @return TIFFReadDirEntryErrOk for a converted/empty array, or a type,
+ * range, size, allocation, or I/O error; only success transfers ownership.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntrySlong8Array(TIFF *tif, TIFFDirEntry *direntry, int64_t **value)
 {
@@ -2800,6 +3518,38 @@ TIFFReadDirEntrySlong8Array(TIFF *tif, TIFFDirEntry *direntry, int64_t **value)
     return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Read a directory array as float elements.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Accepts TIFF_BYTE, TIFF_SBYTE, TIFF_SHORT, TIFF_SSHORT, TIFF_LONG,
+ * TIFF_SLONG, TIFF_LONG8, TIFF_SLONG8, TIFF_RATIONAL, TIFF_SRATIONAL,
+ * TIFF_FLOAT, TIFF_DOUBLE. Fetches the raw elements with
+ * TIFFReadDirEntryArray() (inline bytes, or file data that may be sought and
+ * read when not memory-mapped) and swaps them to host order. TIFF_FLOAT is
+ * returned as fetched. Other types are converted into a new array with C casts,
+ * which may lose precision. Rationals are divided in float precision; a zero
+ * denominator gives zero, and SRATIONAL uses a signed numerator over an
+ * unsigned denominator. No range errors are returned. On success *value
+ * receives a new allocation owned by the caller and released with
+ * _TIFFfreeExt(); a zero count succeeds with *value NULL. An existing
+ * allocation in *value is not freed. *value is set to NULL when the raw fetch
+ * fails; type and allocation errors leave it unchanged. Temporary
+ * buffers are freed on every error path. The oversized-request check and
+ * allocation failures emit diagnostics; other errors are only returned.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL empty owner slot for the new element array;
+ * valid only on success.
+ * @return TIFFReadDirEntryErrOk for a converted/empty array, or a type,
+ * size, allocation, or I/O error; only success transfers ownership.
+ * @note DOUBLE array input is clamped to +/-FLT_MAX before conversion (NaN
+ * passes through). The scalar float reader TIFFReadDirEntryFloat() instead
+ * rejects out-of-range DOUBLE values with TIFFReadDirEntryErrRange.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryFloatArray(TIFF *tif, TIFFDirEntry *direntry, float **value)
 {
@@ -3041,6 +3791,36 @@ TIFFReadDirEntryFloatArray(TIFF *tif, TIFFDirEntry *direntry, float **value)
     return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Read a directory array as double elements.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Accepts TIFF_BYTE, TIFF_SBYTE, TIFF_SHORT, TIFF_SSHORT, TIFF_LONG,
+ * TIFF_SLONG, TIFF_LONG8, TIFF_SLONG8, TIFF_RATIONAL, TIFF_SRATIONAL,
+ * TIFF_FLOAT, TIFF_DOUBLE. Fetches the raw elements with
+ * TIFFReadDirEntryArray() (inline bytes, or file data that may be sought and
+ * read when not memory-mapped) and swaps them to host order. TIFF_DOUBLE is
+ * returned as fetched. Other types are converted into a new array with C casts;
+ * only TIFF_LONG8/TIFF_SLONG8 magnitudes above 2^53 can lose precision.
+ * Rationals are divided in double precision; a zero denominator gives zero, and
+ * SRATIONAL uses a signed numerator over an unsigned denominator. No range
+ * errors are returned. On success *value receives a new allocation owned by the
+ * caller and released with _TIFFfreeExt(); a zero count succeeds with *value
+ * NULL. An existing allocation in *value is not freed. *value is set to NULL
+ * when the raw fetch fails; type and allocation errors leave it
+ * unchanged. Temporary buffers are freed on every error path. The
+ * oversized-request check and allocation failures emit diagnostics; other
+ * errors are only returned.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL empty owner slot for the new element array;
+ * valid only on success.
+ * @return TIFFReadDirEntryErrOk for a converted/empty array, or a type,
+ * size, allocation, or I/O error; only success transfers ownership.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryDoubleArray(TIFF *tif, TIFFDirEntry *direntry, double **value)
 {
@@ -3275,6 +4055,31 @@ TIFFReadDirEntryDoubleArray(TIFF *tif, TIFFDirEntry *direntry, double **value)
     return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Read a directory array as uint64_t directory offset elements.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Accepts TIFF_LONG, TIFF_LONG8, TIFF_IFD, TIFF_IFD8. Fetches the raw elements
+ * with TIFFReadDirEntryArray() (inline bytes, or file data that may be sought
+ * and read when not memory-mapped) and swaps them to host order. TIFF_LONG8 and
+ * TIFF_IFD8 are returned as fetched; TIFF_LONG and TIFF_IFD are widened into a
+ * new array. No range checks apply. On success *value receives a new allocation
+ * owned by the caller and released with _TIFFfreeExt(); a zero count succeeds
+ * with *value NULL. An existing allocation in *value is not freed. *value is
+ * set to NULL when the raw fetch fails; type and allocation errors leave it
+ * unchanged. Temporary buffers are freed on every error path. The
+ * oversized-request check and allocation failures emit diagnostics; other
+ * errors are only returned.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL empty owner slot for the new element array;
+ * valid only on success.
+ * @return TIFFReadDirEntryErrOk for a converted/empty array, or a type,
+ * size, allocation, or I/O error; only success transfers ownership.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryIfd8Array(TIFF *tif, TIFFDirEntry *direntry, uint64_t **value)
 {
@@ -3342,6 +4147,30 @@ TIFFReadDirEntryIfd8Array(TIFF *tif, TIFFDirEntry *direntry, uint64_t **value)
     return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Reduce equal per-sample short values to one scalar.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Requires positive SamplesPerPixel. Converts an allocated short array,
+ * compares the expected present values, and frees it. Zero count fails;
+ * short nonzero count warns and assumes missing values equal the first;
+ * extra count warns and is ignored after conversion. Writes the first value
+ * before discovering later differences, so failure need not preserve
+ * output. May read external data and change client I/O position;
+ * allocations/limits or callbacks can emit diagnostics, but conversion
+ * failures normally return an error code for the caller to report. No input
+ * ownership transfers. Use outputs only on the documented success path;
+ * failure does not generally preserve them.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL scalar slot; valid only after successful
+ * nonempty conversion/equality check.
+ * @return TIFFReadDirEntryErrOk on accepted uniform values, ErrPsdif for
+ * differing samples, or a count/conversion/load error.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryPersampleShort(TIFF *tif, TIFFDirEntry *direntry,
                                uint16_t *value)
@@ -3401,6 +4230,21 @@ TIFFReadDirEntryPersampleShort(TIFF *tif, TIFFDirEntry *direntry,
     return (err);
 }
 
+/**
+ * @brief Read a prevalidated uint8_t value.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Caller must already validate single-element count/type and inline
+ * storage. Copies the first inline entry byte; no byte swapping applies.
+ * Performs no allocation, I/O, diagnostics, range validation, or ownership
+ * transfer. The Checked name denotes caller-established preconditions.
+ *
+ * @param[in] tif Unused.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL caller-owned output slot of the matching
+ * representation.
+ */
 static void TIFFReadDirEntryCheckedByte(TIFF *tif, TIFFDirEntry *direntry,
                                         uint8_t *value)
 {
@@ -3408,6 +4252,21 @@ static void TIFFReadDirEntryCheckedByte(TIFF *tif, TIFFDirEntry *direntry,
     *value = *(uint8_t *)(&direntry->tdir_offset);
 }
 
+/**
+ * @brief Read a prevalidated int8_t value.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Caller must already validate single-element count/type and inline
+ * storage. Copies the first inline entry byte; no byte swapping applies.
+ * Performs no allocation, I/O, diagnostics, range validation, or ownership
+ * transfer. The Checked name denotes caller-established preconditions.
+ *
+ * @param[in] tif Unused.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL caller-owned output slot of the matching
+ * representation.
+ */
 static void TIFFReadDirEntryCheckedSbyte(TIFF *tif, TIFFDirEntry *direntry,
                                          int8_t *value)
 {
@@ -3415,6 +4274,22 @@ static void TIFFReadDirEntryCheckedSbyte(TIFF *tif, TIFFDirEntry *direntry,
     *value = *(int8_t *)(&direntry->tdir_offset);
 }
 
+/**
+ * @brief Read a prevalidated uint16_t value.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Caller must already validate single-element count/type and inline
+ * storage. Copies the leading inline entry bytes and byte-swaps the result
+ * when TIFF_SWAB is set. Performs no allocation, I/O, diagnostics, range
+ * validation, or ownership transfer. The Checked name denotes
+ * caller-established preconditions.
+ *
+ * @param[in] tif Non-NULL handle; only TIFF_SWAB in tif_flags is read.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL caller-owned output slot of the matching
+ * representation.
+ */
 static void TIFFReadDirEntryCheckedShort(TIFF *tif, TIFFDirEntry *direntry,
                                          uint16_t *value)
 {
@@ -3424,6 +4299,22 @@ static void TIFFReadDirEntryCheckedShort(TIFF *tif, TIFFDirEntry *direntry,
         TIFFSwabShort(value);
 }
 
+/**
+ * @brief Read a prevalidated int16_t value.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Caller must already validate single-element count/type and inline
+ * storage. Copies the leading inline entry bytes and byte-swaps the result
+ * when TIFF_SWAB is set. Performs no allocation, I/O, diagnostics, range
+ * validation, or ownership transfer. The Checked name denotes
+ * caller-established preconditions.
+ *
+ * @param[in] tif Non-NULL handle; only TIFF_SWAB in tif_flags is read.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL caller-owned output slot of the matching
+ * representation.
+ */
 static void TIFFReadDirEntryCheckedSshort(TIFF *tif, TIFFDirEntry *direntry,
                                           int16_t *value)
 {
@@ -3432,6 +4323,22 @@ static void TIFFReadDirEntryCheckedSshort(TIFF *tif, TIFFDirEntry *direntry,
         TIFFSwabShort((uint16_t *)value);
 }
 
+/**
+ * @brief Read a prevalidated uint32_t value.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Caller must already validate single-element count/type and inline
+ * storage. Copies the leading inline entry bytes and byte-swaps the result
+ * when TIFF_SWAB is set. Performs no allocation, I/O, diagnostics, range
+ * validation, or ownership transfer. The Checked name denotes
+ * caller-established preconditions.
+ *
+ * @param[in] tif Non-NULL handle; only TIFF_SWAB in tif_flags is read.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL caller-owned output slot of the matching
+ * representation.
+ */
 static void TIFFReadDirEntryCheckedLong(TIFF *tif, TIFFDirEntry *direntry,
                                         uint32_t *value)
 {
@@ -3440,6 +4347,22 @@ static void TIFFReadDirEntryCheckedLong(TIFF *tif, TIFFDirEntry *direntry,
         TIFFSwabLong(value);
 }
 
+/**
+ * @brief Read a prevalidated int32_t value.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Caller must already validate single-element count/type and inline
+ * storage. Copies the leading inline entry bytes and byte-swaps the result
+ * when TIFF_SWAB is set. Performs no allocation, I/O, diagnostics, range
+ * validation, or ownership transfer. The Checked name denotes
+ * caller-established preconditions.
+ *
+ * @param[in] tif Non-NULL handle; only TIFF_SWAB in tif_flags is read.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL caller-owned output slot of the matching
+ * representation.
+ */
 static void TIFFReadDirEntryCheckedSlong(TIFF *tif, TIFFDirEntry *direntry,
                                          int32_t *value)
 {
@@ -3448,6 +4371,26 @@ static void TIFFReadDirEntryCheckedSlong(TIFF *tif, TIFFDirEntry *direntry,
         TIFFSwabLong((uint32_t *)value);
 }
 
+/**
+ * @brief Read a prevalidated uint64_t value.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Caller must already validate single-element count and type. In BigTIFF
+ * copies the eight inline entry bytes; in classic TIFF reads eight bytes from
+ * the file at the entry offset with TIFFReadDirEntryData() (seeking unless
+ * memory-mapped). Byte-swaps when TIFF_SWAB is set. Performs no allocation,
+ * range validation, diagnostics, or ownership transfer. A classic TIFF read
+ * failure can leave the output partially written; use it only on success.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL caller-owned output slot of the matching
+ * representation.
+ * @return TIFFReadDirEntryErrOk on success, otherwise an I/O error; use
+ * output only on success.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckedLong8(TIFF *tif, TIFFDirEntry *direntry, uint64_t *value)
 {
@@ -3468,6 +4411,26 @@ TIFFReadDirEntryCheckedLong8(TIFF *tif, TIFFDirEntry *direntry, uint64_t *value)
     return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Read a prevalidated int64_t value.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Caller must already validate single-element count and type. In BigTIFF
+ * copies the eight inline entry bytes; in classic TIFF reads eight bytes from
+ * the file at the entry offset with TIFFReadDirEntryData() (seeking unless
+ * memory-mapped). Byte-swaps when TIFF_SWAB is set. Performs no allocation,
+ * range validation, diagnostics, or ownership transfer. A classic TIFF read
+ * failure can leave the output partially written; use it only on success.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL caller-owned output slot of the matching
+ * representation.
+ * @return TIFFReadDirEntryErrOk on success, otherwise an I/O error; use
+ * output only on success.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckedSlong8(TIFF *tif, TIFFDirEntry *direntry, int64_t *value)
 {
@@ -3488,6 +4451,27 @@ TIFFReadDirEntryCheckedSlong8(TIFF *tif, TIFFDirEntry *direntry, int64_t *value)
     return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Read a prevalidated rational value.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Caller must already validate single-element count and type. In BigTIFF
+ * copies the eight inline entry bytes; in classic TIFF reads eight bytes from
+ * the file at the entry offset with TIFFReadDirEntryData() (seeking unless
+ * memory-mapped). Byte-swaps when TIFF_SWAB is set. Performs no allocation,
+ * range validation, diagnostics, or ownership transfer. Divides the unsigned
+ * numerator by the denominator in double precision; a zero numerator or
+ * denominator gives zero. The output is written only on success.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL caller-owned output slot of the matching
+ * representation.
+ * @return TIFFReadDirEntryErrOk on success, otherwise an I/O error; use
+ * output only on success.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckedRational(TIFF *tif, TIFFDirEntry *direntry,
                                 double *value)
@@ -3521,6 +4505,27 @@ TIFFReadDirEntryCheckedRational(TIFF *tif, TIFFDirEntry *direntry,
     return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Read a prevalidated srational value.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Caller must already validate single-element count and type. In BigTIFF
+ * copies the eight inline entry bytes; in classic TIFF reads eight bytes from
+ * the file at the entry offset with TIFFReadDirEntryData() (seeking unless
+ * memory-mapped). Byte-swaps when TIFF_SWAB is set. Performs no allocation,
+ * range validation, diagnostics, or ownership transfer. Divides the signed
+ * 32-bit numerator by the unsigned denominator in double precision; a zero
+ * numerator or denominator gives zero. The output is written only on success.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL caller-owned output slot of the matching
+ * representation.
+ * @return TIFFReadDirEntryErrOk on success, otherwise an I/O error; use
+ * output only on success.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckedSrational(TIFF *tif, TIFFDirEntry *direntry,
                                  double *value)
@@ -3555,6 +4560,26 @@ TIFFReadDirEntryCheckedSrational(TIFF *tif, TIFFDirEntry *direntry,
 }
 
 #if 0
+/**
+ * @brief Read raw rational components.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Disabled experimental implementation under literal `#if 0`; not compiled or
+ * extracted by the normal reference. Checks count one and rational type,
+ * then copies raw numerator/denominator bits without division, including
+ * zero denominators and signed encodings. Classic TIFF reads external data;
+ * BigTIFF uses inline bytes. No allocation/ownership transfer; I/O can
+ * change position. Outputs are valid only on success.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL caller-owned output slot of the matching
+ * representation.
+ * @return TIFFReadDirEntryErrOk on success, otherwise an I/O error, count
+ * error, or type error.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckedRationalDirect(TIFF *tif, TIFFDirEntry *direntry,
                                       TIFFRational_t *value)
@@ -3597,6 +4622,22 @@ TIFFReadDirEntryCheckedRationalDirect(TIFF *tif, TIFFDirEntry *direntry,
 } /*-- TIFFReadDirEntryCheckedRationalDirect() --*/
 #endif
 
+/**
+ * @brief Read a prevalidated float value.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Caller must already validate single-element count/type and inline
+ * storage. Copies the leading inline entry bytes and byte-swaps the result
+ * when TIFF_SWAB is set. Performs no allocation, I/O, diagnostics, range
+ * validation, or ownership transfer. The Checked name denotes
+ * caller-established preconditions.
+ *
+ * @param[in] tif Non-NULL handle; only TIFF_SWAB in tif_flags is read.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL caller-owned output slot of the matching
+ * representation.
+ */
 static void TIFFReadDirEntryCheckedFloat(TIFF *tif, TIFFDirEntry *direntry,
                                          float *value)
 {
@@ -3614,6 +4655,26 @@ static void TIFFReadDirEntryCheckedFloat(TIFF *tif, TIFFDirEntry *direntry,
         TIFFSwabLong((uint32_t *)value);
 }
 
+/**
+ * @brief Read a prevalidated double value.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Caller must already validate single-element count and type. In BigTIFF
+ * copies the eight inline entry bytes; in classic TIFF reads eight bytes from
+ * the file at the entry offset with TIFFReadDirEntryData() (seeking unless
+ * memory-mapped). Byte-swaps when TIFF_SWAB is set. Performs no allocation,
+ * range validation, diagnostics, or ownership transfer. A classic TIFF read
+ * failure can leave the output partially written; use it only on success.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] direntry Non-NULL parsed entry with host-order tag/type/count
+ * and raw offset/inline bytes; borrowed only for this call.
+ * @param[out] value Non-NULL caller-owned output slot of the matching
+ * representation.
+ * @return TIFFReadDirEntryErrOk on success, otherwise an I/O error; use
+ * output only on success.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckedDouble(TIFF *tif, TIFFDirEntry *direntry, double *value)
 {
@@ -3641,6 +4702,18 @@ TIFFReadDirEntryCheckedDouble(TIFF *tif, TIFFDirEntry *direntry, double *value)
     return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether int8_t fits uint8_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `value < 0`. Performs no cast, allocation, diagnostic, state
+ * change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeByteSbyte(int8_t value)
 {
@@ -3650,6 +4723,18 @@ TIFFReadDirEntryCheckRangeByteSbyte(int8_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether uint16_t fits uint8_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `value > 0xFF`. Performs no cast, allocation, diagnostic,
+ * state change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeByteShort(uint16_t value)
 {
@@ -3659,6 +4744,18 @@ TIFFReadDirEntryCheckRangeByteShort(uint16_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether int16_t fits uint8_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `(value < 0) || (value > 0xFF)`. Performs no cast,
+ * allocation, diagnostic, state change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeByteSshort(int16_t value)
 {
@@ -3668,6 +4765,18 @@ TIFFReadDirEntryCheckRangeByteSshort(int16_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether uint32_t fits uint8_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `value > 0xFF`. Performs no cast, allocation, diagnostic,
+ * state change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeByteLong(uint32_t value)
 {
@@ -3677,6 +4786,18 @@ TIFFReadDirEntryCheckRangeByteLong(uint32_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether int32_t fits uint8_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `(value < 0) || (value > 0xFF)`. Performs no cast,
+ * allocation, diagnostic, state change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeByteSlong(int32_t value)
 {
@@ -3686,6 +4807,18 @@ TIFFReadDirEntryCheckRangeByteSlong(int32_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether uint64_t fits uint8_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `value > 0xFF`. Performs no cast, allocation, diagnostic,
+ * state change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeByteLong8(uint64_t value)
 {
@@ -3695,6 +4828,18 @@ TIFFReadDirEntryCheckRangeByteLong8(uint64_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether int64_t fits uint8_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `(value < 0) || (value > 0xFF)`. Performs no cast,
+ * allocation, diagnostic, state change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeByteSlong8(int64_t value)
 {
@@ -3704,6 +4849,18 @@ TIFFReadDirEntryCheckRangeByteSlong8(int64_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether uint8_t fits int8_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `value > 0x7F`. Performs no cast, allocation, diagnostic,
+ * state change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeSbyteByte(uint8_t value)
 {
@@ -3713,6 +4870,18 @@ TIFFReadDirEntryCheckRangeSbyteByte(uint8_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether uint16_t fits int8_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `value > 0x7F`. Performs no cast, allocation, diagnostic,
+ * state change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeSbyteShort(uint16_t value)
 {
@@ -3722,6 +4891,18 @@ TIFFReadDirEntryCheckRangeSbyteShort(uint16_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether int16_t fits int8_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `(value < -0x80) || (value > 0x7F)`. Performs no cast,
+ * allocation, diagnostic, state change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeSbyteSshort(int16_t value)
 {
@@ -3731,6 +4912,18 @@ TIFFReadDirEntryCheckRangeSbyteSshort(int16_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether uint32_t fits int8_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `value > 0x7F`. Performs no cast, allocation, diagnostic,
+ * state change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeSbyteLong(uint32_t value)
 {
@@ -3740,6 +4933,18 @@ TIFFReadDirEntryCheckRangeSbyteLong(uint32_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether int32_t fits int8_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `(value < -0x80) || (value > 0x7F)`. Performs no cast,
+ * allocation, diagnostic, state change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeSbyteSlong(int32_t value)
 {
@@ -3749,6 +4954,18 @@ TIFFReadDirEntryCheckRangeSbyteSlong(int32_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether uint64_t fits int8_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `value > 0x7F`. Performs no cast, allocation, diagnostic,
+ * state change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeSbyteLong8(uint64_t value)
 {
@@ -3758,6 +4975,18 @@ TIFFReadDirEntryCheckRangeSbyteLong8(uint64_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether int64_t fits int8_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `(value < -0x80) || (value > 0x7F)`. Performs no cast,
+ * allocation, diagnostic, state change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeSbyteSlong8(int64_t value)
 {
@@ -3767,6 +4996,18 @@ TIFFReadDirEntryCheckRangeSbyteSlong8(int64_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether int8_t fits uint16_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `value < 0`. Performs no cast, allocation, diagnostic, state
+ * change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeShortSbyte(int8_t value)
 {
@@ -3776,6 +5017,18 @@ TIFFReadDirEntryCheckRangeShortSbyte(int8_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether int16_t fits uint16_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `value < 0`. Performs no cast, allocation, diagnostic, state
+ * change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeShortSshort(int16_t value)
 {
@@ -3785,6 +5038,18 @@ TIFFReadDirEntryCheckRangeShortSshort(int16_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether uint32_t fits uint16_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `value > 0xFFFF`. Performs no cast, allocation, diagnostic,
+ * state change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeShortLong(uint32_t value)
 {
@@ -3794,6 +5059,18 @@ TIFFReadDirEntryCheckRangeShortLong(uint32_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether int32_t fits uint16_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `(value < 0) || (value > 0xFFFF)`. Performs no cast,
+ * allocation, diagnostic, state change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeShortSlong(int32_t value)
 {
@@ -3803,6 +5080,18 @@ TIFFReadDirEntryCheckRangeShortSlong(int32_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether uint64_t fits uint16_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `value > 0xFFFF`. Performs no cast, allocation, diagnostic,
+ * state change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeShortLong8(uint64_t value)
 {
@@ -3812,6 +5101,18 @@ TIFFReadDirEntryCheckRangeShortLong8(uint64_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether int64_t fits uint16_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `(value < 0) || (value > 0xFFFF)`. Performs no cast,
+ * allocation, diagnostic, state change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeShortSlong8(int64_t value)
 {
@@ -3821,6 +5122,18 @@ TIFFReadDirEntryCheckRangeShortSlong8(int64_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether uint16_t fits int16_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `value > 0x7FFF`. Performs no cast, allocation, diagnostic,
+ * state change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeSshortShort(uint16_t value)
 {
@@ -3830,6 +5143,18 @@ TIFFReadDirEntryCheckRangeSshortShort(uint16_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether uint32_t fits int16_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `value > 0x7FFF`. Performs no cast, allocation, diagnostic,
+ * state change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeSshortLong(uint32_t value)
 {
@@ -3839,6 +5164,18 @@ TIFFReadDirEntryCheckRangeSshortLong(uint32_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether int32_t fits int16_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `(value < -0x8000) || (value > 0x7FFF)`. Performs no cast,
+ * allocation, diagnostic, state change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeSshortSlong(int32_t value)
 {
@@ -3848,6 +5185,18 @@ TIFFReadDirEntryCheckRangeSshortSlong(int32_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether uint64_t fits int16_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `value > 0x7FFF`. Performs no cast, allocation, diagnostic,
+ * state change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeSshortLong8(uint64_t value)
 {
@@ -3857,6 +5206,18 @@ TIFFReadDirEntryCheckRangeSshortLong8(uint64_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether int64_t fits int16_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `(value < -0x8000) || (value > 0x7FFF)`. Performs no cast,
+ * allocation, diagnostic, state change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeSshortSlong8(int64_t value)
 {
@@ -3866,6 +5227,18 @@ TIFFReadDirEntryCheckRangeSshortSlong8(int64_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether int8_t fits uint32_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `value < 0`. Performs no cast, allocation, diagnostic, state
+ * change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeLongSbyte(int8_t value)
 {
@@ -3875,6 +5248,18 @@ TIFFReadDirEntryCheckRangeLongSbyte(int8_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether int16_t fits uint32_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `value < 0`. Performs no cast, allocation, diagnostic, state
+ * change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeLongSshort(int16_t value)
 {
@@ -3884,6 +5269,18 @@ TIFFReadDirEntryCheckRangeLongSshort(int16_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether int32_t fits uint32_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `value < 0`. Performs no cast, allocation, diagnostic, state
+ * change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeLongSlong(int32_t value)
 {
@@ -3893,6 +5290,18 @@ TIFFReadDirEntryCheckRangeLongSlong(int32_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether uint64_t fits uint32_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `value > UINT32_MAX`. Performs no cast, allocation,
+ * diagnostic, state change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeLongLong8(uint64_t value)
 {
@@ -3902,6 +5311,18 @@ TIFFReadDirEntryCheckRangeLongLong8(uint64_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether int64_t fits uint32_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `(value < 0) || (value > (int64_t)UINT32_MAX)`. Performs no
+ * cast, allocation, diagnostic, state change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeLongSlong8(int64_t value)
 {
@@ -3911,6 +5332,18 @@ TIFFReadDirEntryCheckRangeLongSlong8(int64_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether uint32_t fits int32_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `value > 0x7FFFFFFFUL`. Performs no cast, allocation,
+ * diagnostic, state change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeSlongLong(uint32_t value)
 {
@@ -3921,6 +5354,18 @@ TIFFReadDirEntryCheckRangeSlongLong(uint32_t value)
 }
 
 /* Check that the 8-byte unsigned value can fit in a 4-byte unsigned range */
+/**
+ * @brief Check whether uint64_t fits int32_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `value > 0x7FFFFFFF`. Performs no cast, allocation,
+ * diagnostic, state change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeSlongLong8(uint64_t value)
 {
@@ -3931,6 +5376,19 @@ TIFFReadDirEntryCheckRangeSlongLong8(uint64_t value)
 }
 
 /* Check that the 8-byte signed value can fit in a 4-byte signed range */
+/**
+ * @brief Check whether int64_t fits int32_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `(value < 0 - ((int64_t)0x7FFFFFFF + 1)) || (value >
+ * 0x7FFFFFFF)`. Performs no cast, allocation, diagnostic, state change, or
+ * ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeSlongSlong8(int64_t value)
 {
@@ -3940,6 +5398,18 @@ TIFFReadDirEntryCheckRangeSlongSlong8(int64_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether int8_t fits uint64_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `value < 0`. Performs no cast, allocation, diagnostic, state
+ * change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeLong8Sbyte(int8_t value)
 {
@@ -3949,6 +5419,18 @@ TIFFReadDirEntryCheckRangeLong8Sbyte(int8_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether int16_t fits uint64_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `value < 0`. Performs no cast, allocation, diagnostic, state
+ * change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeLong8Sshort(int16_t value)
 {
@@ -3958,6 +5440,18 @@ TIFFReadDirEntryCheckRangeLong8Sshort(int16_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether int32_t fits uint64_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `value < 0`. Performs no cast, allocation, diagnostic, state
+ * change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeLong8Slong(int32_t value)
 {
@@ -3967,6 +5461,18 @@ TIFFReadDirEntryCheckRangeLong8Slong(int32_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether int64_t fits uint64_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `value < 0`. Performs no cast, allocation, diagnostic, state
+ * change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeLong8Slong8(int64_t value)
 {
@@ -3976,6 +5482,18 @@ TIFFReadDirEntryCheckRangeLong8Slong8(int64_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Check whether uint64_t fits int64_t.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Rejects when `value > INT64_MAX`. Performs no cast, allocation,
+ * diagnostic, state change, or ownership transfer.
+ *
+ * @param[in] value Source scalar whose representable target range is
+ * checked.
+ * @return TIFFReadDirEntryErrRange on rejection, TIFFReadDirEntryErrOk
+ * otherwise.
+ */
 static enum TIFFReadDirEntryErr
 TIFFReadDirEntryCheckRangeSlong8Long8(uint64_t value)
 {
@@ -3985,6 +5503,23 @@ TIFFReadDirEntryCheckRangeSlong8Long8(uint64_t value)
         return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Copy a raw external byte range into caller storage.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Requires positive size and adequate non-overlapping destination. Copies
+ * mapped bytes after extent checks, or seeks/reads client I/O. Does not
+ * swap/convert, allocate, transfer ownership, or issue a direct diagnostic.
+ * A short read can partially overwrite the output and move I/O position.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] offset Byte offset of source data.
+ * @param[in] size Positive byte count representable by tmsize_t.
+ * @param[out] dest Writable caller-owned buffer of size bytes.
+ * @return TIFFReadDirEntryErrOk on complete copy, ErrIo on range/seek/read
+ * failure; no rollback.
+ */
 static enum TIFFReadDirEntryErr TIFFReadDirEntryData(TIFF *tif, uint64_t offset,
                                                      tmsize_t size, void *dest)
 {
@@ -4012,6 +5547,23 @@ static enum TIFFReadDirEntryErr TIFFReadDirEntryData(TIFF *tif, uint64_t offset,
     return (TIFFReadDirEntryErrOk);
 }
 
+/**
+ * @brief Report a directory-entry conversion error at the requested severity.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Dispatches a synchronous per-handle/global diagnostic using borrowed
+ * context strings. recover changes error to warning and appends the
+ * ignored-tag message; it does not itself ignore, undo, or free a value.
+ * Passing Ok or an unknown code is a programmer error asserted in debug
+ * builds. No ownership transfers.
+ *
+ * @param[in] tif Non-NULL handle; used only to dispatch diagnostics.
+ * @param[in] err Known non-Ok TIFFReadDirEntryErr value.
+ * @param[in] module Borrowed diagnostic context string, or NULL as
+ * permitted by diagnostics.
+ * @param[in] tagname Non-NULL readable terminated tag name.
+ * @param[in] recover Nonzero for a recoverable warning, zero for an error.
+ */
 static void TIFFReadDirEntryOutputErr(TIFF *tif, enum TIFFReadDirEntryErr err,
                                       const char *module, const char *tagname,
                                       int recover)
@@ -4111,6 +5663,18 @@ static void TIFFReadDirEntryOutputErr(TIFF *tif, enum TIFFReadDirEntryErr err,
  * type. 0 is returned if photometric type isn't supported or no default value
  * is defined by the specification.
  */
+/**
+ * @brief Classify the expected maximum colour-channel count.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Pure photometric classification, not validation of a complete image. No
+ * allocation, diagnostics, state, or ownership effects.
+ *
+ * @param[in] photometric PHOTOMETRIC_* value.
+ * @return One for palette/min-is-white/min-is-black, three for
+ * RGB/YCbCr/Lab/LogLuv families, four for separated/mask, zero for
+ * unclassified values.
+ */
 static int _TIFFGetMaxColorChannels(uint16_t photometric)
 {
     switch (photometric)
@@ -4136,6 +5700,22 @@ static int _TIFFGetMaxColorChannels(uint16_t photometric)
     }
 }
 
+/**
+ * @brief Test whether the first strip byte count needs recovery.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Used for the reader's single-strip heuristic. Loads offset/count if
+ * deferred and may allocate or perform I/O. A zero offset is treated as
+ * inconclusive, not bad. Nonzero-offset zero count is bad; uncompressed
+ * counts are checked against file remainder and, in read-only mode,
+ * full-image row size with overflow detection. Does not repair values or
+ * transfer ownership.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @return One for a suspected bad count, zero otherwise; not a full
+ * metadata/range validation.
+ */
 static int ByteCountLooksBad(TIFF *tif)
 {
     /*
@@ -4181,6 +5761,22 @@ static int ByteCountLooksBad(TIFF *tif)
 /*
  * To evaluate the IFD data size when reading, save the offset and data size of
  * all data that does not fit into the IFD entries themselves.
+ */
+/**
+ * @brief Record the external byte range of one IFD entry.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Checks multiplication and accumulation overflow and diagnoses rejection.
+ * Caller must supply sufficient td_dirdatasize_offsets capacity. Records
+ * only data exceeding inline width; normalises its raw offset and advances
+ * range/count bookkeeping. Does not allocate/read the payload or change the
+ * input entry. Failure has no general rollback of existing bookkeeping.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] dp Non-NULL parsed borrowed entry.
+ * @return True after accounting or no external payload, false on size
+ * overflow.
  */
 static bool EvaluateIFDdatasizeReading(TIFF *tif, TIFFDirEntry *dp)
 {
@@ -4236,6 +5832,18 @@ static bool EvaluateIFDdatasizeReading(TIFF *tif, TIFFDirEntry *dp)
 /*
  * Compare function for qsort() sorting TIFFEntryOffsetAndLength array entries.
  */
+/**
+ * @brief Order external IFD ranges by starting byte offset.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * qsort comparator; borrows two live ranges without allocation, mutation,
+ * diagnostics, or ownership transfer. Equal offsets compare equal
+ * regardless of lengths.
+ *
+ * @param[in] a Non-NULL left TIFFEntryOffsetAndLength pointer.
+ * @param[in] b Non-NULL right TIFFEntryOffsetAndLength pointer.
+ * @return Minus one, zero, or one for ascending offset order.
+ */
 static int cmpTIFFEntryOffsetAndLength(const void *a, const void *b)
 {
     const TIFFEntryOffsetAndLength *ta = (const TIFFEntryOffsetAndLength *)a;
@@ -4255,6 +5863,22 @@ static int cmpTIFFEntryOffsetAndLength(const void *a, const void *b)
  * includes the IFD entries themselves as well as the data that does not fit
  * directly into the IFD entries but is located directly after the IFD entries
  * in the file.
+ */
+/**
+ * @brief Estimate the reusable contiguous span of the loaded IFD.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * No-op for read-only mode. Otherwise sorts collected range bookkeeping and
+ * counts data contiguous after entry space, allowing selected one-byte
+ * padding gaps. May seek to EOF; exact end-of-file adjacency records
+ * UINT64_MAX to permit extension. Updates td_dirdatasize_read without
+ * allocating or transferring ownership. This is a placement heuristic, not
+ * general file-layout validation; seek failure has no separate status.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] dircount Fetched number of entries used to compute
+ * classic/BigTIFF entry space.
  */
 static void CalcFinalIFDdatasizeReading(TIFF *tif, uint16_t dircount)
 {
@@ -5306,6 +6930,18 @@ bad:
     return (0);
 } /*-- TIFFReadDirectory() --*/
 
+/**
+ * @brief Warn if directory tags are not strictly increasing.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Checks a borrowed array in place without sorting or marking duplicates.
+ * Emits at most one order warning; equal adjacent tags also trigger it. No
+ * allocation or ownership transfer.
+ *
+ * @param[in] tif Non-NULL handle; used only to dispatch diagnostics.
+ * @param[in] dir Readable borrowed array of dircount parsed entries.
+ * @param[in] dircount Number of entries.
+ */
 static void TIFFReadDirectoryCheckOrder(TIFF *tif, TIFFDirEntry *dir,
                                         uint16_t dircount)
 {
@@ -5327,6 +6963,20 @@ static void TIFFReadDirectoryCheckOrder(TIFF *tif, TIFFDirEntry *dir,
     }
 }
 
+/**
+ * @brief Find the first parsed entry with a given tag.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Linear search without allocation, mutation, I/O, or diagnostics. The tif
+ * argument is unused. Does not filter tdir_ignore or verify type/count.
+ *
+ * @param[in] tif Unused.
+ * @param[in] dir Readable borrowed entry array.
+ * @param[in] dircount Number of entries.
+ * @param[in] tagid On-disk tag number.
+ * @return Borrowed entry pointer into dir, or NULL if absent; lifetime
+ * follows dir.
+ */
 static TIFFDirEntry *TIFFReadDirectoryFindEntry(TIFF *tif, TIFFDirEntry *dir,
                                                 uint16_t dircount,
                                                 uint16_t tagid)
@@ -5342,6 +6992,21 @@ static TIFFDirEntry *TIFFReadDirectoryFindEntry(TIFF *tif, TIFFDirEntry *dir,
     return (0);
 }
 
+/**
+ * @brief Locate the first registered descriptor index for a tag.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Binary-searches a valid tag-sorted handle table, then backs up over equal
+ * tag numbers. Does not validate the file type, allocate, issue
+ * diagnostics, or transfer ownership. Caller must keep the table stable
+ * during the search.
+ *
+ * @param[in] tif Non-NULL handle whose tif_fields table is searched; not
+ * modified.
+ * @param[in] tagid On-disk tag number.
+ * @param[out] fii Non-NULL slot for the first descriptor index or
+ * FAILED_FII.
+ */
 static void TIFFReadDirectoryFindFieldInfo(TIFF *tif, uint16_t tagid,
                                            uint32_t *fii)
 {
@@ -5577,6 +7242,27 @@ int TIFFReadGPSDirectory(TIFF *tif, toff_t diroff)
     return TIFFReadCustomDirectory(tif, diroff, _TIFFGetGpsFields());
 }
 
+/**
+ * @brief Replace missing or suspect strile byte counts with estimates.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Requires established nonzero strile geometry and valid offset entries.
+ * Loads offsets, possibly clears deferred entries, frees the previous count
+ * array, and allocates a replacement. Estimates compressed extents from
+ * file/IFD space, or uncompressed tile/row sizes, then marks byte-count
+ * presence and may default RowsPerStrip. Estimates are heuristics and may
+ * be partial on failure. Some overflow failures return silently;
+ * allocator/unknown-type/file-size rejection can diagnose. New arrays
+ * remain directory-owned; old borrowed views are invalidated.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] dir Borrowed raw entry array used to estimate indirect
+ * metadata space.
+ * @param[in] dircount Number of parsed entries.
+ * @return One after estimates are installed, minus one on detected size,
+ * allocation, or offset-load failure; zero is not the failure convention.
+ */
 static int EstimateStripByteCounts(TIFF *tif, TIFFDirEntry *dir,
                                    uint16_t dircount)
 {
@@ -5717,6 +7403,16 @@ static int EstimateStripByteCounts(TIFF *tif, TIFFDirEntry *dir,
     return 1;
 }
 
+/**
+ * @brief Report an absent required image tag.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Dispatches an error using a borrowed name. Does not supply a default,
+ * alter state, terminate, or transfer ownership.
+ *
+ * @param[in] tif Non-NULL handle; used only to dispatch diagnostics.
+ * @param[in] tagname Non-NULL null-terminated tag name.
+ */
 static void MissingRequired(TIFF *tif, const char *tagname)
 {
     static const char module[] = "MissingRequired";
@@ -5725,6 +7421,18 @@ static void MissingRequired(TIFF *tif, const char *tagname)
                   "TIFF directory is missing required \"%s\" field", tagname);
 }
 
+/**
+ * @brief Hash a directory-map offset key.
+ * @ingroup libtiff_private_directory_navigation
+ *
+ * Uses only the offset key; all records and key fields must remain
+ * live/stable while stored. No allocation, diagnostics, mutation, or
+ * ownership transfer occurs. XORs the upper and lower 32-bit offset halves.
+ *
+ * @param[in] elt Non-NULL borrowed TIFFOffsetAndDirNumber record.
+ * @return Unsigned hash value; collisions are resolved by the matching
+ * equality callback.
+ */
 static unsigned long hashFuncOffsetToNumber(const void *elt)
 {
     const TIFFOffsetAndDirNumber *offsetAndDirNumber =
@@ -5734,6 +7442,19 @@ static unsigned long hashFuncOffsetToNumber(const void *elt)
     return hash;
 }
 
+/**
+ * @brief Compare directory-map records by offset.
+ * @ingroup libtiff_private_directory_navigation
+ *
+ * Uses only the offset key; all records and key fields must remain
+ * live/stable while stored. No allocation, diagnostics, mutation, or
+ * ownership transfer occurs.
+ *
+ * @param[in] elt1 Non-NULL borrowed left record.
+ * @param[in] elt2 Non-NULL borrowed right record.
+ * @return True for equal keys, false otherwise; ignores the other record
+ * member.
+ */
 static bool equalFuncOffsetToNumber(const void *elt1, const void *elt2)
 {
     const TIFFOffsetAndDirNumber *offsetAndDirNumber1 =
@@ -5743,6 +7464,18 @@ static bool equalFuncOffsetToNumber(const void *elt1, const void *elt2)
     return offsetAndDirNumber1->offset == offsetAndDirNumber2->offset;
 }
 
+/**
+ * @brief Hash a directory-map directory index key.
+ * @ingroup libtiff_private_directory_navigation
+ *
+ * Uses only the directory index key; all records and key fields must remain
+ * live/stable while stored. No allocation, diagnostics, mutation, or
+ * ownership transfer occurs. Returns the index as unsigned long.
+ *
+ * @param[in] elt Non-NULL borrowed TIFFOffsetAndDirNumber record.
+ * @return Unsigned hash value; collisions are resolved by the matching
+ * equality callback.
+ */
 static unsigned long hashFuncNumberToOffset(const void *elt)
 {
     const TIFFOffsetAndDirNumber *offsetAndDirNumber =
@@ -5750,6 +7483,19 @@ static unsigned long hashFuncNumberToOffset(const void *elt)
     return offsetAndDirNumber->dirNumber;
 }
 
+/**
+ * @brief Compare directory-map records by directory index.
+ * @ingroup libtiff_private_directory_navigation
+ *
+ * Uses only the directory index key; all records and key fields must remain
+ * live/stable while stored. No allocation, diagnostics, mutation, or
+ * ownership transfer occurs.
+ *
+ * @param[in] elt1 Non-NULL borrowed left record.
+ * @param[in] elt2 Non-NULL borrowed right record.
+ * @return True for equal keys, false otherwise; ignores the other record
+ * member.
+ */
 static bool equalFuncNumberToOffset(const void *elt1, const void *elt2)
 {
     const TIFFOffsetAndDirNumber *offsetAndDirNumber1 =
@@ -5759,16 +7505,6 @@ static bool equalFuncNumberToOffset(const void *elt1, const void *elt2)
     return offsetAndDirNumber1->dirNumber == offsetAndDirNumber2->dirNumber;
 }
 
-/*
- * Check the directory number and offset against the list of already seen
- * directory numbers and offsets. This is a trick to prevent IFD looping.
- * The one can create TIFF file with looped directory pointers. We will
- * maintain a list of already seen directories and check every IFD offset
- * and its IFD number against that list. However, the offset of an IFD number
- * can change - e.g. when writing updates to file.
- * Returns 1 if all is ok; 0 if last directory or IFD loop is encountered,
- * or an error has occurred.
- */
 int _TIFFCheckDirNumberAndOffset(TIFF *tif, tdir_t dirn, uint64_t diroff)
 {
     if (diroff == 0) /* no more directories */
@@ -5925,13 +7661,6 @@ int _TIFFCheckDirNumberAndOffset(TIFF *tif, tdir_t dirn, uint64_t diroff)
     return 1;
 } /* --- _TIFFCheckDirNumberAndOffset() ---*/
 
-/*
- * Retrieve the matching IFD directory number of a given IFD offset
- * from the list of directories already seen.
- * Returns 1 if the offset was in the list and the directory number
- * can be returned.
- * Otherwise returns 0 or if an error occurred.
- */
 int _TIFFGetDirNumberFromOffset(TIFF *tif, uint64_t diroff, tdir_t *dirn)
 {
     if (diroff == 0) /* no more directories */
@@ -5970,13 +7699,6 @@ int _TIFFGetDirNumberFromOffset(TIFF *tif, uint64_t diroff, tdir_t *dirn)
     return 0;
 } /*--- _TIFFGetDirNumberFromOffset() ---*/
 
-/*
- * Retrieve the matching IFD directory offset of a given IFD number
- * from the list of directories already seen.
- * Returns 1 if the offset was in the list of already seen IFDs and the
- * directory offset can be returned. The directory list is not updated.
- * Otherwise returns 0 or if an error occurred.
- */
 int _TIFFGetOffsetFromDirNumber(TIFF *tif, tdir_t dirn, uint64_t *diroff)
 {
 
@@ -5998,12 +7720,6 @@ int _TIFFGetOffsetFromDirNumber(TIFF *tif, tdir_t dirn, uint64_t *diroff)
     return 0;
 } /*--- _TIFFGetOffsetFromDirNumber() ---*/
 
-/*
- * Remove an entry from the directory list of already seen directories
- * by directory offset.
- * If an entry is to be removed from the list, it is also okay if the entry
- * is not in the list or the list does not exist.
- */
 int _TIFFRemoveEntryFromDirectoryListByOffset(TIFF *tif, uint64_t diroff)
 {
     if (tif->tif_map_dir_offset_to_number == NULL)
@@ -6051,6 +7767,20 @@ int _TIFFRemoveEntryFromDirectoryListByOffset(TIFF *tif, uint64_t diroff)
  * Check the count field of a directory entry against a known value.  The
  * caller is expected to skip/ignore the tag if there is a mismatch.
  */
+/**
+ * @brief Validate or trim an entry to its expected count.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * A short entry warns and fails without trimming. An excessive count warns,
+ * is reduced in the parsed entry, and succeeds. Exact counts succeed
+ * silently. Does not fetch data, allocate, or transfer ownership.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in,out] dir Non-NULL parsed entry whose count may be reduced.
+ * @param[in] count Expected element count.
+ * @return One for exact/trimmed counts, zero for insufficient count.
+ */
 static int CheckDirCount(TIFF *tif, TIFFDirEntry *dir, uint32_t count)
 {
     if ((uint64_t)count > dir->tdir_count)
@@ -6081,6 +7811,31 @@ static int CheckDirCount(TIFF *tif, TIFFDirEntry *dir, uint32_t count)
  * Read IFD structure from the specified offset. If the pointer to
  * nextdiroff variable has been specified, read it too. Function returns a
  * number of fields in the directory or 0 if failed.
+ */
+/**
+ * @brief Fetch and normalise raw classic TIFF or BigTIFF entries.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Sets the current offset immediately and optional next-link output to zero
+ * before fetching. Rejects counts above 4096, empty directories, invalid
+ * extents, and allocation/I/O failures; diagnostics vary by path.
+ * Missing/truncated trailing next-link bytes are accepted as zero. Uses
+ * mapped storage or client seek/read, allocates temporary raw bytes and
+ * final entries, and normalises tag/type/count while leaving offset/inline
+ * bytes raw for consumers. Frees temporary storage on detected failure,
+ * does not install tag values, and does not roll back handle/next-link
+ * state. Only success transfers the final Ext allocation; caller frees it
+ * with _TIFFfreeExt(tif,...).
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] diroff IFD offset in file bytes.
+ * @param[out] pdir Non-NULL empty owner slot; assigned only when entries
+ * are successfully fetched.
+ * @param[out] nextdiroff Optional next-link output; initially zero and may
+ * change even if later work fails.
+ * @return Fetched positive entry count, or zero for empty/rejected/failed
+ * fetch; zero does not preserve handle state.
  */
 static uint16_t TIFFFetchDirectory(TIFF *tif, uint64_t diroff,
                                    TIFFDirEntry **pdir, uint64_t *nextdiroff)
@@ -6377,6 +8132,32 @@ static uint16_t TIFFFetchDirectory(TIFF *tif, uint64_t diroff,
 
 /*
  * Fetch a tag that is not handled by special case code.
+ */
+/**
+ * @brief Decode a parsed value according to its registered set/get
+ * representation.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Requires a matching descriptor and representation/count/passcount
+ * invariants; OTHER, INT, and C0_ASCII are not generic stored-tag cases.
+ * Allocates conversion buffers, can repair/terminate ASCII, then calls
+ * TIFFSetField() with representation-specific arguments. Temporary arrays
+ * are released after dispatch; setters must copy rather than retain them.
+ * Changes values/codec/dirty state without rollback. recover selects
+ * warning severity but conversion failure still returns zero; the parent
+ * decides whether to ignore it. UNDEFINED representation reports an error
+ * and skips the value yet returns one because the local conversion code
+ * remains Ok. Diagnostics can come from both converter and setter.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] dp Non-NULL parsed borrowed entry; count/type must match the
+ * selected representation.
+ * @param[in] recover Nonzero for ignored-tag warning severity, zero for
+ * error severity; does not change failed conversion to success.
+ * @return One after accepted dispatch, or after diagnosed
+ * UNDEFINED-representation skip; zero on conversion,
+ * schema/count/allocation, or setter failure, even with recover nonzero.
  */
 static int TIFFFetchNormalTag(TIFF *tif, TIFFDirEntry *dp, int recover)
 {
@@ -7788,6 +9569,29 @@ static int TIFFFetchNormalTag(TIFF *tif, TIFFDirEntry *dp, int recover)
  * Fetch a set of offsets or lengths.
  * While this routine says "strips", in fact it's also used for tiles.
  */
+/**
+ * @brief Read a strile array and pad permitted missing elements with zero.
+ * @ingroup libtiff_private_strile_metadata
+ *
+ * Reads at most nstrips values into newly owned host-order uint64_t
+ * storage; excess entries are ignored. A short array warns and is zero-padded
+ * to nstrips when nstrips is within LIBTIFF_STRILE_ARRAY_MAX_RESIZE_COUNT
+ * (default one million, parsed through atoi); otherwise an error is reported
+ * and zero is returned. A padded array larger than 100 MiB that also exceeds
+ * the file size is refused with a warning and zero is returned. Does not free
+ * prior *lpp; provide an empty slot. On failure frees new temporary data;
+ * conversion and allocation errors are reported. Success transfers an Ext
+ * allocation to be released with _TIFFfreeExt(tif,...); I/O position may
+ * change.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] dir Non-NULL parsed offset/count entry.
+ * @param[in] nstrips Positive expected number of logical striles.
+ * @param[out] lpp Non-NULL empty owner slot; assigned on success.
+ * @return One with the new array (NULL when nstrips is zero), zero on
+ * rejected resize or conversion/allocation/I/O error.
+ */
 static int TIFFFetchStripThing(TIFF *tif, TIFFDirEntry *dir, uint32_t nstrips,
                                uint64_t **lpp)
 {
@@ -7862,6 +9666,23 @@ static int TIFFFetchStripThing(TIFF *tif, TIFFDirEntry *dir, uint32_t nstrips,
 /*
  * Fetch and set the SubjectDistance EXIF tag.
  */
+/**
+ * @brief Decode EXIF SubjectDistance with its special sentinel values.
+ * @ingroup libtiff_private_ifd_reading
+ *
+ * Requires the EXIF schema to be active. Checks one RATIONAL, reads raw
+ * components, and uses zero for a zero numerator, minus one for UINT32_MAX
+ * numerator or zero denominator, otherwise their quotient. Dispatches
+ * through TIFFSetField(); no new ownership is exposed. Failed conversion
+ * warns and returns zero; setter effects/diagnostics and partial failure
+ * rules still apply. Classic TIFF access can change I/O position.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] dir Non-NULL parsed SubjectDistance entry.
+ * @return TIFFSetField() result on decoded input, zero on count/type/I/O
+ * error; the custom top-level reader ignores this result.
+ */
 static int TIFFFetchSubjectDistance(TIFF *tif, TIFFDirEntry *dir)
 {
     static const char module[] = "TIFFFetchSubjectDistance";
@@ -7916,6 +9737,26 @@ static int TIFFFetchSubjectDistance(TIFF *tif, TIFFDirEntry *dir)
     }
 }
 
+/**
+ * @brief Replace uncompressed strip metadata with a logical subdivision.
+ * @ingroup libtiff_private_strile_metadata
+ *
+ * Requires consistent existing contiguous uncompressed geometry and nonzero
+ * old/new strip counts. Computes the old total span, allocates both new
+ * arrays, and only then frees/replaces old arrays, adjusts counts and
+ * RowsPerStrip, and marks chopped arrays. Allocation/large-size rejection
+ * can diagnose; span rejection is silent and leaves old arrays. May load
+ * deferred old values first, so caches/I/O can change even on refusal.
+ * Ignores RowsPerStrip setter status. Arrays remain handle-owned and
+ * borrowed views can be invalidated; does not rewrite the on-disk IFD.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] nstrips Positive new number of logical strips.
+ * @param[in] stripbytes Requested full-strip bytes, clipped to remaining
+ * total span.
+ * @param[in] rowsperstrip Positive logical row count per new strip.
+ */
 static void allocChoppedUpStripArrays(TIFF *tif, uint32_t nstrips,
                                       uint64_t stripbytes,
                                       uint32_t rowsperstrip)
@@ -8013,6 +9854,22 @@ static void allocChoppedUpStripArrays(TIFF *tif, uint32_t nstrips,
  * dealing with large images or for dealing with machines with a limited
  * amount memory.
  */
+/**
+ * @brief Try to subdivide one contiguous uncompressed strip.
+ * @ingroup libtiff_private_strile_metadata
+ *
+ * Requires strip-chopping enabled, contiguous samples, one uncompressed
+ * non-tiled strip, and established geometry. Targets STRIP_SIZE_DEFAULT
+ * with rowblock/YCbCr alignment. Oversized geometry, suspicious file
+ * extents, or allocation failure can leave the original layout; diagnostics
+ * follow size/allocation helpers. May load metadata and change I/O/caches
+ * before declining. Successful replacement changes directory-owned strile
+ * arrays/RowsPerStrip without changing on-disk entries; old borrowed views
+ * may be invalidated.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ */
 static void ChopUpSingleUncompressedStrip(TIFF *tif)
 {
     TIFFDirectory *td = &tif->tif_dir;
@@ -8082,6 +9939,21 @@ static void ChopUpSingleUncompressedStrip(TIFF *tif)
  * multiple smaller strips. This is useful for
  * dealing with large images or for dealing with machines with a limited
  * amount memory.
+ */
+/**
+ * @brief Try to subdivide huge contiguous uncompressed strip data.
+ * @ingroup libtiff_private_strile_metadata
+ *
+ * Requires contiguous, non-tiled, uncompressed, chop-enabled geometry with
+ * strip size above INT32_MAX. Checks existing strip sizes/contiguity and
+ * rowblock bounds, then aims for 512 MiB logical strips, respecting YCbCr
+ * rowblocks. Refuses unsupported/suspicious cases without a status;
+ * allocation helpers can diagnose. May allocate/load metadata and change
+ * I/O/caches. On replacement directory arrays/RowsPerStrip change and
+ * borrowed views are invalidated; file bytes are unchanged.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
  */
 static void TryChopUpUncompressedBigTiff(TIFF *tif)
 {
@@ -8178,6 +10050,19 @@ static void TryChopUpUncompressedBigTiff(TIFF *tif)
     allocChoppedUpStripArrays(tif, nstrips, stripbytes, rowsperstrip);
 }
 
+/**
+ * @brief Add a signed displacement with intentional unsigned wrap.
+ * @ingroup libtiff_private_strile_metadata
+ *
+ * Uses modulo-2^64 arithmetic after converting b to uint64_t. No
+ * diagnostics, allocation, state, or ownership effects. The source disables
+ * unsigned-overflow sanitisation for this helper.
+ *
+ * @param[in] a Unsigned base value.
+ * @param[in] b Signed displacement, including negative page-relative
+ * indices.
+ * @return Wrapped unsigned sum, not a checked size/offset result.
+ */
 TIFF_NOSANITIZE_UNSIGNED_INT_OVERFLOW
 static uint64_t _TIFFUnsanitizedAddUInt64AndInt(uint64_t a, int b)
 {
@@ -8187,6 +10072,38 @@ static uint64_t _TIFFUnsanitizedAddUInt64AndInt(uint64_t a, int b)
 /* Read the value of [Strip|Tile]Offset or [Strip|Tile]ByteCount around
  * strip/tile of number strile. Also fetch the neighbouring values using a
  * 4096 byte page size.
+ */
+/**
+ * @def IO_CACHE_PAGE_SIZE
+ * @brief Set the lazy strile metadata read page size to 4096 bytes.
+ * @ingroup libtiff_private_strile_metadata
+ *
+ * The local helper can span two pages when an element crosses a boundary.
+ * The macro is defined/undefined inside _TIFFPartialReadStripArray().
+ */
+
+/**
+ * @brief Load a strile value and neighbouring page entries into a cache.
+ * @ingroup libtiff_private_strile_metadata
+ *
+ * Requires an external entry with count greater than four, a valid
+ * nonnegative cache index, and a sufficiently allocated panVals array.
+ * Accepts SHORT/LONG/LONG8 and nonconforming SLONG8; negative signed values
+ * are cast modulo 2^64 without a nonnegative range check. Uses a stack buffer
+ * for one/two 4096-byte pages, normalises endianness, and updates multiple
+ * cache elements. Errors can zero the target or leave partial/unchanged cache
+ * data; diagnostics vary and I/O position changes. Does not allocate or
+ * transfer ownership.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] dirent Non-NULL deferred parsed entry with raw offset bytes.
+ * @param[in] strile Index within the allocated logical cache; representable
+ * by int.
+ * @param[in,out] panVals Writable borrowed uint64_t cache with
+ * td_stripoffsetbyteallocsize elements.
+ * @return One after page conversion, zero on type/range/seek/read failure;
+ * cache outputs are not rollback-safe.
  */
 static int _TIFFPartialReadStripArray(TIFF *tif, TIFFDirEntry *dirent,
                                       int strile, uint64_t *panVals)
@@ -8346,6 +10263,59 @@ static int _TIFFPartialReadStripArray(TIFF *tif, TIFFDirEntry *dirent,
     return 1;
 }
 
+/**
+ * @def TIFF_MAX(a, b)
+ * @brief Select the larger of two expressions.
+ * @ingroup libtiff_private_strile_metadata
+ *
+ * Uses C comparison/conditional usual conversions. Each argument is
+ * evaluated in the comparison and the selected argument again; avoid side
+ * effects. Does not allocate or report diagnostics. Parenthesised expansion
+ * yields a value, not a checked size operation.
+ *
+ * @param[in] a First comparable expression; may be evaluated twice.
+ * @param[in] b Second comparable expression; may be evaluated twice.
+ * @return Selected maximum according to the C comparison.
+ */
+
+/**
+ * @def TIFF_MIN(a, b)
+ * @brief Select the smaller of two expressions.
+ * @ingroup libtiff_private_strile_metadata
+ *
+ * Uses C comparison/conditional usual conversions. Each argument is
+ * evaluated in the comparison and the selected argument again; avoid side
+ * effects. Does not allocate or report diagnostics. Parenthesised expansion
+ * yields a value, not a checked size operation.
+ *
+ * @param[in] a First comparable expression; may be evaluated twice.
+ * @param[in] b Second comparable expression; may be evaluated twice.
+ * @return Selected minimum according to the C comparison.
+ */
+
+/**
+ * @brief Grow paired strile caches and fetch an uncached value.
+ * @ingroup libtiff_private_strile_metadata
+ *
+ * Requires consistent deferred entries and a strile index below td_nstrips
+ * and representable by int for the page reader.
+ * Expands both handle-owned arrays together, using UINT64_MAX as uncached
+ * sentinel, then loads a page if needed. On either realloc failure frees
+ * both current arrays and resets their capacity, losing old cache contents.
+ * Partial read failure stores zero at the requested slot, so later calls
+ * may return success with that cached zero. Can allocate, seek/read,
+ * diagnose, and invalidate borrowed array pointers. No ownership transfers.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] strile Logical strile index in range.
+ * @param[in] dirent Non-NULL external deferred entry with more than four
+ * elements.
+ * @param[in,out] parray Pointer to the matching handle-owned offset or
+ * byte-count array slot.
+ * @return One when an array slot is available/cached, zero on detected
+ * extent/allocation/read failure; zero can be cached after failure.
+ */
 static int _TIFFFetchStrileValue(TIFF *tif, uint32_t strile,
                                  TIFFDirEntry *dirent, uint64_t **parray)
 {
@@ -8449,6 +10419,29 @@ static int _TIFFFetchStrileValue(TIFF *tif, uint32_t strile,
     return 1;
 }
 
+/**
+ * @brief Resolve a cached, fully deferred, or lazy strile metadata value.
+ * @ingroup libtiff_private_strile_metadata
+ *
+ * Validates index and consistency of the two small/large-entry paths. Loads
+ * full arrays or a lazy page as required, potentially freeing/reallocating
+ * paired caches. Initialises optional error status to zero; sets it for
+ * errors detected now, not historical cached failures. A failed full fill
+ * does not force an immediate zero if an array value remains available. No
+ * pixel decoding, ownership transfer, or range validation of the resulting
+ * file payload.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] strile Zero-based logical strile index.
+ * @param[in,out] dirent Borrowed matching deferred entry; may be cleared
+ * indirectly by full fill.
+ * @param[in,out] parray Matching handle-owned offset/count array slot; may
+ * be replaced/cleared.
+ * @param[out] pbErr Optional current-call error slot.
+ * @return Cached value, or zero on unavailable/out-of-range data; pbErr can
+ * flag a fill failure even when a nonzero value is returned.
+ */
 static uint64_t _TIFFGetStrileOffsetOrByteCountValue(TIFF *tif, uint32_t strile,
                                                      TIFFDirEntry *dirent,
                                                      uint64_t **parray,
@@ -8552,6 +10545,27 @@ uint64_t TIFFGetStrileByteCountWithErr(TIFF *tif, uint32_t strile, int *pbErr)
 
 int _TIFFFillStriles(TIFF *tif) { return _TIFFFillStrilesInternal(tif, 1); }
 
+/**
+ * @brief Materialise deferred strile arrays or recognise an already-loaded
+ * state.
+ * @ingroup libtiff_private_strile_metadata
+ *
+ * Returns one without work for non-deferred/chopped arrays. First full load
+ * in lazy mode frees both partial caches and marks lazy loading done. An
+ * existing offset array is treated as success without revalidating counts.
+ * Otherwise fetches offsets and optionally byte counts; clears both
+ * deferred entries after attempts, even on failure or when counts were not
+ * requested. Owns resulting arrays in the handle; borrowed views can be
+ * invalidated. Allocations/I/O/diagnostics and partial-state effects follow
+ * the fetch helpers; no rollback.
+ *
+ * @param[in,out] tif Non-NULL live handle with matching schema/state;
+ * serialise access externally.
+ * @param[in] loadStripByteCount Nonzero to fetch counts too; zero for
+ * offset-only recovery.
+ * @return One on completed load/no work, zero on absent deferred offset
+ * count or detected load error; partial arrays/state may remain.
+ */
 static int _TIFFFillStrilesInternal(TIFF *tif, int loadStripByteCount)
 {
     TIFFDirectory *td = &tif->tif_dir;

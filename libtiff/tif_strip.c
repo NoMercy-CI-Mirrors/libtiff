@@ -27,6 +27,12 @@
  *
  * Strip-organized Image Support Routines.
  */
+/**
+ * @file tif_strip.c
+ * @brief Compute strip and scanline geometry and default sizing
+ * recommendations.
+ */
+
 #include "tiffiop.h"
 
 /*
