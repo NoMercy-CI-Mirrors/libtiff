@@ -155,6 +155,12 @@ set_target_properties(thunder_decode PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(thunder_decode PRIVATE tiff tiff_port)
 list(APPEND simple_tests thunder_decode)
 
+add_executable(test_read_buffer_setup ../placeholder.h)
+target_sources(test_read_buffer_setup PRIVATE test_read_buffer_setup.c)
+set_target_properties(test_read_buffer_setup PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_read_buffer_setup PRIVATE tiff tiff_port)
+list(APPEND simple_tests test_read_buffer_setup)
+
 add_executable(custom_dir ../placeholder.h)
 target_sources(custom_dir PRIVATE custom_dir.c)
 set_target_properties(custom_dir PROPERTIES LINKER_LANGUAGE CXX)

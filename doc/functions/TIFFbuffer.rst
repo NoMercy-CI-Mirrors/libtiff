@@ -29,6 +29,10 @@ buffer of the appropriate size is allocated. Otherwise the caller must guarantee
 that the buffer is large enough to hold any individual strip of raw data.
 :c:func:`TIFFReadBufferSetup` returns a non-zero value if the setup was successful
 and zero otherwise.
+If it is called while a strip is being read with :c:func:`TIFFReadScanline`,
+the next read loads the strip again into the new buffer; with a compression
+scheme that cannot seek within a strip, the application must then restart
+reading at the first row of the strip.
 
 :c:func:`TIFFWriteBufferSetup` sets up the data buffer used to write raw (encoded)
 data to a file. If the specified *size* is -1, then the buffer size is selected to

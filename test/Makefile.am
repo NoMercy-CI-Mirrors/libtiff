@@ -91,7 +91,7 @@ endif
 # Executable programs which need to be built in order to support tests
 if TIFF_TESTS
 check_PROGRAMS = \
-	ascii_tag long_tag short_tag strip_rw rewrite custom_dir custom_dir_EXIF_231 \
+	ascii_tag long_tag short_tag strip_rw rewrite custom_dir custom_dir_EXIF_231 test_read_buffer_setup \
 	defer_strile_loading defer_strile_writing test_directory test_IFD_enlargement test_open_options \
 	test_append_to_strip test_ifd_loop_detection test_RGBAImage testtypes test_signed_tags thunder_decode $(JPEG_DEPENDENT_CHECK_PROG) $(STATIC_CHECK_PROGS)
 endif
@@ -274,6 +274,8 @@ custom_dir_SOURCES = custom_dir.c
 custom_dir_LDADD = $(LIBTIFF)
 thunder_decode_SOURCES = thunder_decode.c
 thunder_decode_LDADD = $(LIBTIFF)
+test_read_buffer_setup_SOURCES = test_read_buffer_setup.c
+test_read_buffer_setup_LDADD = $(LIBTIFF)
 
 if BUILD_STATIC
 rational_precision2double_SOURCES = rational_precision2double.c
