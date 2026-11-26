@@ -20,11 +20,9 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#ifndef TIF_BYTECURSOR_H
-#define TIF_BYTECURSOR_H
-
-/*
- * Small bounds-checked byte cursors for codec decoders.
+/**
+ * @file tif_bytecursor.h
+ * @brief Define small bounds-checked byte cursors for codec decoders.
  *
  * A cursor is a pointer plus the number of bytes remaining after it.  The
  * helpers check that count at the point of access and either succeed fully
@@ -36,15 +34,39 @@
  * otherwise expands them inline into slow "rep movs"/"rep stos" sequences.
  */
 
+#ifndef TIF_BYTECURSOR_H
+#define TIF_BYTECURSOR_H
+
 #include "tiffiop.h"
 
+/**
+ * @brief Track a borrowed byte range as a pointer and a remaining count.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * The cursor does not own its storage; the caller keeps the range live and
+ * valid for at least left bytes from p while the cursor is used. The helpers
+ * below only advance p and decrease left together, by the same amount.
+ */
 typedef struct
 {
+    /** @brief Next byte to read or write. */
     uint8_t *p;
+    /** @brief Number of bytes remaining from p. */
     tmsize_t left;
 } TIFFByteCursor;
 
-/* Read one byte. Returns 0 (and leaves *out untouched) if none is left. */
+/**
+ * @brief Read one byte from a cursor.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * On success the cursor advances by one byte.
+ *
+ * @param[in,out] c Non-NULL cursor to read from.
+ * @param[out] out Non-NULL destination for the byte read; left untouched if
+ * no byte is left.
+ * @return 1 after reading one byte, 0 (and leaves *out untouched) if none is
+ * left.
+ */
 static inline int _TIFFByteCursorGetU8(TIFFByteCursor *c, uint8_t *out)
 {
     if (c->left <= 0)
@@ -54,7 +76,18 @@ static inline int _TIFFByteCursorGetU8(TIFFByteCursor *c, uint8_t *out)
     return 1;
 }
 
-/* Write n copies of value. Returns 0 and writes nothing if n does not fit. */
+/**
+ * @brief Write n copies of value to a cursor.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * On success the cursor advances by n bytes.
+ *
+ * @param[in,out] dst Non-NULL cursor over writable storage.
+ * @param[in] value Byte value to write.
+ * @param[in] n Number of bytes to write.
+ * @return 1 after writing n bytes, 0 and writes nothing if n is negative or
+ * does not fit.
+ */
 static inline int _TIFFByteCursorFill(TIFFByteCursor *dst, uint8_t value,
                                       tmsize_t n)
 {
@@ -66,9 +99,18 @@ static inline int _TIFFByteCursorFill(TIFFByteCursor *dst, uint8_t value,
     return 1;
 }
 
-/*
- * Move n bytes from src to dst. Returns 0 and changes nothing if n exceeds
- * the bytes left in either cursor.
+/**
+ * @brief Move n bytes from src to dst.
+ * @ingroup libtiff_private_basic_codecs
+ *
+ * On success both cursors advance by n bytes. The two ranges must not
+ * overlap.
+ *
+ * @param[in,out] dst Non-NULL cursor over writable storage.
+ * @param[in,out] src Non-NULL cursor over readable storage.
+ * @param[in] n Number of bytes to move.
+ * @return 1 after moving n bytes, 0 and changes nothing if n is negative or
+ * exceeds the bytes left in either cursor.
  */
 static inline int _TIFFByteCursorCopy(TIFFByteCursor *dst, TIFFByteCursor *src,
                                       tmsize_t n)
