@@ -14,11 +14,15 @@
  *   4. Slice of a custom array (overlapping source and destination)
  */
 
+#include "tif_config.h"
 #include "tiffio.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef HAVE_UNISTD_H
 #include <unistd.h>
+#endif
 
 static const char *fname = "test_setbytearray_uaf.tif";
 
@@ -110,7 +114,7 @@ static int test_ascii_alias(void)
 
 static const TIFFFieldInfo custom_fields[] = {
     {65000, TIFF_VARIABLE2, TIFF_VARIABLE2, TIFF_SHORT, FIELD_CUSTOM, 1, 1,
-     (char *)"TestShortArray"},
+     "TestShortArray"},
 };
 
 static int test_custom_array(void)
