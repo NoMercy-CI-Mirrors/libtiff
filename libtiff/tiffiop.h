@@ -484,14 +484,116 @@ extern "C"
     extern tmsize_t _TIFFAddSSize(TIFF *, tmsize_t, tmsize_t, const char *);
     extern tmsize_t _TIFFCastUInt64ToSSize(TIFF *, uint64_t, const char *);
     extern uint32_t _TIFFCastUInt64ToUInt32(TIFF *, uint64_t, const char *);
-    extern uint32_t _TIFFMultiply32Ext(TIFF *, uint32_t, uint32_t, const char *,
-                                       bool *);
-    extern uint64_t _TIFFAdd64Ext(TIFF *, uint64_t, uint64_t, const char *,
-                                  bool *);
-    extern uint32_t _TIFFCastUInt64ToUInt32Ext(TIFF *, uint64_t, const char *,
-                                               bool *);
-    extern uint32_t _TIFFComputeTileExt(TIFF *, uint32_t, uint32_t, uint32_t,
-                                        uint16_t, bool *);
+
+    /**
+     * @brief Multiply two unsigned values with an overflow check, and record
+     * an overflow in a caller-provided flag.
+     * @ingroup libtiff_private_arithmetic
+     *
+     * Behaves as _TIFFMultiply32(): checks division bounds before
+     * multiplying, and overflow always invokes TIFFErrorExtR(), including
+     * when tif is NULL; where is also formatted as a string, so it must be
+     * valid on that path. On overflow, also sets *pOverflowed to true when
+     * pOverflowed is not NULL. The flag is never reset to false, so several
+     * operations can share one flag that is tested once. Does not allocate,
+     * mutate handle fields, retain arguments, or perform I/O except through
+     * diagnostic callbacks.
+     *
+     * @param[in] tif Diagnostic handle, or NULL for global diagnostic
+     * dispatch.
+     * @param[in] first First factor.
+     * @param[in] second Second factor.
+     * @param[in] where Non-NULL diagnostic context name when an overflow can
+     * occur.
+     * @param[out] pOverflowed Overflow flag, or NULL; set to true on overflow
+     * and left unchanged otherwise.
+     * @return The product, or zero if it exceeds UINT32_MAX; zero is also a
+     * valid product, which the flag tells apart.
+     */
+    extern uint32_t _TIFFMultiply32Ext(TIFF *tif, uint32_t first,
+                                       uint32_t second, const char *where,
+                                       bool *pOverflowed);
+
+    /**
+     * @brief Check and add two unsigned operands, and record an overflow in a
+     * caller-provided flag.
+     * @ingroup libtiff_private_arithmetic
+     *
+     * Behaves as _TIFFAdd64(): a result beyond UINT64_MAX emits an error only
+     * when both tif and where are non-NULL; otherwise it returns zero
+     * silently. On overflow, also sets *pOverflowed to true when pOverflowed
+     * is not NULL. The flag is never reset to false, so several operations
+     * can share one flag that is tested once. Does not allocate or change
+     * handle fields; diagnostics can have callback-defined effects.
+     *
+     * @param[in] tif Optional diagnostic handle.
+     * @param[in] first First operand.
+     * @param[in] second Second operand.
+     * @param[in] where Optional borrowed diagnostic context name.
+     * @param[out] pOverflowed Overflow flag, or NULL; set to true on overflow
+     * and left unchanged otherwise.
+     * @return The sum, or zero if it exceeds UINT64_MAX; zero is also a valid
+     * sum, which the flag tells apart.
+     */
+    extern uint64_t _TIFFAdd64Ext(TIFF *tif, uint64_t first, uint64_t second,
+                                  const char *where, bool *pOverflowed);
+
+    /**
+     * @brief Convert an unsigned 64-bit value after checking the destination
+     * range, and record a rejection in a caller-provided flag.
+     * @ingroup libtiff_private_arithmetic
+     *
+     * Behaves as _TIFFCastUInt64ToUInt32(): range rejection reports an error
+     * only when both tif and module are non-NULL; otherwise it fails silently
+     * with zero. On rejection, also sets *pOverflowed to true when
+     * pOverflowed is not NULL. The flag is never reset to false, so several
+     * operations can share one flag that is tested once. Does not allocate,
+     * retain pointers, or change handle state except for diagnostic callback
+     * effects.
+     *
+     * @param[in] tif Optional diagnostic handle.
+     * @param[in] val Unsigned value to convert.
+     * @param[in] module Optional borrowed diagnostic module name.
+     * @param[out] pOverflowed Overflow flag, or NULL; set to true if val
+     * exceeds UINT32_MAX and left unchanged otherwise.
+     * @return The converted value, or zero if val exceeds UINT32_MAX; zero is
+     * also a valid converted value, which the flag tells apart.
+     */
+    extern uint32_t _TIFFCastUInt64ToUInt32Ext(TIFF *tif, uint64_t val,
+                                               const char *module,
+                                               bool *pOverflowed);
+
+    /**
+     * @brief Compute a tile index as TIFFComputeTile() does, and record an
+     * index overflow in a caller-provided flag.
+     * @ingroup libtiff_private_image_layout
+     *
+     * TIFFComputeTile() calls this with a NULL flag. Zero is a valid tile
+     * index, so the return value alone cannot tell an overflow apart. When
+     * the tile index overflows, emits an error and sets *pOverflowed to true
+     * when pOverflowed is not NULL; the flag is never reset to false. A
+     * sample out of range for separate storage emits an error and returns
+     * zero without setting the flag: callers that test the flag are expected
+     * to have checked the coordinates with TIFFCheckTile() first. Does not
+     * validate or clamp x/y/z to the image. Does not allocate, perform I/O,
+     * or acquire ownership.
+     *
+     * @param[in] tif Non-NULL live handle with consistent current geometry;
+     * no ownership transfer.
+     * @param[in] x Pixel column; not checked against ImageWidth.
+     * @param[in] y Pixel row; not checked against ImageLength.
+     * @param[in] z Depth slice; forced to zero when ImageDepth is one.
+     * @param[in] s Separate sample plane; ignored for contiguous storage.
+     * @param[out] pOverflowed Overflow flag, or NULL; set to true when the
+     * tile index overflows and left unchanged otherwise.
+     * @return Computed zero-based tile index; zero on overflow or sample
+     * rejection; or one for zero effective tile dimensions, as with
+     * TIFFComputeTile().
+     */
+    extern uint32_t _TIFFComputeTileExt(TIFF *tif, uint32_t x, uint32_t y,
+                                        uint32_t z, uint16_t s,
+                                        bool *pOverflowed);
+
     extern uint64_t _TIFFComputeRowSize64(TIFF *, uint32_t, uint16_t, uint16_t,
                                           const char *);
     extern tmsize_t _TIFFComputeRowOffset(TIFF *, tmsize_t rowstride, uint32_t,
