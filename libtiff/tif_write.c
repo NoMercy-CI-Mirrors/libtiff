@@ -736,7 +736,7 @@ int TIFFWriteCheck(TIFF *tif, int tiles, const char *module)
     {
         if (!TIFFForceStrileArrayWriting(tif))
         {
-            /* Let the next write call go through TIFFWriteCheck() again */
+            /* Write macros skip TIFFWriteCheck() while this flag is set */
             tif->tif_flags &= ~TIFF_BEENWRITING;
             return (0);
         }
